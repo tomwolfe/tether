@@ -1,0 +1,43 @@
+mission:
+  name: dogfood-01-graceful-interrupt
+  goal: |
+    Add graceful interrupt handling to Tether and prove it with tests.
+    Tasks:
+    1. In src/tether/orchestrator.py, wrap the run loop so a KeyboardInterrupt
+       during adapter interaction results in: the adapter's cancel(session)
+       being called (best-effort, swallow cancel errors), a finalized
+       report.json written with status "cancelled", an events.jsonl entry
+       with type "cancelled", and rollback guidance in next_steps.
+    2. In src/tether/cli.py, surface status "cancelled" from the report with
+       exit code 2 and print the rollback hint.
+    3. Add tests in tests/test_core.py using a fake adapter whose send()
+       raises KeyboardInterrupt on the first call: assert the final report
+       status is "cancelled", that cancel() was called exactly once, and
+       that report.json exists on disk in the session directory.
+    4. Update docs/ARCHITECTURE.md (core loop section) and README.md
+       "Current limitations" to reflect graceful cancellation.
+    Change NOTHING outside this scope.
+context:
+  - Repo layout is documented in docs/ARCHITECTURE.md; read it first.
+  - The orchestrator must stay adapter-agnostic (AgentAdapter interface only).
+  - AgentAdapter.cancel(session) already exists in src/tether/adapters/base.py
+    but is never invoked by the orchestrator today.
+  - The audit trail (src/tether/audit.py) must be finalized before any exit path.
+constraints:
+  - do not change the AgentAdapter interface signatures
+  - do not weaken existing tests; all current tests must keep passing
+  - subprocess usage stays shell=False
+  - keep changes minimal and focused on interrupt handling only
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+  timeout_seconds: 600
+recovery:
+  max_attempts: 3
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "{prompt}"]
+    timeout_seconds: 1800

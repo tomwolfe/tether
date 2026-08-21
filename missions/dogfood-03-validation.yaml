@@ -1,0 +1,37 @@
+mission:
+  name: dogfood-03-settings-validation
+  goal: |
+    Validate adapter settings and warn on unknown keys; prove it with tests.
+    Tasks:
+    1. Give each adapter class a `known_settings: frozenset[str]` attribute
+       (CommandAdapter: command, timeout_seconds, prompt_via_stdin, env;
+       MockAdapter: scenario; opencode/pi presets inherit CommandAdapter's).
+    2. Where adapters are constructed from config in src/tether/config.py or
+       the factory that builds them, compare configured keys against
+       known_settings and log a warning for unknown keys (e.g.
+       "adapter 'myagent': unknown setting 'promt_via_stdin'"). Add a
+       --strict flag to `tether run` and `tether validate-config` that turns
+       unknown-setting warnings into errors.
+    3. Add tests covering: warning emitted for a typo'd key, no warning for
+       known keys, strict mode failing validation.
+    4. Document in README.md config section.
+    Change NOTHING outside this scope.
+context:
+  - Adapter construction happens where missions/adapters are wired from
+    config; find it by reading src/tether/config.py and cli.py first.
+constraints:
+  - do not change adapter interfaces beyond adding the class attribute
+  - all current tests must keep passing
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+  timeout_seconds: 600
+recovery:
+  max_attempts: 3
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "{prompt}"]
+    timeout_seconds: 1800
