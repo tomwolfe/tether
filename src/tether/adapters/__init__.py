@@ -36,7 +36,14 @@ def unknown_setting_messages(adapters_config: Optional[Dict[str, Any]]) -> list[
     messages: list[str] = []
     for name, settings in (adapters_config or {}).items():
         cls = _REGISTRY.get(name)
-        if cls is None or not isinstance(settings, dict):
+        if cls is None:
+            # resolve_adapter would reject this name at run time, so it must
+            # not pass strict validation either.
+            messages.append(
+                f"adapter {name!r}: unknown adapter name; cannot validate settings"
+            )
+            continue
+        if not isinstance(settings, dict):
             continue
         known: frozenset[str] = getattr(cls, "known_settings", frozenset[str]())
         if not known:

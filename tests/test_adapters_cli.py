@@ -212,6 +212,45 @@ def test_cli_validate_config_unknown_setting_strict(tmp_path, monkeypatch):
     assert r.exit_code == 0
 
 
+def test_cli_validate_config_strict_bad_config_exits_nonzero(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "tether.yaml").write_text(
+        "default_adapter: mock\nadapters:\n  mock:\n    scenarioo: x\n"
+    )
+    r = runner.invoke(app, ["validate-config"])
+    assert r.exit_code == 0  # warning only without --strict
+    r = runner.invoke(app, ["validate-config", "--strict"])
+    assert r.exit_code != 0
+    assert "INVALID:" in r.output and "unknown setting 'scenarioo'" in r.output
+
+
+def test_unknown_adapter_name_warns_and_fails_strict(caplog):
+    with caplog.at_level(logging.WARNING, logger="tether.adapters"):
+        problems = check_adapter_settings({"myagent": {"foo": "bar"}})
+    assert problems == ["adapter 'myagent': unknown adapter name; cannot validate settings"]
+    assert any("unknown adapter name" in r.message for r in caplog.records)
+    with pytest.raises(ValueError, match="unknown adapter name"):
+        check_adapter_settings({"myagent": {"foo": "bar"}}, strict=True)
+
+
+def test_cli_validate_config_unregistered_adapter_name(tmp_path, monkeypatch, caplog):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "tether.yaml").write_text(
+        "default_adapter: mock\nadapters:\n  myagent:\n    foo: bar\n"
+    )
+    with caplog.at_level(logging.WARNING, logger="tether.adapters"):
+        r = runner.invoke(app, ["validate-config"])
+    assert r.exit_code == 0  # warns, does not abort
+    assert any(
+        "adapter 'myagent': unknown adapter name; cannot validate settings"
+        in rec.message
+        for rec in caplog.records
+    )
+    r = runner.invoke(app, ["validate-config", "--strict"])
+    assert r.exit_code != 0
+    assert "unknown adapter name" in r.output
+
+
 def test_cli_run_strict_rejects_unknown_adapter_setting(tmp_path):
     mission = tmp_path / "m.yaml"
     mission.write_text(
