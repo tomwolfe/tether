@@ -1,0 +1,22 @@
+mission:
+  name: hello-success
+  goal: Demonstrate a successful Tether run using the deterministic MockAdapter.
+
+context:
+  - This example never touches the network or real coding agents.
+
+constraints:
+  - keep changes minimal
+
+verification:
+  commands:
+    - "true"
+
+recovery:
+  max_attempts: 3
+
+adapter: mock
+
+adapters:
+  mock:
+    scenario: success

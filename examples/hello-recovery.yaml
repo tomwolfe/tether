@@ -1,0 +1,22 @@
+mission:
+  name: hello-recovery
+  goal: Demonstrate the recovery loop; the mock agent fails once, then succeeds.
+
+context:
+  - Uses MockAdapter scenario 'fail_then_succeed' (configured below).
+
+constraints:
+  - do not delete tests
+
+verification:
+  commands:
+    - "true"
+
+recovery:
+  max_attempts: 3
+
+adapter: mock
+
+adapters:
+  mock:
+    scenario: fail_then_succeed
