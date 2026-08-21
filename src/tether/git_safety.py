@@ -258,6 +258,20 @@ def rollback(project_dir: Path, session_id: str,
     return True, f"Rolled back to {target} (checkpoint {ref})."
 
 
+def _reported_session_id(session_dir: Path) -> str | None:
+    """Best-effort: the real session id recorded in a session's report.json."""
+    import json
+    report_path = session_dir / "report.json"
+    if not report_path.exists():
+        return None
+    try:
+        data = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    sid = data.get("session_id") if isinstance(data, dict) else None
+    return sid if isinstance(sid, str) else None
+
+
 def find_backup_archive(project_dir: Path, session_id: str,
                         backup_dir: str = ".tether/backups",
                         audit_dir: str = ".tether/sessions") -> Path | None:
@@ -273,8 +287,12 @@ def find_backup_archive(project_dir: Path, session_id: str,
         return None
     if session is None:
         return None
-    candidate = root / f"{session.name}.tar.gz"
-    return candidate if candidate.exists() else None
+    reported = _reported_session_id(session)
+    if reported is not None and reported != session_id:
+        candidate = root / f"{reported}.tar.gz"
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def restore_from_backup(project_dir: Path, session_id: str,

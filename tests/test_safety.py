@@ -605,3 +605,30 @@ def test_cli_rollback_non_git_restores_backup(tmp_path):
                             "--project-dir", str(tmp_path)])
     assert r.exit_code == 0, r.output
     assert (tmp_path / "data.txt").read_text() == "v1"
+
+
+def test_restore_from_backup_accepts_short_prefix(tmp_path):
+    # Non-git session: only a short prefix is known; resolution must go
+    # through the audit session directory's report.json session_id.
+    from tether.audit import AuditTrail
+    from tether.git_safety import restore_from_backup
+    (tmp_path / "data.txt").write_text("v1")
+    audit = AuditTrail(tmp_path, ".tether/sessions", "sess", "dddd4444dddd")
+    audit.write_report({"session_id": "dddd4444dddd"})
+    make_file_backup(tmp_path, tmp_path / ".tether/backups", "dddd4444dddd")
+    (tmp_path / "data.txt").write_text("clobbered by agent")
+    ok, msg = restore_from_backup(tmp_path, "dddd")  # short prefix
+    assert ok, msg
+    assert (tmp_path / "data.txt").read_text() == "v1"
+
+
+def test_cli_rollback_non_git_restores_backup_from_prefix(tmp_path):
+    from tether.audit import AuditTrail
+    (tmp_path / "data.txt").write_text("v1")
+    audit = AuditTrail(tmp_path, ".tether/sessions", "sess", "eeee5555eeee")
+    audit.write_report({"session_id": "eeee5555eeee"})
+    make_file_backup(tmp_path, tmp_path / ".tether/backups", "eeee5555eeee")
+    (tmp_path / "data.txt").write_text("clobbered")
+    r = runner.invoke(app, ["rollback", "eeee5", "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    assert (tmp_path / "data.txt").read_text() == "v1"

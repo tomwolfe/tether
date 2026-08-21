@@ -1,0 +1,74 @@
+mission:
+  name: dogfood-05-hardening
+  goal: |
+    Close review-found gaps in Tether, each proven by tests.
+
+    Tasks:
+    1. Fix prefix resolution in src/tether/git_safety.py find_backup_archive():
+       today only an exact `<session_id>.tar.gz` is found; the fallback looks
+       for `<audit-dir-name>.tar.gz`, which never exists. Mirror
+       resolve_checkpoint_ref(): after locating the session directory via
+       find_session_dir(), read session_id from its report.json and look up
+       `<session_id>.tar.gz`. Add tests in tests/test_safety.py proving
+       restore_from_backup() and the `tether rollback` CLI succeed using only
+       a short prefix for a non-git session. Existing full-id tests must keep
+       passing.
+    2. Add a single-writer lock to src/tether/orchestrator.py: before the
+       checkpoint phase, write <project_dir>/.tether/tether.lock containing
+       the session id. If the lock already exists and is fresh, abort with a
+       failed report (no checkpoint, no backup, no adapter call) whose
+       next_steps name the holding session id and explain removing the file
+       if stale. Release the lock on every exit path (success, failure,
+       exception, KeyboardInterrupt). Add tests: a second Orchestrator run
+       while the lock is held fails fast without calling the adapter (use the
+       scripted/spy adapter pattern from tests/test_core.py or
+       tests/test_safety.py), and the lock file is gone after a normal run
+       and after a cancelled run.
+    3. In src/tether/orchestrator.py, stop discarding the plan: include the
+       planning step's output (plan_text) in the text passed to
+       adapter.execute_prompt() by composing it into the mission summary.
+       Do NOT change any AgentAdapter signature. Planning-failure behavior
+       stays unchanged. Add a test using a scripted adapter that records
+       received prompts and asserts the execute prompt contains the plan
+       text.
+    4. Make events.jsonl tamper-evident: in src/tether/audit.py, add a "prev"
+       field to every event: hex sha256 of the canonical JSON serialization
+       of the previous event line, empty string for the first event. Add
+       `tether logs <session-id> --verify` in src/tether/cli.py that
+       validates the chain, exits 0 when intact, exits 1 with a clear message
+       naming the first broken event otherwise. Add tests for a valid chain
+       and for tamper detection.
+    5. Wire up or remove the dead log_level config key (TetherConfig.log_level
+       in src/tether/models.py, templated in `tether init`): either apply it
+       in src/tether/cli.py logging setup (--verbose still forces DEBUG) plus
+       a test, or remove the key from models.py, the init template, and docs.
+       Pick exactly one approach.
+
+    Change NOTHING outside this scope.
+  context:
+    - Read docs/ARCHITECTURE.md first; the core loop must stay adapter-agnostic.
+    - resolve_checkpoint_ref() in src/tether/git_safety.py already demonstrates
+      the report.json-based resolution pattern to copy for task 1.
+    - find_session_dir() in src/tether/audit.py resolves session-id prefixes
+      to session directories.
+    - Scripted/spy adapter patterns in tests/test_core.py and tests/test_safety.py
+      show how to assert adapter (non-)invocation and capture prompts.
+  constraints:
+    - do not change AgentAdapter interface signatures
+    - do not weaken existing tests; all current tests must keep passing
+    - subprocess usage stays shell=False
+    - no new third-party dependencies (stdlib hashlib etc. are fine)
+    - keep changes minimal and focused on the five tasks
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+  timeout_seconds: 600
+recovery:
+  max_attempts: 3
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 1800

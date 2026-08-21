@@ -11,6 +11,7 @@ from tether.git_safety import (
     create_checkpoint,
     head_sha,
     is_dirty,
+    list_checkpoint_refs,
     rollback,
 )
 from tether.mission import MissionError, load_mission
@@ -377,3 +378,199 @@ def test_keyboard_interrupt_swallows_cancel_errors(tmp_path):
     report = _run_scripted(tmp_path, adapter)
     assert report["status"] == "cancelled"
     assert adapter.cancel_calls == 1
+
+
+# -------------------------------------------------- single-writer lock (B4)
+
+
+class _RecordingAdapter(_ScriptedAdapter):
+    """Records every adapter interaction (for proving non-invocation)."""
+
+    def __init__(self, statuses=None):
+        super().__init__(statuses if statuses is not None else ["completed"])
+        self.calls: list[str] = []
+
+    def is_available(self):
+        self.calls.append("is_available")
+        return super().is_available()
+
+    def start_session(self, project_dir, session_id):
+        self.calls.append("start_session")
+        return super().start_session(project_dir, session_id)
+
+    def send(self, prompt, session):
+        self.calls.append("send")
+        return super().send(prompt, session)
+
+
+def _write_lock(tmp_path, holder="holdersess1234"):
+    lock = tmp_path / ".tether" / "tether.lock"
+    lock.parent.mkdir(exist_ok=True)
+    lock.write_text(holder + "\n", encoding="utf-8")
+    return lock
+
+
+def test_lock_blocks_second_run_without_adapter_interaction(tmp_path):
+    _write_lock(tmp_path, "holdersess1234")
+    adapter = _RecordingAdapter(["completed"])
+    report = _run_scripted(tmp_path, adapter)
+    assert report["status"] == "failed"
+    # fails fast: no checkpoint, no backup, no adapter interaction at all
+    assert adapter.calls == []
+    assert list_checkpoint_refs(tmp_path) == []
+    assert not (tmp_path / ".tether/backups").exists()
+    assert any("holdersess1234" in s for s in report["next_steps"])
+    assert any(
+        "stale" in s.lower() and "remove" in s.lower()
+        for s in report["next_steps"]
+    )
+    # the contending run must not clobber or steal the held lock
+    assert (tmp_path / ".tether" / "tether.lock").read_text().strip() == \
+        "holdersess1234"
+
+
+def test_stale_lock_is_taken_over(tmp_path):
+    import os
+    import time as _time
+    lock = _write_lock(tmp_path, "oldsess0000")
+    old = _time.time() - 13 * 3600
+    os.utime(lock, (old, old))
+    adapter = _RecordingAdapter(["completed"])
+    report = _run_scripted(tmp_path, adapter)
+    assert report["status"] == "success"
+    assert not lock.exists()  # released again after the run
+
+
+def test_lock_released_after_normal_run(tmp_path):
+    adapter = _RecordingAdapter(["completed"])
+    report = _run_scripted(tmp_path, adapter)
+    assert report["status"] == "success"
+    assert not (tmp_path / ".tether" / "tether.lock").exists()
+
+
+def test_lock_released_after_cancelled_run(tmp_path):
+    adapter = _InterruptAdapter()
+    report = _run_scripted(tmp_path, adapter)
+    assert report["status"] == "cancelled"
+    assert not (tmp_path / ".tether" / "tether.lock").exists()
+
+
+# --------------------------------------------- plan feeds execution (B5)
+
+
+def test_execute_prompt_includes_plan_text(tmp_path):
+    PLAN = "1. read code\n2. edit code\n3. run tests"
+
+    class PlanRecordingAdapter(_ScriptedAdapter):
+        def __init__(self):
+            super().__init__([])
+            self.prompts: list[str] = []
+
+        def send(self, prompt, session):
+            self.prompts.append(prompt)
+            if len(self.prompts) == 1:  # planning step
+                return AgentState(status="completed", logs=PLAN)
+            return AgentState(status="completed", logs="done")
+
+    adapter = PlanRecordingAdapter()
+    report = _run_scripted(tmp_path, adapter)
+    assert report["status"] == "success"
+    assert len(adapter.prompts) == 2
+    assert PLAN not in adapter.prompts[0]
+    assert PLAN in adapter.prompts[1]
+
+
+# --------------------------------------------- tamper-evident audit (B6)
+
+
+def _canonical(obj):
+    import json as _json
+    return _json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _run_and_get_events(tmp_path):
+    report = _orchestra(tmp_path, "success")
+    assert report["status"] == "success"
+    session = find_session_dir(tmp_path, ".tether/sessions",
+                               report["session_id"])
+    events = session / "events.jsonl"
+    lines = events.read_text(encoding="utf-8").splitlines()
+    return report, events, lines
+
+
+def test_events_chain_valid_after_run(tmp_path):
+    import hashlib
+    from tether.audit import verify_event_chain
+    _, _, lines = _run_and_get_events(tmp_path)
+    assert len(lines) >= 2
+    parsed = [json.loads(line) for line in lines]
+    # first event anchors the chain with an empty prev
+    assert parsed[0]["prev"] == ""
+    for prev_event, event in zip(parsed, parsed[1:]):
+        expected = hashlib.sha256(_canonical(prev_event).encode()).hexdigest()
+        assert event["prev"] == expected
+    ok, msg = verify_event_chain(lines)
+    assert ok, msg
+
+
+def test_logs_verify_cli_intact_then_tampered(tmp_path):
+    from typer.testing import CliRunner
+    from tether.cli import app
+    runner = CliRunner()
+    report, events, lines = _run_and_get_events(tmp_path)
+    sid = report["session_id"]
+
+    r = runner.invoke(app, ["logs", sid, "--verify",
+                            "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    assert "OK" in r.output and "intact" in r.output
+
+    # tamper with an event in the middle of the file
+    tampered = list(lines)
+    victim = json.loads(tampered[1])
+    victim["kind"] = "forged"
+    tampered[1] = json.dumps(victim, default=str)
+    events.write_text("\n".join(tampered) + "\n", encoding="utf-8")
+    r = runner.invoke(app, ["logs", sid, "--verify",
+                            "--project-dir", str(tmp_path)])
+    assert r.exit_code == 1
+    assert "BROKEN" in r.output
+    assert f"event {3}" in r.output  # first break is the next link
+
+
+def test_verify_event_chain_reports_first_break(tmp_path):
+    from tether.audit import verify_event_chain
+
+    def make_chain(n=4):
+        out, prev_hash = [], ""
+        for i in range(n):
+            ev = {"ts": f"2026-01-01T00:00:0{i}+00:00", "kind": f"k{i}",
+                  "prev": prev_hash}
+            prev_hash = hashlib.sha256(_canonical(ev).encode()).hexdigest()
+            out.append(json.dumps(ev))
+        return out
+
+    import hashlib
+
+    lines = make_chain()
+    ok, msg = verify_event_chain(lines)
+    assert ok, msg
+
+    # editing any interior event breaks the chain at its successor
+    forged = list(lines)
+    ev = json.loads(forged[1])
+    ev["kind"] = "forged-kind"
+    forged[1] = json.dumps(ev)
+    ok, msg = verify_event_chain(forged)
+    assert not ok
+    assert "event 3" in msg
+
+    # deleting an event breaks the chain where the gap appears
+    gap = [lines[0], lines[2]]
+    ok, msg = verify_event_chain(gap)
+    assert not ok and "event 2" in msg
+
+    # corrupted JSON is reported by line position
+    broken_json = lines[:2] + ["{not json"] + lines[3:]
+    ok, msg = verify_event_chain(broken_json)
+    assert not ok and "event 3" in msg and "invalid JSON" in msg

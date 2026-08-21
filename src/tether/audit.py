@@ -1,15 +1,26 @@
 """Audit trail: per-session directory with prompts, logs, and report.json."""
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 
 def new_session_id() -> str:
     return uuid.uuid4().hex[:12]
+
+
+def canonical_json(obj: Any) -> str:
+    """Canonical JSON serialization used for the event hash chain."""
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def event_hash(event: Dict[str, Any]) -> str:
+    """Hex sha256 of the canonical JSON serialization of an event."""
+    return hashlib.sha256(canonical_json(event).encode("utf-8")).hexdigest()
 
 
 SECRET_KEY_MARKERS = ("secret", "token", "password", "passwd", "api_key",
@@ -63,10 +74,14 @@ class AuditTrail:
         (self.dir / "responses").mkdir(exist_ok=True)
         (self.dir / "verification").mkdir(exist_ok=True)
         self._counter = 0
+        self._prev_hash = ""  # hash chain anchor: empty for the first event
         self.events: list[Dict[str, Any]] = []
 
     def log_event(self, kind: str, data: Dict[str, Any]) -> None:
         event = {"ts": utcnow(), "kind": kind, **data}
+        # Tamper-evident chain: each event records the hash of its predecessor.
+        event["prev"] = self._prev_hash
+        self._prev_hash = event_hash(event)
         self.events.append(event)
         with (self.dir / "events.jsonl").open("a", encoding="utf-8") as f:
             f.write(json.dumps(event, default=str) + "\n")
@@ -128,3 +143,27 @@ def find_session_dir(project_dir: Path, audit_dir: str,
             "Use a longer prefix."
         )
     return None
+
+
+def verify_event_chain(lines: Iterable[str]) -> Tuple[bool, str]:
+    """Validate the prev-hash chain of events.jsonl lines.
+
+    Returns (ok, message); on failure the message names the first broken
+    event (1-based index and kind).
+    """
+    prev_hash = ""
+    for idx, line in enumerate(lines, start=1):
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as e:
+            return False, f"event {idx}: invalid JSON ({e})"
+        if not isinstance(event, dict):
+            return False, f"event {idx}: not a JSON object"
+        if event.get("prev") != prev_hash:
+            kind = event.get("kind", "?")
+            return False, (
+                f"event {idx} (kind={kind!r}): 'prev' does not match the "
+                f"hash of the previous event"
+            )
+        prev_hash = event_hash(event)
+    return True, ""

@@ -301,6 +301,56 @@ def test_cli_run_mock_recovery(tmp_path):
     assert len(report["recovery_attempts"]) == 1
 
 
+def test_setup_logging_applies_config_level_and_verbose_forces_debug():
+    from tether.cli import _setup_logging
+    logger = logging.getLogger("tether")
+    original = logger.level
+    try:
+        _setup_logging(False, "WARNING")
+        assert logger.level == logging.WARNING
+        _setup_logging(False, "debug")  # case-insensitive
+        assert logger.level == logging.DEBUG
+        _setup_logging(True, "ERROR")  # --verbose always wins
+        assert logger.level == logging.DEBUG
+        _setup_logging(False, "not-a-level")  # invalid -> INFO fallback
+        assert logger.level == logging.INFO
+        _setup_logging(False)  # default INFO
+        assert logger.level == logging.INFO
+    finally:
+        logger.setLevel(original)
+
+
+def test_cli_run_applies_config_log_level_and_verbose_forces_debug(
+        tmp_path, caplog):
+    (tmp_path / "tether.yaml").write_text("log_level: ERROR\n")
+    mission = tmp_path / "m.yaml"
+    mission.write_text(
+        "mission:\n  name: loglvl\n  goal: g\n"
+        f"verification:\n  commands:\n    - {PASS_CMD}\nadapter: mock\n"
+        "adapters:\n  mock:\n    scenario: success\n"
+    )
+    try:
+        caplog.clear()
+        r = runner.invoke(app, ["run", str(mission),
+                                "--project-dir", str(tmp_path)])
+        assert r.exit_code == 0, r.output
+        # config log_level ERROR suppresses the orchestrator's INFO records
+        assert not any(rec.name == "tether" and rec.levelno < logging.ERROR
+                       for rec in caplog.records)
+
+        caplog.clear()
+        r = runner.invoke(app, ["run", str(mission),
+                                "--project-dir", str(tmp_path), "--verbose"])
+        assert r.exit_code == 0, r.output
+        # --verbose still forces DEBUG despite log_level: ERROR in config,
+        # so the orchestrator's INFO records flow again
+        assert logging.getLogger("tether").level == logging.DEBUG
+        assert any(rec.name == "tether" and rec.levelno == logging.INFO
+                   for rec in caplog.records)
+    finally:
+        logging.getLogger("tether").setLevel(logging.NOTSET)
+
+
 def test_cli_run_git_checkpoint_and_rollback(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=tmp_path, check=True)

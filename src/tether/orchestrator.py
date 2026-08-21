@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -17,6 +18,38 @@ from tether.models import AgentState, TetherConfig, VerificationResult
 from tether.verification import run_verification, summarize
 
 log = logging.getLogger("tether")
+
+# Single-writer lock: taken under <project_dir>/.tether/ for the duration of
+# each run so two Tether sessions never mutate the same project concurrently.
+WRITER_LOCK_RELPATH = Path(".tether") / "tether.lock"
+# A lock older than this is considered abandoned and may be taken over.
+WRITER_LOCK_STALE_SECONDS = 12 * 3600
+
+
+def writer_lock_path(project_dir: Path) -> Path:
+    return project_dir / WRITER_LOCK_RELPATH
+
+
+def fresh_lock_holder(lock_path: Path,
+                      stale_seconds: int = WRITER_LOCK_STALE_SECONDS) -> Optional[str]:
+    """Session id recorded in a live lock file, else None.
+
+    Returns None when the lock is absent, blank, unreadable, or older than
+    ``stale_seconds`` (i.e. safe to treat as abandoned).
+    """
+    try:
+        holder = lock_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not holder:
+        return None
+    try:
+        age = time.time() - lock_path.stat().st_mtime
+    except OSError:
+        return None
+    if age > stale_seconds:
+        return None
+    return holder
 
 
 class Orchestrator:
@@ -65,6 +98,59 @@ class Orchestrator:
 
         started_at = utcnow()
 
+        # Single-writer lock: refuse fast when another live session holds it;
+        # otherwise take the lock and release it on every exit path below.
+        lock_path = writer_lock_path(self.project_dir)
+        holder = fresh_lock_holder(lock_path)
+        if holder is not None:
+            audit = AuditTrail(
+                self.project_dir, self.config.audit_dir, mission.name, self.session_id
+            )
+            audit.log_event("session_start", {
+                "session_id": self.session_id,
+                "adapter": self.adapter.name,
+                "project_dir": str(self.project_dir),
+                "mission_name": mission.name,
+                "dry_run": dry_run,
+            })
+            audit.log_event("lock_contended", {"held_by": holder})
+            report = {
+                "session_id": self.session_id,
+                "mission_name": mission.name,
+                "adapter": self.adapter.name,
+                "status": "failed",
+                "started_at": started_at,
+                "finished_at": utcnow(),
+                "verification_results": [],
+                "recovery_attempts": [],
+                "changed_files": [],
+                "checkpoint_info": None,
+                "plan": "",
+                "next_steps": [
+                    f"Another Tether session ({holder}) holds the writer lock "
+                    f"at {lock_path}; no checkpoint, backup, or agent run was started.",
+                    f"If that session has finished, remove the stale lock file "
+                    f"{lock_path} and re-run.",
+                ],
+                "audit_dir": str(audit.dir),
+            }
+            audit.write_report(report)
+            audit.log_event("session_end", {"status": "failed"})
+            log.error("Aborted: writer lock held by session %s.", holder)
+            return report
+
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(self.session_id + "\n", encoding="utf-8")
+        try:
+            return self._run_locked(mission, allow_dirty, dry_run, started_at)
+        finally:
+            try:
+                lock_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _run_locked(self, mission: Any, allow_dirty: bool, dry_run: bool,
+                    started_at: str) -> Dict[str, Any]:
         # Fail fast when the adapter cannot run (library callers may skip the
         # CLI-level availability guard).
         if not dry_run:
@@ -240,8 +326,12 @@ class Orchestrator:
                     )
             plan_text = state.logs
 
-            # Execution step
-            exec_prompt = self.adapter.execute_prompt(self.mission_summary(mission))
+            # Execution step. The planning output is composed into the
+            # mission summary so the agent executes against its own plan.
+            exec_summary = self.mission_summary(mission)
+            if plan_text:
+                exec_summary += "\n\nPlan:\n" + plan_text
+            exec_prompt = self.adapter.execute_prompt(exec_summary)
             audit.save_prompt("execute", exec_prompt)
             if dry_run:
                 log.info("[dry-run] would send execution prompt to %s",

@@ -38,11 +38,18 @@ verification:
 """
 
 
-def _setup_logging(verbose: bool) -> None:
+def _setup_logging(verbose: bool, config_level: Optional[str] = None) -> None:
+    """Configure logging. ``--verbose`` forces DEBUG; otherwise the resolved
+    config's ``log_level`` applies (invalid values fall back to INFO)."""
+    if verbose:
+        level = logging.DEBUG
+    else:
+        level = getattr(logging, str(config_level or "INFO").upper(), logging.INFO)
     logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO,
+        level=level,
         format="%(levelname)s %(name)s: %(message)s",
     )
+    logging.getLogger("tether").setLevel(level)
 
 
 def _project_dir(value: Optional[Path]) -> Path:
@@ -188,6 +195,10 @@ def run(
     except Exception as e:
         typer.echo(f"Config error: {e}", err=True)
         raise typer.Exit(code=1)
+
+    # Re-apply now that the config (log_level) is resolved; --verbose keeps
+    # forcing DEBUG.
+    _setup_logging(verbose, config.log_level)
 
     adapter_name = adapter or mission.adapter or config.default_adapter
     try:
@@ -363,6 +374,10 @@ def diff(
 def logs(
     session_id: str = typer.Argument(..., help="Session id (or prefix)."),
     project_dir: Optional[Path] = typer.Option(None, "--project-dir"),
+    verify: bool = typer.Option(
+        False, "--verify",
+        help="Validate the tamper-evident event hash chain instead of "
+             "printing events. Exits 1 naming the first broken event."),
 ) -> None:
     """Print the event log of a past session."""
     pd = _project_dir(project_dir)
@@ -371,6 +386,15 @@ def logs(
     if not events.exists():
         typer.echo(f"No events.jsonl in {session}", err=True)
         raise typer.Exit(code=1)
+    if verify:
+        from tether.audit import verify_event_chain
+        lines = events.read_text(encoding="utf-8").splitlines()
+        ok, message = verify_event_chain(lines)
+        if not ok:
+            typer.echo(f"Event chain BROKEN in {events}: {message}", err=True)
+            raise typer.Exit(code=1)
+        typer.echo(f"OK: event chain intact ({len(lines)} events)")
+        return
     typer.echo(events.read_text(encoding="utf-8"))
 
 
