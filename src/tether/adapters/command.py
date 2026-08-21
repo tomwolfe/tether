@@ -66,10 +66,11 @@ class CommandAdapter(AgentAdapter):
         )
 
     def send(self, prompt: str, session: SessionInfo) -> AgentState:
-        argv = [self._render(p, prompt, session) for p in self.command]
-        stdin_data: Optional[str] = None
-        if self.settings.get("prompt_via_stdin"):
-            stdin_data = prompt
+        via_stdin = bool(self.settings.get("prompt_via_stdin"))
+        # When piping the prompt via stdin, {prompt} renders as empty in argv.
+        rendered_prompt = "" if via_stdin else prompt
+        argv = [self._render(p, rendered_prompt, session) for p in self.command]
+        stdin_data: Optional[str] = prompt if via_stdin else None
         env = dict(os.environ)
         env.update({str(k): str(v) for k, v in (self.settings.get("env") or {}).items()})
         timeout = int(self.settings.get("timeout_seconds", self.default_timeout))

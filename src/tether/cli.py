@@ -112,9 +112,13 @@ def run(
     mission_file: Path = typer.Argument(..., help="Path to mission YAML/JSON."),
     adapter: Optional[str] = typer.Option(None, "--adapter", help="Override adapter name."),
     project_dir: Optional[Path] = typer.Option(None, "--project-dir", help="Target project directory."),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Print actions without executing."),
+    dry_run: Optional[bool] = typer.Option(
+        None, "--dry-run/--no-dry-run",
+        help="Print actions without executing. Overrides project config when given."),
     max_attempts: Optional[int] = typer.Option(None, "--max-attempts", min=1),
-    allow_dirty: bool = typer.Option(False, "--allow-dirty", help="Proceed despite dirty git tree."),
+    allow_dirty: Optional[bool] = typer.Option(
+        None, "--allow-dirty/--no-allow-dirty",
+        help="Proceed despite dirty git tree. Overrides project config when given."),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """Run a mission against a target project."""
@@ -126,18 +130,21 @@ def run(
         typer.echo(f"Mission invalid: {e}", err=True)
         raise typer.Exit(code=1)
 
-    cli_overrides = {
+    # Mission explicit values override project config; CLI overrides both.
+    mission_overrides: dict = {"adapters": mission.adapters} if mission.adapters else {}
+    if mission.recovery.max_attempts is not None:
+        mission_overrides["max_attempts"] = mission.recovery.max_attempts
+    if mission.verification.timeout_seconds is not None:
+        mission_overrides["verification_timeout_seconds"] = mission.verification.timeout_seconds
+    cli_overrides: dict = {
         "default_adapter": adapter,
         "max_attempts": max_attempts,
-        "dry_run": True if dry_run else None,
-        "allow_dirty": True if allow_dirty else None,
+        "dry_run": dry_run,
+        "allow_dirty": allow_dirty,
     }
     try:
-        config = resolve_config(
-            pd,
-            mission_overrides={"adapters": mission.adapters} if mission.adapters else None,
-            cli_overrides=cli_overrides,
-        )
+        config = resolve_config(pd, mission_overrides=mission_overrides or None,
+                                cli_overrides=cli_overrides)
     except Exception as e:
         typer.echo(f"Config error: {e}", err=True)
         raise typer.Exit(code=1)
@@ -156,8 +163,7 @@ def run(
         raise typer.Exit(code=1)
 
     orch = Orchestrator(adapter_instance, config, pd, session_id=new_session_id())
-    report = orch.run(mission, allow_dirty=allow_dirty or config.allow_dirty,
-                      dry_run=config.dry_run)
+    report = orch.run(mission)
     typer.echo(f"\nStatus: {report['status']}")
     typer.echo(f"Session: {report['session_id']}")
     typer.echo(f"Report: {report['audit_dir']}/report.json")
@@ -174,7 +180,11 @@ def rollback(
 ) -> None:
     """Roll the target project back to a session's checkpoint."""
     pd = _project_dir(project_dir)
-    ok, message = git_rollback(pd, session_id)
+    try:
+        audit_dir = resolve_config(pd).audit_dir
+    except Exception:
+        audit_dir = ".tether/sessions"
+    ok, message = git_rollback(pd, session_id, audit_dir=audit_dir)
     typer.echo(message)
     if not ok:
         raise typer.Exit(code=1)
@@ -188,7 +198,11 @@ def report(
     """Print the machine-readable report.json of a past session."""
     pd = _project_dir(project_dir)
     config = resolve_config(pd)
-    session = find_session_dir(pd, config.audit_dir, session_id)
+    try:
+        session = find_session_dir(pd, config.audit_dir, session_id)
+    except ValueError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(code=1)
     if session is None:
         typer.echo(f"No session found for id {session_id!r} under {pd / config.audit_dir}", err=True)
         raise typer.Exit(code=1)
@@ -197,6 +211,110 @@ def report(
         typer.echo(f"Session found at {session} but no report.json present.", err=True)
         raise typer.Exit(code=1)
     typer.echo(path.read_text(encoding="utf-8"))
+
+
+sessions_app = typer.Typer(help="Inspect past sessions.")
+app.add_typer(sessions_app, name="sessions")
+
+
+def _find_session_or_exit(pd: Path, session_id: str) -> Path:
+    config = resolve_config(pd)
+    try:
+        session = find_session_dir(pd, config.audit_dir, session_id)
+    except ValueError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(code=1)
+    if session is None:
+        typer.echo(f"No session found for id {session_id!r} under {pd / config.audit_dir}",
+                   err=True)
+        raise typer.Exit(code=1)
+    return session
+
+
+@sessions_app.command("list")
+def sessions_list(
+    project_dir: Optional[Path] = typer.Option(None, "--project-dir"),
+) -> None:
+    """List past sessions (id prefix, mission, status)."""
+    pd = _project_dir(project_dir)
+    config = resolve_config(pd)
+    root = pd / config.audit_dir
+    if not root.exists():
+        typer.echo("No sessions found.")
+        return
+    for d in sorted(root.iterdir()):
+        if not d.is_dir():
+            continue
+        status, mission_name = "?", "?"
+        report_path = d / "report.json"
+        if report_path.exists():
+            try:
+                data = json.loads(report_path.read_text(encoding="utf-8"))
+                status = data.get("status", "?")
+                mission_name = data.get("mission_name", "?")
+            except (OSError, json.JSONDecodeError):
+                pass
+        typer.echo(f"{d.name:<50} {mission_name:<24} {status}")
+
+
+@sessions_app.command("show")
+def sessions_show(
+    session_id: str = typer.Argument(..., help="Session id (or prefix)."),
+    project_dir: Optional[Path] = typer.Option(None, "--project-dir"),
+) -> None:
+    """Show a human-readable summary of a past session."""
+    pd = _project_dir(project_dir)
+    session = _find_session_or_exit(pd, session_id)
+    report_path = session / "report.json"
+    if not report_path.exists():
+        typer.echo(f"Session found at {session} but no report.json present.", err=True)
+        raise typer.Exit(code=1)
+    data = json.loads(report_path.read_text(encoding="utf-8"))
+    typer.echo(f"Session:  {data.get('session_id')}")
+    typer.echo(f"Mission:  {data.get('mission_name')}")
+    typer.echo(f"Adapter:  {data.get('adapter')}")
+    typer.echo(f"Status:   {data.get('status')}")
+    typer.echo(f"Started:  {data.get('started_at')}")
+    typer.echo(f"Finished: {data.get('finished_at')}")
+    changed = data.get("changed_files") or []
+    typer.echo(f"Changed files ({len(changed)}):")
+    for f in changed[:20]:
+        typer.echo(f"  {f}")
+    for step in data.get("next_steps") or []:
+        typer.echo(f"Next: {step}")
+    typer.echo(f"Audit dir: {data.get('audit_dir')}")
+
+
+@app.command()
+def diff(
+    session_id: str = typer.Argument(..., help="Session id (or prefix)."),
+    project_dir: Optional[Path] = typer.Option(None, "--project-dir"),
+) -> None:
+    """List files changed during a past session."""
+    pd = _project_dir(project_dir)
+    session = _find_session_or_exit(pd, session_id)
+    report_path = session / "report.json"
+    if not report_path.exists():
+        typer.echo(f"Session found at {session} but no report.json present.", err=True)
+        raise typer.Exit(code=1)
+    data = json.loads(report_path.read_text(encoding="utf-8"))
+    for f in data.get("changed_files") or []:
+        typer.echo(f)
+
+
+@app.command()
+def logs(
+    session_id: str = typer.Argument(..., help="Session id (or prefix)."),
+    project_dir: Optional[Path] = typer.Option(None, "--project-dir"),
+) -> None:
+    """Print the event log of a past session."""
+    pd = _project_dir(project_dir)
+    session = _find_session_or_exit(pd, session_id)
+    events = session / "events.jsonl"
+    if not events.exists():
+        typer.echo(f"No events.jsonl in {session}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(events.read_text(encoding="utf-8"))
 
 
 @app.callback()
