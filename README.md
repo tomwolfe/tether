@@ -62,6 +62,18 @@ adapters:
 
 Placeholders: `{prompt}`, `{project_dir}`, `{session_id}`.
 
+### Smoke-testing an adapter
+
+Before wiring an adapter into a real mission, verify it end-to-end without touching your project:
+
+```bash
+tether adapters smoke mock                          # any registered name works
+tether adapters smoke command                       # the adapter configured in tether.yaml above
+tether adapters smoke opencode --prompt "Say hi"
+```
+
+`smoke` builds the named adapter from project config, reports whether it is available, then sends a trivial prompt (default: `Reply with the single word OK`) **inside a temporary directory** — your git tree and files are never touched and no audit sessions are created. It prints availability, status, exit code, an output excerpt, and elapsed time; the exit code is 0 only if the adapter was available and its run completed successfully.
+
 `opencode` and `pi` presets exist but are **experimental/unverified** — see docs/ADAPTERS.md.
 
 ## Configuration precedence

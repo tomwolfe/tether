@@ -10,6 +10,7 @@ import typer
 
 import tether.adapters as registry
 from tether import __version__
+from tether import smoke
 from tether.audit import find_session_dir, new_session_id
 from tether.config import load_project_config, resolve_config
 from tether.git_safety import rollback as git_rollback
@@ -104,6 +105,40 @@ def adapters_list() -> None:
     typer.echo(f"{'NAME':<12} {'STATUS':<12} {'MATURITY':<13} ISSUE")
     for name, status, tag, issue in rows:
         typer.echo(f"{name:<12} {status:<12} {tag:<13} {issue}")
+
+
+@adapters_app.command("smoke")
+def adapters_smoke(
+    name: str = typer.Argument(..., help="Adapter name (see `tether adapters list`)."),
+    prompt: str = typer.Option(
+        smoke.DEFAULT_PROMPT, "--prompt", help="Trivial prompt sent to the adapter."),
+) -> None:
+    """Send a trivial prompt to an adapter inside a throwaway directory."""
+    pd = _project_dir(None)
+    try:
+        adapter_instance = smoke.build_smoke_adapter(name, pd)
+        result = smoke.run_smoke(adapter_instance, name, prompt)
+    except Exception as e:
+        typer.echo(f"Smoke FAILED: {e}", err=True)
+        raise typer.Exit(code=1)
+    availability = "available" if result.available else f"unavailable ({result.reason})"
+    typer.echo(f"{'Adapter:':<14}{name}")
+    typer.echo(f"{'Availability:':<14}{availability}")
+    if not result.available:
+        raise typer.Exit(code=1)
+    exit_label = "-" if result.exit_code is None else str(result.exit_code)
+    typer.echo(f"{'Prompt:':<14}{prompt}")
+    typer.echo(f"{'Status:':<14}{result.status}")
+    typer.echo(f"{'Exit code:':<14}{exit_label}")
+    typer.echo(f"{'Elapsed:':<14}{result.elapsed_seconds:.2f}s")
+    typer.echo("Output excerpt:")
+    for line in (result.excerpt or "(no output)").splitlines() or ["(no output)"]:
+        typer.echo(f"  {line}")
+    if not result.ok:
+        detail = result.error or f"adapter reported status {result.status!r}"
+        typer.echo(f"Smoke FAILED: {detail}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo("Smoke PASSED")
 
 
 @app.command()

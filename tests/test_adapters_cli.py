@@ -63,6 +63,69 @@ def test_command_adapter_runs_real_command(tmp_path):
     assert bad.send("x", session).status == "unavailable"
 
 
+def test_cli_adapters_smoke_mock(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    r = runner.invoke(app, ["adapters", "smoke", "mock"])
+    assert r.exit_code == 0, r.output
+    for field in ("Adapter:", "Availability:", "Prompt:", "Status:",
+                  "Exit code:", "Elapsed:", "Output excerpt:"):
+        assert field in r.output
+    assert "available" in r.output and "completed" in r.output
+    assert "[mock:" in r.output  # adapter output excerpt
+    assert "Smoke PASSED" in r.output
+    # throwaway directory only: the caller's tree is untouched, no audit writes
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_cli_adapters_smoke_command_adapter(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "tether.yaml").write_text(
+        "adapters:\n  command:\n    command:\n"
+        f"      - {sys.executable}\n"
+        "      - '-c'\n"
+        "      - \"import sys; print('P=' + sys.argv[1])\"\n"
+        "      - '{prompt}'\n"
+    )
+    r = runner.invoke(app, ["adapters", "smoke", "command",
+                            "--prompt", "custom-prompt-123"])
+    assert r.exit_code == 0, r.output
+    assert "Availability: available" in r.output
+    assert "Status:" in r.output and "completed" in r.output
+    assert "Exit code:" in r.output and "0" in r.output
+    assert "Elapsed:" in r.output
+    assert "P=custom-prompt-123" in r.output
+    assert "Smoke PASSED" in r.output
+
+
+def test_cli_adapters_smoke_command_failure_and_unavailable(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "tether.yaml").write_text(
+        "adapters:\n  command:\n    command:\n"
+        f"      - {sys.executable}\n"
+        "      - '-c'\n"
+        "      - 'raise SystemExit(3)'\n"
+    )
+    r = runner.invoke(app, ["adapters", "smoke", "command"])
+    assert r.exit_code == 1
+    assert "Status:" in r.output and "failed" in r.output
+    assert "Exit code:" in r.output and "3" in r.output
+    assert "Smoke FAILED" in r.output
+
+    (tmp_path / "tether.yaml").write_text(
+        "adapters:\n  command:\n    command: ['no-such-binary-xyz']\n"
+    )
+    r = runner.invoke(app, ["adapters", "smoke", "command"])
+    assert r.exit_code == 1
+    assert "unavailable" in r.output
+
+
+def test_cli_adapters_smoke_unknown_adapter(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    r = runner.invoke(app, ["adapters", "smoke", "no-such-adapter"])
+    assert r.exit_code == 1
+    assert "Smoke FAILED" in r.output and "no-such-adapter" in r.output
+
+
 def test_experimental_adapters_are_unverified_presets():
     oc = OpencodeAdapter()
     assert oc.verified is False
