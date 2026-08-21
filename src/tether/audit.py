@@ -12,6 +12,40 @@ def new_session_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
+SECRET_KEY_MARKERS = ("secret", "token", "password", "passwd", "api_key",
+                      "apikey", "credential", "private_key", "auth")
+
+REDACTED = "[REDACTED]"
+
+
+def _is_secret_key(key: str) -> bool:
+    lowered = key.lower()
+    if any(m in lowered for m in SECRET_KEY_MARKERS):
+        return True
+    # adapter env blocks: every value is potentially sensitive
+    return lowered == "env"
+
+
+def redact_secrets(obj: Any) -> Any:
+    """Recursively replace values of obviously sensitive keys with a marker.
+    Structure is preserved; adapter ``env`` mappings keep their keys but have
+    every value redacted."""
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            if str(k).lower() == "env" and isinstance(v, dict):
+                out[k] = {ek: (REDACTED if ev is not None else None)
+                          for ek, ev in v.items()}
+            elif _is_secret_key(str(k)) and v not in (None, {}, []):
+                out[k] = REDACTED
+            else:
+                out[k] = redact_secrets(v)
+        return out
+    if isinstance(obj, list):
+        return [redact_secrets(x) for x in obj]
+    return obj
+
+
 def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -67,14 +101,30 @@ class AuditTrail:
 
 def find_session_dir(project_dir: Path, audit_dir: str,
                      session_id: str) -> Optional[Path]:
-    """Locate a session directory by full or prefix session id."""
+    """Locate a session directory by full or prefix session id.
+
+    Raises ValueError when the prefix is ambiguous (multiple matches).
+    """
     root = project_dir / audit_dir
     if not root.exists():
         return None
     exact = root / session_id
     if exact.is_dir():
         return exact
-    matches = [d for d in sorted(root.iterdir()) if d.is_dir() and d.name.endswith(f"-{session_id[:8]}")]
+    matches = []
+    for d in sorted(root.iterdir()):
+        if not d.is_dir():
+            continue
+        short = d.name.rsplit("-", 1)[-1]
+        # Session dirs store session_id[:8]; accept prefixes of either side.
+        if short.startswith(session_id) or session_id.startswith(short):
+            matches.append(d)
     if len(matches) == 1:
         return matches[0]
+    if len(matches) > 1:
+        listing = "\n".join(f"  {m.name}" for m in matches)
+        raise ValueError(
+            f"Ambiguous session id prefix {session_id!r}; matches:\n{listing}\n"
+            "Use a longer prefix."
+        )
     return None
