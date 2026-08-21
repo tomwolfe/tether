@@ -33,6 +33,9 @@ from tether.models import AgentState
 class CommandAdapter(AgentAdapter):
     name = "command"
     verified = True
+    known_settings: frozenset[str] = frozenset(
+        {"command", "timeout_seconds", "prompt_via_stdin", "env"}
+    )
 
     def __init__(self, settings: Optional[Dict[str, Any]] = None,
                  default_timeout: int = 1800) -> None:

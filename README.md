@@ -35,7 +35,7 @@ tether logs <session-id>                           # event log of a session
 tether rollback <session-id-or-prefix>             # restore the git checkpoint
 ```
 
-Useful `run` flags: `--adapter`, `--project-dir`, `--dry-run/--no-dry-run`, `--max-attempts`, `--allow-dirty/--no-allow-dirty`, `--verbose`. The boolean flags are tri-state: when omitted they do not override project config; when given they always do.
+Useful `run` flags: `--adapter`, `--project-dir`, `--dry-run/--no-dry-run`, `--max-attempts`, `--allow-dirty/--no-allow-dirty`, `--strict`, `--verbose`. The boolean flags are tri-state: when omitted they do not override project config; when given they always do.
 
 The target project defaults to the current directory and is overridden with `--project-dir`; it does not have to be the Tether repo itself.
 
@@ -61,6 +61,10 @@ adapters:
 ```
 
 Placeholders: `{prompt}`, `{project_dir}`, `{session_id}`.
+
+### Unknown adapter settings
+
+Each adapter declares the settings keys it knows (e.g. `command`, `timeout_seconds`, `prompt_via_stdin`, `env` for the generic command adapter; `scenario` for mock). Configured keys outside that set are reported as warnings when the adapter is built, e.g. `adapter 'myagent': unknown setting 'promt_via_stdin'` — handy for typos. Pass `--strict` to `tether run` or `tether validate-config` to turn those warnings into errors that fail validation.
 
 ### Smoke-testing an adapter
 

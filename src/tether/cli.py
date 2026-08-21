@@ -63,12 +63,15 @@ def init() -> None:
 @app.command()
 def validate_config(
     project_dir: Optional[Path] = typer.Option(None, "--project-dir", help="Target project directory."),
+    strict: bool = typer.Option(
+        False, "--strict", help="Treat unknown adapter settings as errors."),
 ) -> None:
     """Validate the project tether config file."""
     pd = _project_dir(project_dir)
     try:
         cfg = load_project_config(pd)
-        resolve_config(pd)
+        resolved = resolve_config(pd)
+        registry.check_adapter_settings(resolved.adapters, strict=strict)
         typer.echo(f"OK: config valid ({json.dumps(cfg) if cfg else 'no config file, defaults apply'})")
     except Exception as e:
         typer.echo(f"INVALID: {e}", err=True)
@@ -153,6 +156,8 @@ def run(
     allow_dirty: Optional[bool] = typer.Option(
         None, "--allow-dirty/--no-allow-dirty",
         help="Proceed despite dirty git tree. Overrides project config when given."),
+    strict: bool = typer.Option(
+        False, "--strict", help="Treat unknown adapter settings as errors."),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """Run a mission against a target project."""
@@ -179,6 +184,7 @@ def run(
     try:
         config = resolve_config(pd, mission_overrides=mission_overrides or None,
                                 cli_overrides=cli_overrides)
+        registry.check_adapter_settings(config.adapters, strict=strict)
     except Exception as e:
         typer.echo(f"Config error: {e}", err=True)
         raise typer.Exit(code=1)

@@ -1,13 +1,15 @@
 import json
+import logging
 import subprocess
 import sys
 
 import pytest
 from typer.testing import CliRunner
 
-from tether.adapters import resolve_adapter
+from tether.adapters import check_adapter_settings, resolve_adapter
 from tether.adapters.command import CommandAdapter
 from tether.adapters.experimental import OpencodeAdapter, PiAdapter
+from tether.adapters.mock import MockAdapter
 from tether.cli import app
 
 runner = CliRunner()
@@ -126,6 +128,40 @@ def test_cli_adapters_smoke_unknown_adapter(tmp_path, monkeypatch):
     assert "Smoke FAILED" in r.output and "no-such-adapter" in r.output
 
 
+def test_known_settings_attributes():
+    assert CommandAdapter.known_settings == frozenset(
+        {"command", "timeout_seconds", "prompt_via_stdin", "env"}
+    )
+    assert MockAdapter.known_settings == frozenset({"scenario"})
+    # presets inherit the generic command adapter's settings
+    assert OpencodeAdapter.known_settings == CommandAdapter.known_settings
+    assert PiAdapter.known_settings == CommandAdapter.known_settings
+
+
+def test_unknown_adapter_setting_warns_but_still_constructs(caplog):
+    with caplog.at_level(logging.WARNING, logger="tether.adapters"):
+        adapter = resolve_adapter("mock", {"mock": {"scnario": "success"}})
+    assert isinstance(adapter, MockAdapter)  # typo warns, does not abort
+    assert any(
+        "adapter 'mock': unknown setting 'scnario'" in r.message
+        for r in caplog.records
+    )
+
+
+def test_known_adapter_settings_emit_no_warning(caplog):
+    with caplog.at_level(logging.WARNING, logger="tether.adapters"):
+        resolve_adapter("mock", {"mock": {"scenario": "success"}})
+        check_adapter_settings({"mock": {"scenario": "fail_then_succeed"}})
+    assert not any("unknown setting" in r.message for r in caplog.records)
+
+
+def test_check_adapter_settings_strict_raises():
+    problems = check_adapter_settings({"mock": {"scnario": "success"}})
+    assert problems == ["adapter 'mock': unknown setting 'scnario'"]
+    with pytest.raises(ValueError, match="unknown setting 'scnario'"):
+        check_adapter_settings({"mock": {"scnario": "success"}}, strict=True)
+
+
 def test_experimental_adapters_are_unverified_presets():
     oc = OpencodeAdapter()
     assert oc.verified is False
@@ -155,6 +191,40 @@ def test_cli_init_and_validate(tmp_path, monkeypatch):
     assert r.exit_code == 0
     r = runner.invoke(app, ["validate-mission", "missing.yaml"])
     assert r.exit_code == 1
+
+
+def test_cli_validate_config_unknown_setting_strict(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "tether.yaml").write_text(
+        "default_adapter: mock\n"
+        "adapters:\n  mock:\n    scenario: success\n    promt_via_stdin: true\n"
+    )
+    r = runner.invoke(app, ["validate-config"])
+    assert r.exit_code == 0  # warning only
+    r = runner.invoke(app, ["validate-config", "--strict"])
+    assert r.exit_code == 1
+    assert "unknown setting 'promt_via_stdin'" in r.output
+    # known settings stay valid under --strict
+    (tmp_path / "tether.yaml").write_text(
+        "default_adapter: mock\nadapters:\n  mock:\n    scenario: success\n"
+    )
+    r = runner.invoke(app, ["validate-config", "--strict"])
+    assert r.exit_code == 0
+
+
+def test_cli_run_strict_rejects_unknown_adapter_setting(tmp_path):
+    mission = tmp_path / "m.yaml"
+    mission.write_text(
+        "mission:\n  name: strict-run\n  goal: g\n"
+        f"verification:\n  commands:\n    - {PASS_CMD}\nadapter: mock\n"
+        "adapters:\n  mock:\n    scnario: success\n"
+    )
+    r = runner.invoke(app, ["run", str(mission), "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0  # typo warns but the run proceeds
+    r = runner.invoke(app, ["run", str(mission), "--project-dir", str(tmp_path),
+                            "--strict"])
+    assert r.exit_code == 1
+    assert "unknown setting 'scnario'" in r.output
 
 
 def test_cli_run_mock_success_and_report(tmp_path, monkeypatch):

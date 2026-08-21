@@ -12,6 +12,7 @@ SCENARIOS = ("success", "fail_then_succeed", "always_fail")
 class MockAdapter(AgentAdapter):
     name = "mock"
     verified = True
+    known_settings: frozenset[str] = frozenset({"scenario"})
 
     def __init__(self, settings: Optional[Dict[str, Any]] = None) -> None:
         super().__init__(settings)
