@@ -7,12 +7,14 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class VerificationSpec(BaseModel):
-    commands: List[str] = Field(default_factory=list)
-    timeout_seconds: int = 600
+    """Optional fields distinguish 'unset' from explicit values so that
+    precedence (mission > project config > defaults) can be applied later."""
+    commands: Optional[List[str]] = None
+    timeout_seconds: Optional[int] = Field(default=None, gt=0)
 
 
 class RecoverySpec(BaseModel):
-    max_attempts: int = Field(default=3, ge=1, le=20)
+    max_attempts: Optional[int] = Field(default=None, ge=1, le=20)
 
 
 class MissionContract(BaseModel):

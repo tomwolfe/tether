@@ -7,6 +7,8 @@ from typing import Any, Dict
 
 import yaml
 
+from pydantic import ValidationError
+
 from tether.models import MissionContract
 
 
@@ -48,13 +50,27 @@ def load_mission(path: str | Path) -> MissionContract:
     verification = data.get("verification") or {}
     if not isinstance(verification, dict):
         raise MissionError("'verification' must be a mapping")
-    commands = verification.get("commands", [])
-    if not isinstance(commands, list) or not all(isinstance(c, str) for c in commands):
+    commands = verification.get("commands")
+    if commands is None:
+        commands = None  # unset: falls back to project config at resolve time
+    elif not isinstance(commands, list) or not all(isinstance(c, str) for c in commands):
         raise MissionError("'verification.commands' must be a list of strings")
+    timeout_seconds = verification.get("timeout_seconds")
+    if timeout_seconds is not None and (
+        not isinstance(timeout_seconds, int) or isinstance(timeout_seconds, bool)
+        or timeout_seconds <= 0
+    ):
+        raise MissionError("'verification.timeout_seconds' must be a positive integer")
 
     recovery = data.get("recovery") or {}
     if not isinstance(recovery, dict):
         raise MissionError("'recovery' must be a mapping")
+    max_attempts = recovery.get("max_attempts")
+    if max_attempts is not None and (
+        not isinstance(max_attempts, int) or isinstance(max_attempts, bool)
+        or not (1 <= max_attempts <= 20)
+    ):
+        raise MissionError("'recovery.max_attempts' must be an integer between 1 and 20")
 
     adapter = data.get("adapter")
     if adapter is not None and not isinstance(adapter, str):
@@ -68,18 +84,32 @@ def load_mission(path: str | Path) -> MissionContract:
     adapters_block = data.get("adapters") or {}
     if not isinstance(adapters_block, dict):
         raise MissionError("'adapters' must be a mapping of adapter name to settings")
+    for aname, asettings in adapters_block.items():
+        if not isinstance(asettings, dict):
+            raise MissionError(f"'adapters.{aname}' must be a mapping of settings")
 
-    return MissionContract(
-        mission=data["mission"],
-        name=name,
-        goal=goal,
-        context=data.get("context", []) or [],
-        constraints=data.get("constraints", []) or [],
-        verification={"commands": commands, "timeout_seconds": verification.get("timeout_seconds", 600)},
-        recovery=recovery,
-        adapter=adapter,
-        adapters=adapters_block,
-    )
+    try:
+        return MissionContract(
+            mission=data["mission"],
+            name=name,
+            goal=goal,
+            context=data.get("context", []) or [],
+            constraints=data.get("constraints", []) or [],
+            verification={"commands": commands, "timeout_seconds": timeout_seconds},
+            recovery={"max_attempts": max_attempts},
+            adapter=adapter,
+            adapters=adapters_block,
+        )
+    except ValidationError as e:
+        raise MissionError(_format_validation_error(e)) from e
+
+
+def _format_validation_error(e: ValidationError) -> str:
+    parts = []
+    for err in e.errors():
+        loc = ".".join(str(x) for x in err["loc"]) or "<root>"
+        parts.append(f"{loc}: {err['msg']}")
+    return "Invalid mission: " + "; ".join(parts)
 
 
 def validate_mission_file(path: str | Path) -> MissionContract:

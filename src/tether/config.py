@@ -49,6 +49,23 @@ def _merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _deep_merge_adapters(project: Any, mission: Any) -> Dict[str, Dict[str, Any]]:
+    """Per-adapter deep merge: mission adapter settings override project settings
+    key-by-key within each adapter name."""
+    merged: Dict[str, Dict[str, Any]] = {}
+    for layer in (project, mission):
+        if not isinstance(layer, dict):
+            continue
+        for name, settings in layer.items():
+            if isinstance(settings, dict):
+                base = dict(merged.get(name, {}))
+                base.update(settings)
+                merged[name] = base
+            else:
+                merged[name] = settings
+    return merged
+
+
 def resolve_config(
     project_dir: Path,
     mission_overrides: Optional[Dict[str, Any]] = None,
@@ -57,15 +74,18 @@ def resolve_config(
     """Merge configuration layers and validate into TetherConfig.
 
     Precedence (highest wins): cli_overrides > mission_overrides > project config > defaults.
+    Adapter settings are deep-merged per adapter name across project config and mission.
     """
+    project_cfg = load_project_config(project_dir)
     merged: Dict[str, Any] = {}
+    merged = _merge(merged, project_cfg)
     if mission_overrides:
         merged = _merge(merged, mission_overrides)
-    merged = _merge(merged, load_project_config(project_dir))
     if cli_overrides:
         merged = _merge(merged, cli_overrides)
-    # adapters settings merge from project config only (dict-valued)
-    adapters_cfg = merged.pop("adapters", {}) or {}
+    adapters_cfg = _deep_merge_adapters(
+        project_cfg.get("adapters"), (mission_overrides or {}).get("adapters")
+    )
     known = {k: merged[k] for k in list(merged) if k in TetherConfig.model_fields}
     unknown = set(merged) - set(TetherConfig.model_fields)
     if unknown:
