@@ -31,7 +31,7 @@ def redact_secrets(obj: Any) -> Any:
     Structure is preserved; adapter ``env`` mappings keep their keys but have
     every value redacted."""
     if isinstance(obj, dict):
-        out = {}
+        out: dict = {}
         for k, v in obj.items():
             if str(k).lower() == "env" and isinstance(v, dict):
                 out[k] = {ek: (REDACTED if ev is not None else None)

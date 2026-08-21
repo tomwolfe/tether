@@ -9,7 +9,7 @@ import yaml
 
 from pydantic import ValidationError
 
-from tether.models import MissionContract
+from tether.models import MissionContract, RecoverySpec, VerificationSpec
 
 
 class MissionError(ValueError):
@@ -95,8 +95,8 @@ def load_mission(path: str | Path) -> MissionContract:
             goal=goal,
             context=data.get("context", []) or [],
             constraints=data.get("constraints", []) or [],
-            verification={"commands": commands, "timeout_seconds": timeout_seconds},
-            recovery={"max_attempts": max_attempts},
+            verification=VerificationSpec(commands=commands, timeout_seconds=timeout_seconds),
+            recovery=RecoverySpec(max_attempts=max_attempts),
             adapter=adapter,
             adapters=adapters_block,
         )

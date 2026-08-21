@@ -55,13 +55,34 @@ def _run_one(command: str, project_dir: Path, timeout_seconds: int) -> Verificat
     )
 
 
+REPAIR_OUTPUT_BUDGET = 8192
+
+
+def clip_output(text: str, budget: int = REPAIR_OUTPUT_BUDGET) -> str:
+    """Clip text to ~budget chars, keeping head and tail with a marker."""
+    if len(text) <= budget:
+        return text
+    half = budget // 2
+    return (
+        text[:half]
+        + f"\n... [truncated {len(text) - budget} characters; full output in audit] ...\n"
+        + text[-half:]
+    )
+
+
 def summarize(results: list[VerificationResult]) -> tuple[bool, str]:
-    """Return (all_passed, combined failing output for recovery prompts)."""
+    """Return (all_passed, combined failing output for recovery prompts).
+
+    The combined output is clipped to a bounded budget so repair prompts stay
+    small; full output remains available in the audit records.
+    """
     failures = [r for r in results if not r.passed]
     if not failures:
         return True, ""
+    per_command = max(REPAIR_OUTPUT_BUDGET // len(failures), 512)
     parts = []
     for r in failures:
         reason = "timed out" if r.timed_out else f"exit code {r.exit_code}"
-        parts.append(f"--- COMMAND: {r.command} ({reason}) ---\n{r.stdout}\n{r.stderr}".strip())
+        body = clip_output(f"{r.stdout}\n{r.stderr}".strip(), per_command)
+        parts.append(f"--- COMMAND: {r.command} ({reason}) ---\n{body}")
     return False, "\n\n".join(parts)

@@ -39,9 +39,18 @@ adapters:
 
 Placeholders in any argv part: `{prompt}`, `{project_dir}`, `{session_id}`.
 
-When `prompt_via_stdin: true`, the prompt is piped to the command's stdin and `{prompt}` renders as an **empty string** in argv (so a trailing `"{prompt}"` part stays present but empty). The prompt never appears in the process argv, keeping it out of `ps` output.
+When `prompt_via_stdin`: true, the prompt is piped to the command's stdin and `{prompt}` renders as an **empty string** in argv (so a trailing `"{prompt}"` part stays present but empty). The prompt never appears in the process argv, keeping it out of `ps` output.
 
-Behavior: runs once per `send`, captures stdout/stderr as logs, exit 0 => completed, nonzero => failed, spawn failure => unavailable, timeout => failed. Uses `subprocess.run(shell=False)`. All of this is covered by tests using stub executables (`tests/test_adapter_harness.py`) — no real agent binaries required.
+### Injected environment variables
+
+Every CommandAdapter child process receives standard Tether context variables
+(added automatically; user `env` entries win on conflicts):
+
+- `TETHER_SESSION_ID` — the tether session id
+- `TETHER_PROJECT_DIR` — absolute path of the target project
+- `TETHER_MISSION` — mission name, when known
+
+Behavior: runs once per `send`, captures stdout/stderr as logs, exit 0 => completed, nonzero => failed, spawn failure => unavailable, timeout => failed. Uses `subprocess.run(shell=False)`. All of this is covered by tests using stub executables (`tests/test_adapter_harness.py`) — no real agent binaries required. The orchestrator also calls `is_available()` itself before starting a run and fails fast when the adapter is unavailable.
 
 ## OpencodeAdapter / PiAdapter — EXPERIMENTAL
 

@@ -13,7 +13,7 @@ from tether.git_safety import (
     make_file_backup,
 )
 from tether.manifest import diff_manifests, snapshot_manifest
-from tether.models import AgentState, CheckpointInfo, TetherConfig, VerificationResult
+from tether.models import AgentState, TetherConfig, VerificationResult
 from tether.verification import run_verification, summarize
 
 log = logging.getLogger("tether")
@@ -64,6 +64,44 @@ class Orchestrator:
             dry_run = self.config.dry_run
 
         started_at = utcnow()
+
+        # Fail fast when the adapter cannot run (library callers may skip the
+        # CLI-level availability guard).
+        if not dry_run:
+            ok, reason = self.adapter.is_available()
+            if not ok:
+                audit = AuditTrail(
+                    self.project_dir, self.config.audit_dir, mission.name, self.session_id
+                )
+                audit.log_event("session_start", {
+                    "session_id": self.session_id,
+                    "adapter": self.adapter.name,
+                    "project_dir": str(self.project_dir),
+                    "mission_name": mission.name,
+                    "dry_run": dry_run,
+                })
+                report = {
+                    "session_id": self.session_id,
+                    "mission_name": mission.name,
+                    "adapter": self.adapter.name,
+                    "status": "failed",
+                    "started_at": started_at,
+                    "finished_at": utcnow(),
+                    "verification_results": [],
+                    "recovery_attempts": [],
+                    "changed_files": [],
+                    "checkpoint_info": None,
+                    "plan": "",
+                    "next_steps": [
+                        f"Adapter {self.adapter.name!r} is unavailable: {reason}"
+                    ],
+                    "audit_dir": str(audit.dir),
+                }
+                audit.write_report(report)
+                audit.log_event("session_end", {"status": "failed"})
+                log.error("Adapter %r unavailable: %s", self.adapter.name, reason)
+                return report
+
         audit = AuditTrail(
             self.project_dir, self.config.audit_dir, mission.name, self.session_id
         )
@@ -163,6 +201,7 @@ class Orchestrator:
                 log.debug("Manifest snapshot failed: %s", e)
 
         session = None
+        state: AgentState | None = None
         try:
             commands = self._effective_verification_commands(mission)
             max_attempts = self._effective_max_attempts(mission)
@@ -175,6 +214,7 @@ class Orchestrator:
             else:
                 session = self.adapter.start_session(str(self.project_dir),
                                                      self.session_id)
+                session.metadata["mission_name"] = mission.name
                 audit.log_event("adapter_session", {"name": self.adapter.name})
 
             # Planning step
@@ -184,18 +224,31 @@ class Orchestrator:
                 log.info("[dry-run] would send planning prompt to %s", self.adapter.name)
                 state = AgentState(status="completed", logs="[dry-run] skipped")
             else:
+                assert session is not None
                 state = self.adapter.send(plan_prompt, session)
                 audit.save_response("plan", state.model_dump())
                 log.info("Planning step status: %s", state.status)
+                if state.status != "completed":
+                    # A failed plan must never silently proceed to execution.
+                    next_steps.append(
+                        f"Planning step ended with status {state.status!r}; "
+                        "mission aborted before execution."
+                    )
+                    status = "failed"
+                    raise RuntimeError(
+                        f"planning step failed with status {state.status!r}"
+                    )
             plan_text = state.logs
 
             # Execution step
             exec_prompt = self.adapter.execute_prompt(self.mission_summary(mission))
             audit.save_prompt("execute", exec_prompt)
             if dry_run:
-                log.info("[dry-run] would send execution prompt to %s", self.adapter.name)
+                log.info("[dry-run] would send execution prompt to %s",
+                         self.adapter.name)
                 state = AgentState(status="completed", logs="[dry-run] skipped")
             else:
+                assert session is not None
                 state = self.adapter.send(exec_prompt, session)
                 audit.save_response("execute", state.model_dump())
                 log.info("Execution step status: %s", state.status)
@@ -205,7 +258,9 @@ class Orchestrator:
 
             # Verification + recovery loop
             attempt = 0
-            agent_failed = state.status == "failed"
+            # Any non-completed agent state counts as failure: a mission must
+            # never report success unless the last agent send completed.
+            agent_failed = state.status != "completed"
             while True:
                 attempt += 1
                 log.info("Verification attempt %d/%d", attempt, max_attempts)
@@ -238,10 +293,15 @@ class Orchestrator:
                     log.info("[dry-run] would send repair prompt")
                     state = AgentState(status="completed", logs="[dry-run] skipped")
                 else:
+                    assert session is not None
                     state = self.adapter.send(repair_prompt, session)
                     audit.save_response(f"repair-{attempt}", state.model_dump())
                     log.info("Recovery attempt %d status: %s", attempt, state.status)
-                agent_failed = state.status == "failed"
+                agent_failed = state.status != "completed"
+        except RuntimeError as e:
+            # Deliberate aborts (e.g. planning failure) already set next_steps.
+            status = "failed"
+            log.error("%s", e)
         except Exception as e:
             status = "failed"
             next_steps.append(f"Internal error: {e!r}")
@@ -264,6 +324,12 @@ class Orchestrator:
         else:
             changed_files = []
 
+        # Merge adapter-reported fields when present (git/manifest detection
+        # above remains the source of truth for changed_files).
+        if state is not None and state.changed_files:
+            merged = set(changed_files) | set(state.changed_files)
+            changed_files = sorted(merged)
+
         report = {
             "session_id": self.session_id,
             "mission_name": mission.name,
@@ -274,6 +340,7 @@ class Orchestrator:
             "verification_results": [r.model_dump() for r in verification_results],
             "recovery_attempts": recovery_attempts,
             "changed_files": changed_files,
+            "usage": state.usage if state is not None else None,
             "checkpoint_info": checkpoint.model_dump(),
             "plan": plan_text[:2000],
             "next_steps": next_steps,

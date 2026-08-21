@@ -14,6 +14,9 @@ Settings (from config `adapters.<name>`):
     prompt_via_stdin: if true, the prompt is piped to stdin instead of {prompt}
     env:           extra environment variables
     timeout_seconds: override default command timeout
+
+The child environment always includes TETHER_SESSION_ID, TETHER_PROJECT_DIR and
+(when known) TETHER_MISSION; user `env` entries take precedence.
 """
 from __future__ import annotations
 
@@ -72,6 +75,12 @@ class CommandAdapter(AgentAdapter):
         argv = [self._render(p, rendered_prompt, session) for p in self.command]
         stdin_data: Optional[str] = prompt if via_stdin else None
         env = dict(os.environ)
+        # Standard Tether context vars (documented in docs/ADAPTERS.md);
+        # user-provided env wins on conflicts.
+        env["TETHER_SESSION_ID"] = session.session_id
+        env["TETHER_PROJECT_DIR"] = session.project_dir
+        if session.metadata.get("mission_name"):
+            env["TETHER_MISSION"] = str(session.metadata["mission_name"])
         env.update({str(k): str(v) for k, v in (self.settings.get("env") or {}).items()})
         timeout = int(self.settings.get("timeout_seconds", self.default_timeout))
         cwd = session.project_dir
@@ -89,14 +98,22 @@ class CommandAdapter(AgentAdapter):
         except FileNotFoundError as e:
             return AgentState(status="unavailable", error=f"command not found: {e}")
         except subprocess.TimeoutExpired as e:
+            stdout = e.stdout.decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+            stderr = e.stderr.decode(errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
             return AgentState(
                 status="failed",
-                logs=(e.stdout or "") + (e.stderr or ""),
+                logs=stdout + stderr,
                 error=f"command timed out after {timeout}s: {argv[0]}",
             )
         except OSError as e:
             return AgentState(status="failed", error=f"failed to run command: {e}")
-        logs = f"$ {' '.join(shlex.quote(a) for a in argv)}\n{proc.stdout}{proc.stderr}"
+        def _text(data: object) -> str:
+            if isinstance(data, bytes):
+                return data.decode(errors="replace")
+            return str(data)
+
+        logs = (f"$ {' '.join(shlex.quote(a) for a in argv)}\n"
+                f"{_text(proc.stdout)}{_text(proc.stderr)}")
         if proc.returncode == 0:
             return AgentState(status="completed", logs=logs, result={"exit_code": 0})
         return AgentState(

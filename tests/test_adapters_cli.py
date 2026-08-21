@@ -1,5 +1,6 @@
 import json
 import subprocess
+import sys
 
 import pytest
 from typer.testing import CliRunner
@@ -10,6 +11,13 @@ from tether.adapters.experimental import OpencodeAdapter, PiAdapter
 from tether.cli import app
 
 runner = CliRunner()
+
+
+def py_cmd(code: str) -> str:
+    return f"{sys.executable} -c '{code}'"
+
+
+PASS_CMD = py_cmd("import sys; sys.exit(0)")
 
 
 def test_cli_help():
@@ -41,14 +49,14 @@ def test_mock_adapter_scenarios(tmp_path):
 
 
 def test_command_adapter_runs_real_command(tmp_path):
-    adapter = CommandAdapter({"command": ["python3", "-c", "print('hi {session_id}')"]})
+    adapter = CommandAdapter({"command": [sys.executable, "-c", "print('hi {session_id}')"]})
     ok, _ = adapter.is_available()
     assert ok
     session = adapter.start_session(str(tmp_path), "abc123")
     state = adapter.send("ignored", session)
     assert state.status == "completed"
     assert "abc123" in state.logs
-    adapter = CommandAdapter({"command": ["python3", "-c", "raise SystemExit(3)"]})
+    adapter = CommandAdapter({"command": [sys.executable, "-c", "raise SystemExit(3)"]})
     assert adapter.send("x", session).status == "failed"
     bad = CommandAdapter({"command": ["no-such-binary-xyz"]})
     assert bad.is_available()[0] is False
@@ -78,7 +86,7 @@ def test_cli_init_and_validate(tmp_path, monkeypatch):
     r = runner.invoke(app, ["validate-config"])
     assert r.exit_code == 0
     (tmp_path / "m.yaml").write_text(
-        "mission:\n  name: x\n  goal: y\nverification:\n  commands: ['true']\n"
+        f"mission:\n  name: x\n  goal: y\nverification:\n  commands:\n    - {PASS_CMD}\n"
     )
     r = runner.invoke(app, ["validate-mission", "m.yaml"])
     assert r.exit_code == 0
@@ -91,7 +99,7 @@ def test_cli_run_mock_success_and_report(tmp_path, monkeypatch):
     mission = tmp_path / "m.yaml"
     mission.write_text(
         "mission:\n  name: cli-run\n  goal: g\n"
-        "verification:\n  commands: ['true']\nadapter: mock\n"
+        f"verification:\n  commands:\n    - {PASS_CMD}\nadapter: mock\n"
         "adapters:\n  mock:\n    scenario: success\n"
     )
     r = runner.invoke(app, ["run", str(mission), "--project-dir", str(tmp_path)])
@@ -109,7 +117,7 @@ def test_cli_run_mock_recovery(tmp_path):
     mission = tmp_path / "r.yaml"
     mission.write_text(
         "mission:\n  name: cli-recovery\n  goal: g\n"
-        "verification:\n  commands: ['true']\nadapter: mock\n"
+        f"verification:\n  commands:\n    - {PASS_CMD}\nadapter: mock\n"
         "adapters:\n  mock:\n    scenario: fail_then_succeed\n"
     )
     r = runner.invoke(app, ["run", str(mission), "--project-dir", str(tmp_path)])
@@ -131,7 +139,7 @@ def test_cli_run_git_checkpoint_and_rollback(tmp_path):
     mission = tmp_path / "m.yaml"
     mission.write_text(
         "mission:\n  name: gitrun\n  goal: g\n"
-        "verification:\n  commands: ['true']\nadapter: mock\n"
+        f"verification:\n  commands:\n    - {PASS_CMD}\nadapter: mock\n"
     )
     subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True)
     subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "mission"], check=True)

@@ -1,12 +1,12 @@
 """P0/P1 safety, correctness, and configuration behavior tests."""
 import json
 import subprocess
+import sys
 import tarfile
 
 import pytest
 from typer.testing import CliRunner
 
-from tether.adapters import resolve_adapter
 from tether.adapters.base import AgentAdapter, SessionInfo
 from tether.adapters.mock import MockAdapter
 from tether.audit import find_session_dir
@@ -17,7 +17,6 @@ from tether.git_safety import (
     head_sha,
     list_checkpoint_refs,
     make_file_backup,
-    resolve_checkpoint_ref,
     rollback,
 )
 from tether.mission import MissionError, load_mission
@@ -26,6 +25,14 @@ from tether.orchestrator import Orchestrator
 from tether.manifest import diff_manifests, snapshot_manifest
 
 runner = CliRunner()
+
+
+def py_cmd(code: str) -> str:
+    return f"{sys.executable} -c '{code}'"
+
+
+PASS_CMD = py_cmd("import sys; sys.exit(0)")
+FAIL_CMD = py_cmd("import sys; sys.exit(1)")
 
 
 class SpyAdapter(MockAdapter):
@@ -46,8 +53,8 @@ class SpyAdapter(MockAdapter):
 
 def _mission(tmp_path, body=None, name="m.yaml"):
     text = body or (
-        "mission:\n  name: m\n  goal: g\n"
-        "verification:\n  commands: ['true']\nadapter: mock\n"
+        f"mission:\n  name: m\n  goal: g\n"
+        f"verification:\n  commands:\n    - {PASS_CMD}\nadapter: mock\n"
     )
     p = tmp_path / name
     p.write_text(text)
@@ -143,7 +150,7 @@ def test_dry_run_never_calls_adapter(tmp_path):
 def test_cli_max_attempts_overrides_mission_unset(tmp_path):
     (tmp_path / "tether.yaml").write_text("max_attempts: 5\n")
     mp = _mission(tmp_path, body=(
-        "mission:\n  name: m\n  goal: g\nverification:\n  commands: ['true']\n"
+        f"mission:\n  name: m\n  goal: g\nverification:\n  commands:\n    - {PASS_CMD}\n"
     ))  # no recovery block -> unset
     mission = load_mission(mp)
     assert mission.recovery.max_attempts is None
@@ -154,7 +161,7 @@ def test_cli_max_attempts_overrides_mission_unset(tmp_path):
 def test_mission_explicit_max_attempts_beats_project_config(tmp_path):
     (tmp_path / "tether.yaml").write_text("max_attempts: 5\n")
     mp = _mission(tmp_path, body=(
-        "mission:\n  name: m\n  goal: g\nverification:\n  commands: ['true']\n"
+        f"mission:\n  name: m\n  goal: g\nverification:\n  commands:\n    - {PASS_CMD}\n"
         "recovery:\n  max_attempts: 2\n"
     ))
     mission = load_mission(mp)
@@ -166,8 +173,8 @@ def test_mission_explicit_max_attempts_beats_project_config(tmp_path):
 
 
 def test_cli_overrides_mission_explicit_max_attempts(tmp_path):
-    mp = _mission(tmp_path, body=(
-        "mission:\n  name: m\n  goal: g\nverification:\n  commands: ['true']\n"
+    _mission(tmp_path, body=(
+        f"mission:\n  name: m\n  goal: g\nverification:\n  commands:\n    - {PASS_CMD}\n"
         "recovery:\n  max_attempts: 2\n"
     ))
     cfg = resolve_config(tmp_path,
@@ -345,7 +352,7 @@ def test_backup_uses_config_backup_dir(tmp_path):
 def test_command_adapter_prompt_via_stdin(tmp_path):
     from tether.adapters.command import CommandAdapter
     reader = [
-        "python3", "-c",
+        sys.executable, "-c",
         "import sys; data = sys.stdin.read(); "
         "print('STDIN:' + data); print('ARGV:' + str(sys.argv[1:]))",
     ]
@@ -362,7 +369,7 @@ def test_command_adapter_prompt_via_stdin(tmp_path):
 def test_command_adapter_without_stdin_keeps_prompt_in_argv(tmp_path):
     from tether.adapters.command import CommandAdapter
     adapter = CommandAdapter({
-        "command": ["python3", "-c", "import sys; print(sys.argv[1:])", "{prompt}"],
+        "command": [sys.executable, "-c", "import sys; print(sys.argv[1:])", "{prompt}"],
     })
     session = adapter.start_session(str(tmp_path), "sid2")
     state = adapter.send("hello world", session)
@@ -486,7 +493,7 @@ def test_resolved_config_redacts_secrets(tmp_path):
 def test_sessions_list_show_diff_logs(tmp_path):
     mp = _mission(tmp_path, body=(
         "mission:\n  name: sess-cmds\n  goal: g\n"
-        "verification:\n  commands: ['true']\nadapter: mock\n"
+        f"verification:\n  commands:\n    - {PASS_CMD}\nadapter: mock\n"
         "adapters:\n  mock:\n    scenario: success\n"
     ))
     r = runner.invoke(app, ["run", str(mp), "--project-dir", str(tmp_path)])
@@ -509,3 +516,92 @@ def test_sessions_list_show_diff_logs(tmp_path):
 
     r = runner.invoke(app, ["sessions", "show", "nope", "--project-dir", str(tmp_path)])
     assert r.exit_code == 1
+
+
+# ------------------------------------------------- rollback usefulness (B3)
+
+
+def _git_repo_with_session(tmp_path):
+    _git_repo(tmp_path)
+    from tether.audit import AuditTrail
+    audit = AuditTrail(tmp_path, ".tether/sessions", "sess", "aaaa1111aaaa")
+    return audit
+
+
+def test_rollback_refuses_on_untracked_files_with_manual_steps(tmp_path):
+    _git_repo_with_session(tmp_path)
+    base = head_sha(tmp_path)
+    create_checkpoint(tmp_path, "aaaa1111aaaa")
+    # agent adds an untracked file -> tree is "dirty"
+    (tmp_path / "agent-added.txt").write_text("new\n")
+    ok, msg = rollback(tmp_path, "aaaa1111aaaa")
+    assert not ok
+    assert "Manual steps" in msg
+    assert "agent-added.txt" in msg  # precise reporting of the actual files
+    assert head_sha(tmp_path) == base
+
+
+def test_rollback_clean_removes_only_session_added_untracked(tmp_path):
+    audit = _git_repo_with_session(tmp_path)
+    base = head_sha(tmp_path)
+    create_checkpoint(tmp_path, "aaaa1111aaaa")
+    # pre-existing untracked user file (NOT attributable to the session)
+    (tmp_path / "user-notes.txt").write_text("keep me\n")
+    # session adds a tracked modification and an untracked file
+    (tmp_path / "f.txt").write_text("changed\n")
+    (tmp_path / "agent-added.txt").write_text("new\n")
+    audit.write_report({"session_id": "aaaa1111aaaa",
+                        "changed_files": ["f.txt", "agent-added.txt"]})
+    ok, msg = rollback(tmp_path, "aaaa1111aaaa", clean=True)
+    assert ok, msg
+    assert head_sha(tmp_path) == base
+    assert (tmp_path / "f.txt").read_text() == "hello\n"
+    assert not (tmp_path / "agent-added.txt").exists()
+    assert (tmp_path / "user-notes.txt").read_text() == "keep me\n"
+
+
+def test_rollback_clean_without_report_leaves_untracked_alone(tmp_path):
+    _git_repo_with_session(tmp_path)
+    base = head_sha(tmp_path)
+    create_checkpoint(tmp_path, "aaaa1111aaaa")
+    (tmp_path / "agent-added.txt").write_text("new\n")
+    # no report.json changed_files -> nothing attributable to remove; the
+    # tracked rollback still happens but the untracked file is left alone
+    ok, msg = rollback(tmp_path, "aaaa1111aaaa", clean=True)
+    assert ok, msg
+    assert head_sha(tmp_path) == base
+    assert (tmp_path / "agent-added.txt").exists()
+    assert "agent-added.txt" in msg  # surfaced for manual cleanup
+
+
+# --------------------------------------------- non-git backup restore (B4)
+
+
+def test_restore_from_backup_restores_non_git_project(tmp_path):
+    from tether.audit import AuditTrail
+    from tether.git_safety import restore_from_backup
+    (tmp_path / "data.txt").write_text("v1")
+    AuditTrail(tmp_path, ".tether/sessions", "sess", "bbbb2222bbbb")
+    dest = make_file_backup(tmp_path, tmp_path / ".tether/backups", "bbbb2222bbbb")
+    assert dest
+    # simulate the agent changing a file and creating a new one
+    (tmp_path / "data.txt").write_text("clobbered by agent")
+    (tmp_path / "agent-added.txt").write_text("extra\n")
+    ok, msg = restore_from_backup(tmp_path, "bbbb2222bbbb")
+    assert ok, msg
+    assert (tmp_path / "data.txt").read_text() == "v1"
+    # files created after the backup are kept and reported
+    assert (tmp_path / "agent-added.txt").exists()
+    assert "agent-added.txt" in msg
+
+
+def test_cli_rollback_non_git_restores_backup(tmp_path):
+    from tether.audit import AuditTrail
+    (tmp_path / "data.txt").write_text("v1")
+    AuditTrail(tmp_path, ".tether/sessions", "sess", "cccc3333cccc")
+    make_file_backup(tmp_path, tmp_path / ".tether/backups", "cccc3333cccc")
+    (tmp_path / "data.txt").write_text("clobbered")
+    r = runner.invoke(app, ["rollback", "cccc3333cccc",
+                            "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    assert (tmp_path / "data.txt").read_text() == "v1"

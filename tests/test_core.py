@@ -1,5 +1,6 @@
 import json
 import subprocess
+import sys
 
 import pytest
 
@@ -10,7 +11,6 @@ from tether.git_safety import (
     create_checkpoint,
     head_sha,
     is_dirty,
-    is_git_repo,
     rollback,
 )
 from tether.mission import MissionError, load_mission
@@ -18,6 +18,15 @@ from tether.models import TetherConfig
 from tether.orchestrator import Orchestrator
 from tether.adapters import resolve_adapter
 from tether.verification import run_verification, summarize
+
+
+def py_cmd(code: str) -> str:
+    """Cross-platform shell-free python command string for verification."""
+    return f"{sys.executable} -c '{code}'"
+
+
+PASS_CMD = py_cmd("import sys; sys.exit(0)")
+FAIL_CMD = py_cmd("import sys; sys.exit(1)")
 
 
 @pytest.fixture
@@ -31,13 +40,13 @@ def _write_mission(tmp_path, body):
     return load_mission(p)
 
 
-MISSION = """\
+MISSION = f"""\
 mission:
   name: test-mission
   goal: do a thing
 verification:
   commands:
-    - "true"
+    - {PASS_CMD}
 recovery:
   max_attempts: 3
 adapter: mock
@@ -47,7 +56,7 @@ adapter: mock
 def test_mission_validation_ok(tmp_path):
     m = _write_mission(tmp_path, MISSION)
     assert m.name == "test-mission"
-    assert m.verification.commands == ["true"]
+    assert m.verification.commands == [PASS_CMD]
 
 
 @pytest.mark.parametrize("bad", [
@@ -80,9 +89,10 @@ def test_config_rejects_unknown_keys(project_dir):
         resolve_config(project_dir)
 
 
-def _orchestra(tmp_path, scenario, commands=("true",), max_attempts=3):
+def _orchestra(tmp_path, scenario, commands=None, max_attempts=3):
     adapter = resolve_adapter("mock", {"mock": {"scenario": scenario}})
     cfg = TetherConfig(audit_dir=".tether/sessions", max_attempts=max_attempts)
+    commands = [PASS_CMD] if commands is None else list(commands)
     mission_text = f"""\
 mission:
   name: m
@@ -125,23 +135,37 @@ def test_recovery_succeeds_after_retry(tmp_path):
 
 
 def test_verification_failure_detected(tmp_path):
-    results = run_verification(["false"], tmp_path)
+    results = run_verification([FAIL_CMD], tmp_path)
     passed, out = summarize(results)
     assert not passed
     assert "exit code 1" in out
-    ok, _ = summarize(run_verification(["true"], tmp_path))
+    ok, _ = summarize(run_verification([PASS_CMD], tmp_path))
     assert ok
 
 
+def test_summarize_bounds_repair_prompt_but_audit_keeps_full(tmp_path):
+    from tether.verification import clip_output
+    results = run_verification(
+        [py_cmd('import sys; print("A"*100000); sys.exit(1)')], tmp_path)
+    assert not results[0].passed
+    # audit record (VerificationResult) keeps full output
+    assert len(results[0].stdout) >= 100_000
+    passed, out = summarize(results)
+    assert not passed
+    assert len(out) < 20_000
+    assert "truncated" in out
+    assert clip_output("short") == "short"
+
+
 def test_verification_timeout_and_missing_binary(tmp_path):
-    r = run_verification(["python3 -c \"import time; time.sleep(5)\""], tmp_path, timeout_seconds=1)[0]
+    r = run_verification([py_cmd("import time; time.sleep(5)")], tmp_path, timeout_seconds=1)[0]
     assert r.timed_out
     r = run_verification(["definitely-not-a-binary-xyz"], tmp_path)[0]
     assert not r.passed and "not found" in r.stderr
 
 
 def test_dry_run_skips_execution(tmp_path):
-    results = run_verification(["false"], tmp_path, dry_run=True)
+    results = run_verification([FAIL_CMD], tmp_path, dry_run=True)
     assert results[0].skipped_dry_run and results[0].passed
 
 
@@ -198,3 +222,111 @@ def test_audit_trail_events(tmp_path):
     audit.save_prompt("plan", "hello")
     assert (audit.dir / "events.jsonl").exists()
     assert find_session_dir(tmp_path, ".tether/sessions", "abcdef1234") == audit.dir
+
+
+# ------------------------------------------------- non-completed states (B1)
+
+
+from tether.adapters.base import AgentAdapter, SessionInfo  # noqa: E402
+from tether.models import AgentState  # noqa: E402
+
+
+class _ScriptedAdapter(AgentAdapter):
+    """Returns scripted AgentStates per send; records availability."""
+
+    name = "scripted"
+    verified = True
+
+    def __init__(self, statuses, available=True):
+        super().__init__({})
+        self.statuses = list(statuses)
+        self.available = available
+
+    def is_available(self):
+        return self.available, "" if self.available else "binary missing"
+
+    def start_session(self, project_dir, session_id):
+        return SessionInfo(session_id=session_id, project_dir=project_dir)
+
+    def send(self, prompt, session):
+        status = self.statuses.pop(0) if self.statuses else "completed"
+        return AgentState(status=status, logs=f"[{status}]")
+
+    def cancel(self, session):
+        pass
+
+
+def _run_scripted(tmp_path, adapter):
+    mission_text = f"""\
+mission:
+  name: m
+  goal: g
+verification:
+  commands:
+    - {PASS_CMD}
+adapter: mock
+"""
+    mp = tmp_path / "m.yaml"
+    mp.write_text(mission_text)
+    cfg = TetherConfig(audit_dir=".tether/sessions")
+    return Orchestrator(adapter, cfg, tmp_path).run(load_mission(mp))
+
+
+@pytest.mark.parametrize("status", [
+    "unavailable", "cancelled", "needs_input", "running",
+])
+def test_non_completed_state_never_reports_success(tmp_path, status):
+    report = _run_scripted(tmp_path, _ScriptedAdapter([status, status]))
+    assert report["status"] == "failed"
+
+
+def test_unavailable_adapter_fails_fast_even_with_passing_verification(tmp_path):
+    # verification would trivially pass; agent never ran -> must NOT be success
+    adapter = _ScriptedAdapter(["unavailable"])
+    report = _run_scripted(tmp_path, adapter)
+    assert report["status"] == "failed"
+    assert any("unavailable" in s.lower() for s in report["next_steps"])
+
+
+def test_orchestrator_checks_availability_before_running(tmp_path):
+    adapter = _ScriptedAdapter([], available=False)
+    mission_text = 'mission:\n  name: m\n  goal: g\nadapter: mock\n'
+    mp = tmp_path / "m.yaml"
+    mp.write_text(mission_text)
+    cfg = TetherConfig(audit_dir=".tether/sessions")
+    report = Orchestrator(adapter, cfg, tmp_path).run(load_mission(mp))
+    assert report["status"] == "failed"
+    assert any("unavailable" in s.lower() for s in report["next_steps"])
+
+
+# ------------------------------------------------------- plan failure (B2)
+
+
+def test_plan_failure_does_not_proceed_to_success(tmp_path):
+    class PlanFailAdapter(_ScriptedAdapter):
+        def send(self, prompt, session):
+            if not getattr(self, "_planned", False):
+                self._planned = True
+                return AgentState(status="failed", error="plan exploded")
+            return super().send(prompt, session)
+
+    adapter = PlanFailAdapter(["completed"])
+    report = _run_scripted(tmp_path, adapter)
+    assert report["status"] == "failed"
+    assert any("Planning step" in s for s in report["next_steps"])
+
+
+def test_adapter_reported_changed_files_and_usage_surfaced(tmp_path):
+    class RichAdapter(_ScriptedAdapter):
+        def send(self, prompt, session):
+            if not getattr(self, "_planned", False):
+                self._planned = True
+                return AgentState(status="completed", logs="plan")
+            return AgentState(status="completed", logs="done",
+                              changed_files=["agent-made.txt"],
+                              usage={"tokens": 42})
+
+    report = _run_scripted(tmp_path, RichAdapter([]))
+    assert report["status"] == "success"
+    assert "agent-made.txt" in report["changed_files"]
+    assert report["usage"] == {"tokens": 42}

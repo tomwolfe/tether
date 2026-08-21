@@ -82,17 +82,23 @@ Only commands explicitly declared in the mission (or project config) are execute
 
 ## Recovery
 
-On verification failure (or agent failure), Tether sends a concise repair prompt containing the failing output back to the adapter and re-verifies, up to `recovery.max_attempts`. It never retries silently forever; every attempt is recorded in the audit trail.
+On verification failure (or agent failure), Tether sends a concise repair prompt containing the failing output back to the adapter and re-verifies, up to `recovery.max_attempts` (total verification attempts, including the first). It never retries silently forever; every attempt is recorded in the audit trail. Repair prompts embed only a bounded excerpt of the failing output (~8KB budget); the full output is always preserved in the audit records.
+
+A mission reports `success` **only** if the final agent step completed *and* verification passed. Non-completed agent states (`failed`, `unavailable`, `cancelled`, `needs_input`, `running`) always drive the failure/recovery path, and the orchestrator checks adapter availability itself before starting. A failed planning step aborts the mission before execution.
+
+Repair-prompt outputs are bounded; audit records keep full output. Note that prompts, responses, and logs are stored unredacted — avoid pointing Tether at projects where agents may echo secrets into output, or scrub `.tether/` afterwards.
 
 ## Rollback / git safety
 
 - If the target is a git repo, Tether records HEAD and creates `refs/tether/checkpoint/<session-id>` before running.
 - A dirty working tree **aborts the mission before the adapter is invoked** unless `--allow-dirty` (or `allow_dirty: true` in config) is set; the report tells you to commit/stash or pass `--allow-dirty`, and the CLI exits nonzero.
 - `tether rollback <session-id-or-prefix>` accepts unique prefixes. Resolution order: exact session id → audit session directory (`report.json`) → checkpoint ref prefix match. Ambiguous prefixes fail with a list of matches.
-- Rollback is refused when the tree is dirty; exact manual steps are printed instead.
+- Rollback is refused when the tree is dirty; exact manual steps are printed, including the specific untracked files found.
+- `tether rollback <session-id-or-prefix> --clean` performs a scoped restore for git projects: `git reset --hard` to the checkpoint plus removal of untracked files **attributable to the session** (those listed in the session report's `changed_files`). Pre-existing untracked user files are never removed, and a blanket `git clean` is never run.
+- For **non-git projects**, `tether rollback <session-id-or-prefix>` restores file contents from the session's tar backup. Files created after the backup are kept and listed for manual cleanup.
 - Tether never force-pushes, deletes branches, or rewrites history.
 - Non-git projects get a tar backup under `backup_dir` (default `.tether/backups/`) plus a clear warning; if backup creation fails, the mission fails rather than proceeding unprotected. For non-git projects a lightweight file manifest provides best-effort added/modified/deleted visibility in the report.
-- Tether's own `.tether/` files never count as "dirty".
+- Tether's own `.tether/` files never count as "dirty". Tip: add `.tether/` to your project's `.gitignore`.
 
 ## Audit trail
 

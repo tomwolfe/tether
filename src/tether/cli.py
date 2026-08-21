@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sys
 from pathlib import Path
 from typing import Optional
 
@@ -81,7 +80,7 @@ def validate_mission(mission_file: Path) -> None:
     try:
         mission = load_mission(mission_file)
         typer.echo(f"OK: mission {mission.name!r} is valid "
-                   f"({len(mission.verification.commands)} verification command(s))")
+                   f"({len(mission.verification.commands or [])} verification command(s))")
     except MissionError as e:
         typer.echo(f"INVALID: {e}", err=True)
         raise typer.Exit(code=1)
@@ -177,14 +176,25 @@ def run(
 def rollback(
     session_id: str = typer.Argument(..., help="Session id (or prefix)."),
     project_dir: Optional[Path] = typer.Option(None, "--project-dir"),
+    clean: bool = typer.Option(
+        False, "--clean",
+        help="Git projects: also remove untracked files created by the session "
+             "(never pre-existing untracked files). Non-git projects: restore "
+             "from the session's file backup."),
 ) -> None:
     """Roll the target project back to a session's checkpoint."""
     pd = _project_dir(project_dir)
     try:
-        audit_dir = resolve_config(pd).audit_dir
+        config = resolve_config(pd)
+        audit_dir = config.audit_dir
     except Exception:
-        audit_dir = ".tether/sessions"
-    ok, message = git_rollback(pd, session_id, audit_dir=audit_dir)
+        config, audit_dir = TetherConfig(), ".tether/sessions"
+    from tether.git_safety import is_git_repo, restore_from_backup
+    if not is_git_repo(pd):
+        ok, message = restore_from_backup(
+            pd, session_id, backup_dir=config.backup_dir, audit_dir=audit_dir)
+    else:
+        ok, message = git_rollback(pd, session_id, audit_dir=audit_dir, clean=clean)
     typer.echo(message)
     if not ok:
         raise typer.Exit(code=1)
