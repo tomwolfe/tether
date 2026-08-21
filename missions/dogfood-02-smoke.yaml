@@ -34,5 +34,5 @@ recovery:
 adapter: opencode
 adapters:
   opencode:
-    command: ["opencode", "run", "{prompt}"]
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
     timeout_seconds: 1800
