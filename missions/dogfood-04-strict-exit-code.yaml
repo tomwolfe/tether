@@ -23,11 +23,11 @@ mission:
        produces a warning message and fails under --strict.
     Change NOTHING outside this scope.
 context:
-  - Repro: put `adapters:\n  mock:\n    scenarioo: x` in tether.yaml in a
-    temp dir; `python -m tether validate-config --strict` prints INVALID but
-    returns exit code 0.
-  - Repro 2: `adapters:\n  myagent:\n    command: ["x"]` produces no
-    validation output at all today.
+  - "Repro 1: create a tether.yaml in a temp dir with an adapters mapping
+    whose key is 'mock' and which has an unknown setting 'scenarioo'. Then
+    run validate-config --strict -- it prints INVALID but exits 0."
+  - "Repro 2: an adapters entry for unregistered name 'myagent' produces no
+    validation output at all today."
 constraints:
   - all current tests must keep passing
   - keep changes minimal
