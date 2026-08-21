@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import time
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -88,6 +89,27 @@ class Orchestrator:
             return mission.verification.timeout_seconds
         return self.config.verification_timeout_seconds
 
+    def _sandbox_violations(self, mission: Any,
+                            changed: list[str]) -> list[Dict[str, str]]:
+        """Post-execution write-sandbox check over detected changed files.
+
+        A violation is a changed file matching a forbidden glob, or (when
+        allowed_paths is non-empty) matching no allowed glob.
+        """
+        allowed = list(getattr(mission, "allowed_paths", None) or [])
+        forbidden = list(getattr(mission, "forbidden_paths", None) or [])
+        violations: list[Dict[str, str]] = []
+        for path in changed:
+            hit = next((g for g in forbidden if fnmatch(path, g)), None)
+            if hit is not None:
+                violations.append({"path": path, "rule": f"forbidden_paths: {hit}"})
+                continue
+            if allowed and not any(fnmatch(path, g) for g in allowed):
+                violations.append(
+                    {"path": path, "rule": "not matched by allowed_paths"}
+                )
+        return violations
+
     def run(self, mission: Any, allow_dirty: Optional[bool] = None,
             dry_run: Optional[bool] = None) -> Dict[str, Any]:
         """Run a mission. allow_dirty/dry_run default to the resolved config."""
@@ -101,10 +123,13 @@ class Orchestrator:
         # Single-writer lock: refuse fast when another live session holds it;
         # otherwise take the lock and release it on every exit path below.
         lock_path = writer_lock_path(self.project_dir)
-        holder = fresh_lock_holder(lock_path)
+        holder = fresh_lock_holder(
+            lock_path, stale_seconds=self.config.writer_lock_stale_seconds
+        )
         if holder is not None:
             audit = AuditTrail(
-                self.project_dir, self.config.audit_dir, mission.name, self.session_id
+                self.project_dir, self.config.audit_dir, mission.name,
+                self.session_id, redact_prompts=self.config.redact_prompts,
             )
             audit.log_event("session_start", {
                 "session_id": self.session_id,
@@ -189,7 +214,8 @@ class Orchestrator:
                 return report
 
         audit = AuditTrail(
-            self.project_dir, self.config.audit_dir, mission.name, self.session_id
+            self.project_dir, self.config.audit_dir, mission.name,
+            self.session_id, redact_prompts=self.config.redact_prompts,
         )
         audit.log_event("session_start", {
             "session_id": self.session_id,
@@ -206,7 +232,8 @@ class Orchestrator:
         recovery_attempts: list[Dict[str, Any]] = []
         plan_text = ""
         next_steps: list[str] = []
-        manifest_before: dict[str, tuple[int, int]] | None = None
+        manifest_before: dict[str, tuple[int, str | int]] | None = None
+        sandbox_violations: list[Dict[str, str]] = []
 
         # Checkpoint / safety phase. Dry-run must not mutate the target project.
         checkpoint = create_checkpoint(
@@ -344,7 +371,35 @@ class Orchestrator:
                 log.info("Execution step status: %s", state.status)
 
             changed = changed_files_since(self.project_dir, checkpoint.original_head)
+            # Non-git projects: fall back to the pre-execution manifest so
+            # change detection (and the sandbox gate below) sees the files
+            # the agent just wrote.
+            if not checkpoint.is_git_repo and manifest_before is not None:
+                try:
+                    mdiff = diff_manifests(manifest_before,
+                                           snapshot_manifest(self.project_dir))
+                    changed = sorted(
+                        set(mdiff["added"]) | set(mdiff["modified"])
+                        | set(mdiff["deleted"])
+                    )
+                except OSError:
+                    pass
             audit.log_event("changed_files", {"files": changed})
+
+            # Write-sandbox gate (post-execution): forbid or restrict which
+            # paths the agent may touch. On violation, fail the mission and
+            # skip verification entirely.
+            sandbox_violations = self._sandbox_violations(mission, changed)
+            if sandbox_violations:
+                names = ", ".join(v["path"] for v in sandbox_violations)
+                audit.log_event("sandbox_violations",
+                                {"violations": sandbox_violations})
+                next_steps.append(
+                    "Write sandbox violated by: " + names + ". Verification "
+                    f"was skipped. Roll back with: tether rollback "
+                    f"{self.session_id} --project-dir {self.project_dir}"
+                )
+                raise RuntimeError(f"write sandbox violated by: {names}")
 
             # Verification + recovery loop
             attempt = 0
@@ -446,6 +501,7 @@ class Orchestrator:
             "verification_results": [r.model_dump() for r in verification_results],
             "recovery_attempts": recovery_attempts,
             "changed_files": changed_files,
+            "sandbox_violations": sandbox_violations,
             "usage": state.usage if state is not None else None,
             "checkpoint_info": checkpoint.model_dump(),
             "plan": plan_text[:2000],

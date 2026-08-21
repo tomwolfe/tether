@@ -10,7 +10,8 @@ from tether.adapters import check_adapter_settings, resolve_adapter
 from tether.adapters.command import CommandAdapter
 from tether.adapters.experimental import OpencodeAdapter, PiAdapter
 from tether.adapters.mock import MockAdapter
-from tether.cli import app
+from tether.cli import EXIT_CANCELLED, EXIT_FAILED, EXIT_SANDBOX_VIOLATION, \
+    EXIT_SUCCESS, app
 
 runner = CliRunner()
 
@@ -385,3 +386,90 @@ def test_cli_run_git_checkpoint_and_rollback(tmp_path):
 def test_cli_version():
     r = runner.invoke(app, ["--version"])
     assert r.exit_code == 0 and "tether" in r.output
+
+
+# ------------------------------------------- dogfood-06: granular exit codes
+
+
+def test_run_exit_code_constants():
+    from tether import cli
+    assert cli.EXIT_SUCCESS == 0
+    assert cli.EXIT_FAILED == 1
+    assert cli.EXIT_CANCELLED == 2
+    assert cli.EXIT_REJECTED == 3
+    assert cli.EXIT_SANDBOX_VIOLATION == 4
+
+
+def test_cli_exit_success_and_failed(tmp_path):
+    success = tmp_path / "ok.yaml"
+    success.write_text(
+        "mission:\n  name: ok\n  goal: g\n"
+        f"verification:\n  commands:\n    - {PASS_CMD}\nadapter: mock\n"
+        "adapters:\n  mock:\n    scenario: success\n"
+    )
+    r = runner.invoke(app, ["run", str(success), "--project-dir", str(tmp_path)])
+    assert r.exit_code == EXIT_SUCCESS, r.output
+
+    failing = tmp_path / "bad.yaml"
+    failing.write_text(
+        "mission:\n  name: bad\n  goal: g\nadapter: mock\n"
+        "recovery:\n  max_attempts: 1\n"
+        "adapters:\n  mock:\n    scenario: always_fail\n"
+    )
+    r = runner.invoke(app, ["run", str(failing), "--project-dir", str(tmp_path)])
+    assert r.exit_code == EXIT_FAILED
+    assert "Status: failed" in r.output
+
+
+def test_cli_exit_cancelled(tmp_path, monkeypatch):
+    from tether.adapters.base import AgentAdapter, SessionInfo
+
+    class _InterruptAdapter(AgentAdapter):
+        name = "interrupt"
+        verified = True
+
+        def __init__(self):
+            super().__init__({})
+
+        def is_available(self):
+            return True, ""
+
+        def start_session(self, project_dir, session_id):
+            return SessionInfo(session_id=session_id, project_dir=project_dir)
+
+        def send(self, prompt, session):
+            raise KeyboardInterrupt()
+
+        def cancel(self, session):
+            pass
+
+    monkeypatch.setattr(
+        "tether.adapters.resolve_adapter",
+        lambda name, settings, default_timeout=None: _InterruptAdapter(),
+    )
+    mission = tmp_path / "c.yaml"
+    mission.write_text("mission:\n  name: cancel\n  goal: g\n")
+    r = runner.invoke(app, ["run", str(mission), "--project-dir", str(tmp_path)])
+    assert r.exit_code == EXIT_CANCELLED, r.output
+    assert "Status: cancelled" in r.output
+
+
+def test_cli_exit_sandbox_violation(tmp_path):
+    mission = tmp_path / "s.yaml"
+    mission.write_text(
+        "mission:\n  name: sbx-cli\n  goal: g\n"
+        "forbidden_paths:\n  - '*.secret'\n"
+        "adapter: command\n"
+        "adapters:\n  command:\n    command:\n"
+        f"      - {json.dumps(sys.executable)}\n"
+        "      - '-c'\n"
+        "      - \"open('config.secret', 'w').write('x')\"\n"
+    )
+    r = runner.invoke(app, ["run", str(mission), "--project-dir", str(tmp_path)])
+    assert r.exit_code == EXIT_SANDBOX_VIOLATION, r.output
+    sid = r.output.split("Session: ")[1].split()[0]
+    report = json.loads(runner.invoke(
+        app, ["report", sid, "--project-dir", str(tmp_path)]).output)
+    assert report["status"] == "failed"
+    assert report["sandbox_violations"] == [
+        {"path": "config.secret", "rule": "forbidden_paths: *.secret"}]

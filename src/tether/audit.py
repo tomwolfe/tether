@@ -61,14 +61,26 @@ def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def redact_body(text: str) -> str:
+    """Redacted form of a prompt/response body: sha256 + length + excerpts.
+
+    Keeps the record auditable (identifiable, bounded) without storing the
+    full content.
+    """
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return (f"[REDACTED sha256={digest} len={len(text)} "
+            f"head={text[:64]!r} tail={text[-64:]!r}]")
+
+
 class AuditTrail:
     def __init__(self, project_dir: Path, audit_dir: str, mission_name: str,
-                 session_id: str) -> None:
+                 session_id: str, redact_prompts: bool = False) -> None:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         short = session_id[:8]
         safe_name = "".join(c if c.isalnum() or c in "-_" else "-" for c in mission_name)
         self.dir = project_dir / audit_dir / f"{stamp}-{safe_name}-{short}"
         self.session_id = session_id
+        self.redact_prompts = redact_prompts
         self.dir.mkdir(parents=True, exist_ok=True)
         (self.dir / "prompts").mkdir(exist_ok=True)
         (self.dir / "responses").mkdir(exist_ok=True)
@@ -88,12 +100,19 @@ class AuditTrail:
 
     def save_prompt(self, label: str, prompt: str) -> Path:
         self._counter += 1
+        body = redact_body(prompt) if self.redact_prompts else prompt
         path = self.dir / "prompts" / f"{self._counter:03d}-{label}.txt"
-        path.write_text(prompt, encoding="utf-8")
+        path.write_text(body, encoding="utf-8")
         return path
 
     def save_response(self, label: str, state_json: Dict[str, Any]) -> Path:
         self._counter += 1
+        if self.redact_prompts:
+            state_json = dict(state_json)
+            for key in ("logs", "error"):
+                value = state_json.get(key)
+                if isinstance(value, str) and value:
+                    state_json[key] = redact_body(value)
         path = self.dir / "responses" / f"{self._counter:03d}-{label}.json"
         path.write_text(json.dumps(state_json, indent=2, default=str), encoding="utf-8")
         return path

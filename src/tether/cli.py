@@ -23,6 +23,13 @@ app = typer.Typer(help="Tether: agent-agnostic orchestration for coding agents."
 adapters_app = typer.Typer(help="Adapter operations.")
 app.add_typer(adapters_app, name="adapters")
 
+# Granular `tether run` exit codes.
+EXIT_SUCCESS = 0
+EXIT_FAILED = 1
+EXIT_CANCELLED = 2
+EXIT_REJECTED = 3
+EXIT_SANDBOX_VIOLATION = 4
+
 DEFAULT_CONFIG_TEMPLATE = """\
 # Tether project configuration.
 # Precedence: CLI flags > mission file > this file > defaults.
@@ -225,9 +232,11 @@ def run(
             "Interrupted by user; the adapter was cancelled. Use the "
             "rollback hint above to undo partial changes."
         )
-        raise typer.Exit(code=2)
+        raise typer.Exit(code=EXIT_CANCELLED)
     if report["status"] != "success":
-        raise typer.Exit(code=2)
+        if report.get("sandbox_violations"):
+            raise typer.Exit(code=EXIT_SANDBOX_VIOLATION)
+        raise typer.Exit(code=EXIT_FAILED)
 
 
 @app.command()

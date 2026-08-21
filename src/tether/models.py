@@ -27,6 +27,10 @@ class MissionContract(BaseModel):
     recovery: RecoverySpec = Field(default_factory=RecoverySpec)
     adapter: Optional[str] = None
     adapters: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    # Optional write sandbox (post-execution gate): fnmatch globs relative to
+    # the project dir. None/empty means unrestricted.
+    allowed_paths: Optional[List[str]] = None
+    forbidden_paths: Optional[List[str]] = None
 
     @field_validator("name")
     @classmethod
@@ -53,6 +57,8 @@ class TetherConfig(BaseModel):
     verification_timeout_seconds: int = 600
     max_attempts: int = 3
     allow_dirty: bool = False
+    redact_prompts: bool = False
+    writer_lock_stale_seconds: int = 43200  # 12 hours
     adapters: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     verification: VerificationSpec = Field(default_factory=VerificationSpec)
 

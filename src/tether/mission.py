@@ -81,6 +81,15 @@ def load_mission(path: str | Path) -> MissionContract:
         if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
             raise MissionError(f"'{field}' must be a list of strings")
 
+    sandbox_globs: Dict[str, Any] = {}
+    for field in ("allowed_paths", "forbidden_paths"):
+        value = data.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
+            raise MissionError(f"'{field}' must be a list of strings")
+        sandbox_globs[field] = value
+
     adapters_block = data.get("adapters") or {}
     if not isinstance(adapters_block, dict):
         raise MissionError("'adapters' must be a mapping of adapter name to settings")
@@ -99,6 +108,8 @@ def load_mission(path: str | Path) -> MissionContract:
             recovery=RecoverySpec(max_attempts=max_attempts),
             adapter=adapter,
             adapters=adapters_block,
+            allowed_paths=sandbox_globs.get("allowed_paths"),
+            forbidden_paths=sandbox_globs.get("forbidden_paths"),
         )
     except ValidationError as e:
         raise MissionError(_format_validation_error(e)) from e

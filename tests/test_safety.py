@@ -3,6 +3,7 @@ import json
 import subprocess
 import sys
 import tarfile
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
@@ -632,3 +633,280 @@ def test_cli_rollback_non_git_restores_backup_from_prefix(tmp_path):
     r = runner.invoke(app, ["rollback", "eeee5", "--project-dir", str(tmp_path)])
     assert r.exit_code == 0, r.output
     assert (tmp_path / "data.txt").read_text() == "v1"
+
+
+# ------------------------------------------------ dogfood-06: write sandbox
+
+
+class _WritingAdapter(AgentAdapter):
+    """Creates one file (relative to project dir) on the execute send."""
+
+    name = "writing"
+    verified = True
+
+    def __init__(self, relpath):
+        super().__init__({})
+        self.relpath = relpath
+        self._planned = False
+
+    def is_available(self):
+        return True, ""
+
+    def start_session(self, project_dir, session_id):
+        self.project_dir = project_dir
+        return SessionInfo(session_id=session_id, project_dir=project_dir)
+
+    def send(self, prompt, session):
+        if not self._planned:
+            self._planned = True
+            return AgentState(status="completed", logs="plan")
+        target = Path(self.project_dir) / self.relpath
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("agent was here")
+        return AgentState(status="completed", logs="done")
+
+    def cancel(self, session):
+        pass
+
+
+def _committed_mission(tmp_path, body=None, name="m.yaml"):
+    """Write a mission file and commit everything so the tree starts clean."""
+    mp = _mission(tmp_path, body=body, name=name)
+    subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "mission"],
+                   check=True)
+    return mp
+
+
+def test_sandbox_forbidden_path_fails_and_skips_verification(tmp_path):
+    _git_repo(tmp_path)
+    mp = _committed_mission(tmp_path, body=(
+        "mission:\n  name: sbx-f\n  goal: g\n"
+        "forbidden_paths:\n  - '*.secret'\n"
+        f"verification:\n  commands:\n    - {PASS_CMD}\nadapter: mock\n"
+    ))
+    adapter = _WritingAdapter("config.secret")
+    cfg = TetherConfig(audit_dir=".tether/sessions")
+    report = Orchestrator(adapter, cfg, tmp_path).run(load_mission(mp))
+    assert report["status"] == "failed"
+    assert {"path": "config.secret",
+            "rule": "forbidden_paths: *.secret"} in report["sandbox_violations"]
+    assert report["verification_results"] == []  # verification skipped entirely
+    assert any("config.secret" in s for s in report["next_steps"])
+    assert any("rollback" in s.lower() for s in report["next_steps"])
+
+
+def test_sandbox_allowed_path_rejects_outside_writes(tmp_path):
+    _git_repo(tmp_path)
+    (tmp_path / "src").mkdir()
+    mp = _committed_mission(tmp_path, body=(
+        "mission:\n  name: sbx-a\n  goal: g\n"
+        "allowed_paths:\n  - 'src/**'\n"
+        f"verification:\n  commands:\n    - {PASS_CMD}\nadapter: mock\n"
+    ))
+    adapter = _WritingAdapter("README.md")  # outside allowed globs
+    cfg = TetherConfig(audit_dir=".tether/sessions")
+    report = Orchestrator(adapter, cfg, tmp_path).run(load_mission(mp))
+    assert report["status"] == "failed"
+    assert {"path": "README.md",
+            "rule": "not matched by allowed_paths"} in report["sandbox_violations"]
+    assert report["verification_results"] == []
+
+
+def test_no_sandbox_fields_behavior_unchanged(tmp_path):
+    _git_repo(tmp_path)
+    mp = _committed_mission(tmp_path)
+    adapter = _WritingAdapter("unrestricted.txt")
+    cfg = TetherConfig(audit_dir=".tether/sessions")
+    report = Orchestrator(adapter, cfg, tmp_path).run(load_mission(mp))
+    assert report["status"] == "success"
+    assert report["sandbox_violations"] == []
+    assert "unrestricted.txt" in report["changed_files"]
+
+
+def test_sandbox_allowed_path_permits_matching_writes(tmp_path):
+    _git_repo(tmp_path)
+    (tmp_path / "src").mkdir()
+    mp = _committed_mission(tmp_path, body=(
+        "mission:\n  name: sbx-ok\n  goal: g\n"
+        "allowed_paths:\n  - 'src/**'\n"
+        f"verification:\n  commands:\n    - {PASS_CMD}\nadapter: mock\n"
+    ))
+    adapter = _WritingAdapter("src/ok.txt")  # inside allowed globs
+    cfg = TetherConfig(audit_dir=".tether/sessions")
+    report = Orchestrator(adapter, cfg, tmp_path).run(load_mission(mp))
+    assert report["status"] == "success"
+    assert report["sandbox_violations"] == []
+
+
+@pytest.mark.parametrize("bad", [
+    "mission:\n  name: x\n  goal: y\nforbidden_paths: not-a-list\n",
+    "mission:\n  name: x\n  goal: y\nallowed_paths: ['a', 3]\n",
+])
+def test_invalid_sandbox_fields_raise_mission_error(tmp_path, bad):
+    p = tmp_path / "bad.yaml"
+    p.write_text(bad)
+    with pytest.raises(MissionError):
+        load_mission(p)
+
+
+# --------------------------------------------- dogfood-06: audit redaction
+
+
+def _run_with_audit(tmp_path, cfg_kwargs):
+    filler = "F" * 130
+    secret_line = filler[:60] + "SECRET-TOKEN" + filler[72:]
+    mp = _mission(tmp_path, body=(
+        "mission:\n  name: redact\n  goal: g\n"
+        f"context:\n  - '{secret_line}'\n"
+        f"verification:\n  commands:\n    - {PASS_CMD}\nadapter: mock\n"
+    ))
+    cfg = TetherConfig(audit_dir=".tether/sessions", **cfg_kwargs)
+    report = Orchestrator(SpyAdapter({"scenario": "success"}), cfg, tmp_path).run(
+        load_mission(mp))
+    assert report["status"] == "success"
+    return find_session_dir(tmp_path, ".tether/sessions", report["session_id"])
+
+
+def test_redact_prompts_false_stores_full_content(tmp_path):
+    session = _run_with_audit(tmp_path, {})
+    prompt_texts = "".join(
+        p.read_text(encoding="utf-8")
+        for p in sorted((session / "prompts").glob("*.txt"))
+    )
+    assert "SECRET-TOKEN" in prompt_texts
+    assert "[REDACTED" not in prompt_texts
+
+
+def test_redact_prompts_true_stores_hash_and_excerpt_only(tmp_path):
+    session = _run_with_audit(tmp_path, {"redact_prompts": True})
+    prompts = sorted((session / "prompts").glob("*.txt"))
+    assert len(prompts) == 2  # plan + execute
+    for p in prompts:
+        text = p.read_text(encoding="utf-8")
+        assert "[REDACTED sha256=" in text
+        assert "len=" in text and "head=" in text and "tail=" in text
+        assert "SECRET-TOKEN" not in text
+    response_texts = "".join(
+        p.read_text(encoding="utf-8")
+        for p in sorted((session / "responses").glob("*.json"))
+    )
+    assert "SECRET-TOKEN" not in response_texts
+
+
+def test_save_response_redaction(tmp_path):
+    from tether.audit import AuditTrail
+    state = AgentState(
+        status="failed",
+        logs="X" * 300 + "SECRETDATA" + "Y" * 300,
+        error="E" * 300 + "SECRETDATA" + "F" * 300,
+    ).model_dump()
+    off = AuditTrail(tmp_path, ".tether/sessions", "a", "111111111111")
+    on = AuditTrail(tmp_path, ".tether/sessions", "b", "222222222222",
+                    redact_prompts=True)
+    plain = off.save_response("r", state).read_text(encoding="utf-8")
+    redacted = on.save_response("r", state).read_text(encoding="utf-8")
+    assert plain.count("SECRETDATA") == 2  # existing behavior unchanged
+    assert "SECRETDATA" not in redacted
+    assert redacted.count("[REDACTED sha256=") == 2  # logs + error
+    # caller's dict is not mutated by redaction
+    assert "SECRETDATA" in state["logs"]
+
+
+def test_redact_body_shape():
+    import hashlib
+    from tether.audit import redact_body
+    body = "A" * 500
+    out = redact_body(body)
+    digest = hashlib.sha256(body.encode()).hexdigest()
+    assert f"sha256={digest}" in out
+    assert "len=500" in out
+    assert repr("A" * 64) in out  # head/tail excerpts retained
+
+
+# ------------------------------------------ dogfood-06: content-hash manifest
+
+
+def test_manifest_detects_same_length_content_change(tmp_path):
+    import os
+    (tmp_path / "data.bin").write_text("v1!")
+    before = snapshot_manifest(tmp_path)
+    # small files are fingerprinted by content, not mtime
+    assert isinstance(before["data.bin"][1], str)
+    assert len(before["data.bin"][1]) == 64  # sha256 hex digest
+    stat = (tmp_path / "data.bin").stat()
+    (tmp_path / "data.bin").write_text("v2!")  # same length, different content
+    os.utime(tmp_path / "data.bin", (stat.st_atime, stat.st_mtime))  # pin mtime
+    after = snapshot_manifest(tmp_path)
+    assert after["data.bin"][0] == before["data.bin"][0]  # same size...
+    assert diff_manifests(before, after)["modified"] == ["data.bin"]  # ...but new hash
+
+
+def test_manifest_large_file_falls_back_to_size_mtime(tmp_path, monkeypatch):
+    import os as _os
+    import tether.manifest as manifest_mod
+    monkeypatch.setattr(manifest_mod, "HASH_SIZE_LIMIT", 4)
+    big = tmp_path / "big.bin"
+    big.write_text("12345678")  # above the (lowered) limit
+
+    # same content, same size, shifted mtime -> detected via mtime fallback
+    before = snapshot_manifest(tmp_path)
+    assert isinstance(before["big.bin"][1], int)  # mtime_ns, not sha256 hex
+    stat = big.stat()
+    _os.utime(big, (stat.st_atime - 10, stat.st_mtime - 10))
+    mid = snapshot_manifest(tmp_path)
+    assert mid["big.bin"][1] < before["big.bin"][1]
+    assert diff_manifests(before, mid)["modified"] == ["big.bin"]
+
+    # identical size AND mtime -> NOT modified even if bytes differ (fallback
+    # is best-effort by design)
+    _os.utime(big, (stat.st_atime, stat.st_mtime))
+    after_same_stat = snapshot_manifest(tmp_path)
+    big.write_text("87654321")  # different content, same length
+    _os.utime(big, (stat.st_atime, stat.st_mtime))
+    after_diff_bytes = snapshot_manifest(tmp_path)
+    assert after_diff_bytes["big.bin"] == after_same_stat["big.bin"]
+    assert diff_manifests(after_same_stat, after_diff_bytes)["modified"] == []
+
+    # small files still hash content even when the limit is lowered
+    (tmp_path / "small.txt").write_text("aaaa")
+    s_before = snapshot_manifest(tmp_path)
+    (tmp_path / "small.txt").write_text("bbbb")  # same length
+    assert diff_manifests(s_before, snapshot_manifest(tmp_path))["modified"] == \
+        ["small.txt"]
+
+
+# ----------------------------------- dogfood-06: writer-lock stale timeout
+
+
+def test_writer_lock_stale_seconds_configurable(tmp_path):
+    import os
+    import time as _time
+
+    def _run():
+        mp = _mission(tmp_path)
+        cfg = TetherConfig(audit_dir=".tether/sessions",
+                           writer_lock_stale_seconds=1)
+        adapter = SpyAdapter({"scenario": "success"})
+        report = Orchestrator(adapter, cfg, tmp_path).run(load_mission(mp))
+        return report, adapter.calls
+
+    # stale lock (mtime 2s ago, older than the configured 1s) is taken over
+    lock = tmp_path / ".tether" / "tether.lock"
+    lock.parent.mkdir(exist_ok=True)
+    lock.write_text("oldsess0000\n", encoding="utf-8")
+    old = _time.time() - 2
+    os.utime(lock, (old, old))
+    report, calls = _run()
+    assert report["status"] == "success"
+    assert "start_session" in calls
+    assert not lock.exists()  # taken over and released again
+
+    # fresh lock (mtime now) still blocks even with the short timeout,
+    # and fails fast before any adapter interaction
+    lock.write_text("freshsess9999\n", encoding="utf-8")
+    report2, calls2 = _run()
+    assert report2["status"] == "failed"
+    assert calls2 == []
+    assert any("freshsess9999" in s for s in report2["next_steps"])
+    assert lock.read_text().strip() == "freshsess9999"  # not clobbered
