@@ -168,6 +168,12 @@ def run(
     typer.echo(f"Report: {report['audit_dir']}/report.json")
     for step in report["next_steps"]:
         typer.echo(f"Next: {step}")
+    if report["status"] == "cancelled":
+        typer.echo(
+            "Interrupted by user; the adapter was cancelled. Use the "
+            "rollback hint above to undo partial changes."
+        )
+        raise typer.Exit(code=2)
     if report["status"] != "success":
         raise typer.Exit(code=2)
 

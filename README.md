@@ -119,3 +119,4 @@ Tests use only temp directories, git temp repos with local identity, and the Moc
 - Non-git changed-file detection is best-effort (size/mtime manifest; no content diff).
 - Token/cost usage is only reported if an adapter provides it (Mock/Command do not).
 - opencode/pi presets are unverified assumptions; override their command templates in config.
+- Ctrl-C during adapter interaction is handled gracefully: the adapter's `cancel()` is called best-effort, the report is finalized with status `cancelled` (CLI exit code 2), and the rollback hint is printed — but a second interrupt or one outside the agent loop still aborts hard.

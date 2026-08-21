@@ -36,6 +36,7 @@ src/tether/
 9. Verification of declared commands (skipped execution in dry-run).
 10. Pass AND agent completed => success. Any non-completed agent state (failed/unavailable/cancelled/needs_input/running) counts as failure. Fail => recovery loop: repair prompt with a bounded (~8KB) excerpt of failing output, re-verify, up to effective `max_attempts`.
 11. Final `report.json` + rollback guidance on failure.
+12. A `KeyboardInterrupt` (Ctrl-C) during adapter interaction is handled gracefully: `adapter.cancel(session)` is invoked best-effort (cancel errors are swallowed), a `cancelled` event is appended to `events.jsonl`, the audit trail is finalized with a `report.json` of status `cancelled`, and `next_steps` carries rollback guidance (`tether rollback <session-id>`).
 
 Effective values follow strict precedence: mission explicit value > project config > built-in default, applied independently for `recovery.max_attempts`, `verification.commands`, and `verification.timeout_seconds`. Mission models keep these fields Optional so "unset" is distinguishable from an explicit value.
 

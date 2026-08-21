@@ -306,6 +306,22 @@ class Orchestrator:
             status = "failed"
             next_steps.append(f"Internal error: {e!r}")
             log.exception("Orchestration error")
+        except KeyboardInterrupt:
+            # Graceful interrupt during adapter interaction: cancel the agent,
+            # finalize the audit trail, and point the user at rollback.
+            status = "cancelled"
+            if session is not None:
+                try:
+                    self.adapter.cancel(session)
+                except Exception as cancel_error:
+                    log.warning("Adapter cancel failed: %s", cancel_error)
+            audit.log_event("cancelled", {"session_id": self.session_id})
+            next_steps.append(
+                "Interrupted by user; partial changes may exist. "
+                f"Roll back with: tether rollback {self.session_id} "
+                f"--project-dir {self.project_dir}"
+            )
+            log.warning("Interrupted; adapter cancelled, report marked 'cancelled'.")
 
         finished_at = utcnow()
         if checkpoint.is_git_repo:

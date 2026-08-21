@@ -330,3 +330,50 @@ def test_adapter_reported_changed_files_and_usage_surfaced(tmp_path):
     assert report["status"] == "success"
     assert "agent-made.txt" in report["changed_files"]
     assert report["usage"] == {"tokens": 42}
+
+
+# ------------------------------------------------ graceful interrupt (B3)
+
+
+class _InterruptAdapter(_ScriptedAdapter):
+    """Raises KeyboardInterrupt from the first send(); records cancel calls."""
+
+    def __init__(self):
+        super().__init__([])
+        self.cancel_calls = 0
+
+    def send(self, prompt, session):
+        raise KeyboardInterrupt()
+
+    def cancel(self, session):
+        self.cancel_calls += 1
+
+
+def test_keyboard_interrupt_cancels_gracefully(tmp_path):
+    adapter = _InterruptAdapter()
+    report = _run_scripted(tmp_path, adapter)
+    assert report["status"] == "cancelled"
+    assert adapter.cancel_calls == 1
+    assert any("rollback" in s.lower() for s in report["next_steps"])
+    session = find_session_dir(tmp_path, ".tether/sessions", report["session_id"])
+    assert session is not None
+    assert (session / "report.json").exists()
+    saved = json.loads((session / "report.json").read_text())
+    assert saved["status"] == "cancelled"
+    events = [
+        json.loads(line)
+        for line in (session / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert any(e.get("kind") == "cancelled" for e in events)
+
+
+def test_keyboard_interrupt_swallows_cancel_errors(tmp_path):
+    class _BadCancelAdapter(_InterruptAdapter):
+        def cancel(self, session):
+            self.cancel_calls += 1
+            raise RuntimeError("cancel exploded")
+
+    adapter = _BadCancelAdapter()
+    report = _run_scripted(tmp_path, adapter)
+    assert report["status"] == "cancelled"
+    assert adapter.cancel_calls == 1
