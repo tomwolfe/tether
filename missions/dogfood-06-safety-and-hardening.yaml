@@ -1,0 +1,119 @@
+mission:
+  name: dogfood-06-safety-and-hardening
+  goal: |
+    Close the five highest-impact remaining gaps in Tether's safety, audit,
+    and operational story. Each task is proven by tests that fail before
+    the change and pass after. All existing tests must keep passing.
+
+    Tasks (implement in order; keep every change minimal and scoped):
+
+    1. FILE-LEVEL WRITE SANDBOX
+       In src/tether/models.py, add optional fields to MissionContract:
+         allowed_paths: Optional[List[str]]
+         forbidden_paths: Optional[List[str]]
+       In src/tether/mission.py, validate they are lists of strings when
+       present (raise MissionError otherwise).
+       In src/tether/orchestrator.py, after the execution step and before
+       verification, compare changed_files against these globs (use
+       fnmatch.fnmatch). If a forbidden path was touched OR a changed file
+       falls outside allowed_paths (when allowed_paths is non-empty), set
+       status to "failed", skip verification, and record the violations in
+       report.json under "sandbox_violations" (list of {path, rule}).
+       Add a next_steps entry naming the violating files.
+       Add tests in tests/test_safety.py:
+         a) forbidden_paths=["*.secret"], agent creates "config.secret"
+            -> status "failed", sandbox_violations populated, verification
+            skipped.
+         b) allowed_paths=["src/**"], agent touches "README.md"
+            -> status "failed".
+         c) No sandbox fields -> behavior unchanged.
+
+    2. OPTIONAL AUDIT REDACTION
+       In src/tether/models.py, add to TetherConfig:
+         redact_prompts: bool = False
+       In src/tether/audit.py, add a helper:
+         def redact_body(text: str) -> str:
+             """sha256 + length + first/last 64 chars."""
+       In AuditTrail.save_prompt and save_response, when redact_prompts
+       is True (passed via constructor or config), store the redacted
+       form instead of full content. Wire the config flag through
+       Orchestrator -> AuditTrail.
+       Add tests proving: redact_prompts=False stores full content
+       (existing behavior); redact_prompts=True stores only hash +
+       excerpt and never the full body.
+
+    3. CONTENT-HASH NON-GIT MANIFEST
+       In src/tether/manifest.py, change snapshot_manifest to use
+       (size, sha256_hex) instead of (size, mtime_ns) for files whose
+       size is under a threshold (default 1 MiB, configurable via a
+       module-level constant HASH_SIZE_LIMIT). Files at or above the
+       limit keep (size, mtime_ns).
+       Update diff_manifests to work with the new tuple shape (it should
+       already, since it compares tuples for equality).
+       Add a test in tests/test_safety.py: write a file, snapshot,
+       overwrite with different content but same length, snapshot again,
+       assert diff_manifests reports it as modified. Also test that a
+       file above the limit uses size+mtime fallback.
+
+    4. GRANULAR EXIT CODES
+       In src/tether/cli.py, define constants:
+         EXIT_SUCCESS = 0
+         EXIT_FAILED = 1
+         EXIT_CANCELLED = 2
+         EXIT_REJECTED = 3
+         EXIT_SANDBOX_VIOLATION = 4
+       Update the `run` command:
+         - "cancelled" -> EXIT_CANCELLED
+         - "failed" with sandbox_violations -> EXIT_SANDBOX_VIOLATION
+         - "failed" otherwise -> EXIT_FAILED
+         - "success" -> EXIT_SUCCESS
+       Add tests in tests/test_adapters_cli.py asserting each exit code
+       via CliRunner (use scripted adapters from test_core.py patterns).
+
+    5. CONFIGURABLE WRITER-LOCK STALE TIMEOUT
+       In src/tether/models.py, add to TetherConfig:
+         writer_lock_stale_seconds: int = 43200  # 12 hours
+       In src/tether/orchestrator.py, pass the config value to
+       fresh_lock_holder() instead of the hardcoded
+       WRITER_LOCK_STALE_SECONDS. Keep the module constant as the
+       default.
+       Add a test: configure writer_lock_stale_seconds=1, create a lock
+       file with mtime 2 seconds ago, assert the run takes over the
+       lock and succeeds. Also assert a fresh lock (mtime now) still
+       blocks.
+
+    Change NOTHING outside this scope.
+
+context:
+  - "Read docs/ARCHITECTURE.md and README.md first."
+  - "The core loop must stay adapter-agnostic (AgentAdapter interface only)."
+  - "Dogfood missions 01-05 already shipped: interrupt handling, smoke, settings validation, strict exit codes, writer lock, plan composition, event hashing, backup prefix resolution, log_level wiring. Build on them; do not re-implement."
+  - "The sandbox check is a post-execution gate (after changed_files are detected), not a pre-execution filter. The orchestrator already computes changed_files before verification."
+  - "Use fnmatch from stdlib for glob matching. No new dependencies."
+  - "Scripted/spy adapter patterns in tests/test_core.py and tests/test_safety.py show how to assert adapter invocation and capture prompts."
+  - "subprocess stays shell=False everywhere."
+
+constraints:
+  - "do not change AgentAdapter interface signatures"
+  - "do not weaken existing tests; all current tests must keep passing"
+  - "subprocess usage stays shell=False"
+  - "no new third-party dependencies (stdlib fnmatch, hashlib are fine)"
+  - "keep changes minimal and focused on the five tasks"
+  - "the redact_prompts flag must default to False so existing behavior is unchanged"
+  - "the sandbox fields must be Optional so existing missions work unchanged"
+
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+  timeout_seconds: 600
+
+recovery:
+  max_attempts: 3
+  adapter: opencode
+
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 1800
