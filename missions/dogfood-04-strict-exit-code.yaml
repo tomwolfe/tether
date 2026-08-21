@@ -1,0 +1,46 @@
+mission:
+  name: dogfood-04-strict-exit-code
+  goal: |
+    Fix two defects found while dogfooding the settings-validation feature,
+    each proven by a failing-then-passing test.
+    Tasks:
+    1. In src/tether/cli.py, `tether validate-config --strict` currently
+       prints "INVALID: ..." but exits with code 0. Make it exit with code 1
+       whenever validation fails (strict unknown-setting errors included),
+       matching how other commands signal failure. Check the other
+       validation command (`validate-mission`) for the same defect and fix
+       if present.
+    2. In src/tether/adapters/__init__.py, unknown_setting_messages()
+       silently skips configured adapter names not present in _REGISTRY.
+       Emit a warning message for such names too, e.g.
+       "adapter 'myagent': unknown adapter name; cannot validate settings"
+       (still skipped from strict-mode errors only if the name itself is
+       unregistered is NOT desired -- an unregistered name referenced in
+       config should also fail strict mode, since resolve_adapter would
+       reject it at run time).
+    3. Add tests in tests/test_adapters_cli.py: strict validate-config on a
+       bad config asserts non-zero exit; unknown adapter name in config
+       produces a warning message and fails under --strict.
+    Change NOTHING outside this scope.
+context:
+  - Repro: put `adapters:\n  mock:\n    scenarioo: x` in tether.yaml in a
+    temp dir; `python -m tether validate-config --strict` prints INVALID but
+    returns exit code 0.
+  - Repro 2: `adapters:\n  myagent:\n    command: ["x"]` produces no
+    validation output at all today.
+constraints:
+  - all current tests must keep passing
+  - keep changes minimal
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+  timeout_seconds: 600
+recovery:
+  max_attempts: 3
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 1800
