@@ -1,0 +1,130 @@
+mission:
+  name: dogfood-08-trust-core-hardening
+  goal: |
+    Phase 0B: harden Tether's trust core — atomic locking, backup integrity,
+    rollback preview, diagnostics, dev tooling alignment, and security docs.
+
+    Tasks:
+
+    1. ATOMIC WRITER LOCK:
+       - In src/tether/git_safety.py (or wherever the single-writer lock lives),
+         replace non-atomic lock creation with atomic O_CREAT | O_EXCL creation.
+       - Implement stale-lock takeover: if the lock exists but its owning PID is
+         no longer alive (embed PID + timestamp in the lock file), take it over.
+         On platforms where PID liveness cannot be checked portably, fall back
+         to a configurable staleness timeout.
+       - Release the lock on ALL exit paths, including exceptions and signals
+         already handled by the orchestrator.
+       - Keep existing lock-timeout config semantics working.
+       - Add tests for: contention (second writer fails while first holds),
+         stale takeover (dead PID lock is acquired), and release on exception.
+
+    2. BACKUP CHECKSUM VERIFICATION:
+       - For non-git tar backups, write a `<archive>.sha256` sidecar containing
+         the sha256 of the archive at creation time.
+       - Before any restore, verify the checksum; on mismatch fail with a clear
+         error and do NOT restore.
+       - Exclude the backup archive and its sidecar from the backup contents
+         themselves.
+       - Write the archive to a temp file and atomically rename into place so a
+         crashed backup never leaves a truncated archive that looks valid.
+       - Add tests for: verify-then-restore success, corruption detected and
+         restore refused, archive excluded from its own backup.
+
+    3. ROLLBACK PREVIEW:
+       - Extend `tether rollback <session-id>` with a --dry-run flag that prints
+         a plan WITHOUT touching anything:
+           * checkpoint target ref / backup path,
+           * whether the working tree is currently dirty,
+           * files that would be reset (from session report changed_files),
+           * additional files that would be deleted with --clean,
+           * pre-existing untracked files that would be preserved,
+           * for non-git projects, the backup restore plan.
+       - Exit code 0 when the plan is produced.
+       - Default rollback behavior must remain unchanged.
+
+    4. DEV TOOLING ALIGNMENT:
+       - Update pyproject.toml with an optional dependency group:
+           [project.optional-dependencies]
+           dev = ["pytest>=8.0", "pytest-cov", "ruff", "mypy", "types-PyYAML"]
+       - Verify `pip install -e ".[dev]"` is sufficient to run pytest, ruff,
+         and mypy. Update README development instructions accordingly.
+
+    5. ADD `tether doctor`:
+       - New CLI command that checks and reports pass/fail for:
+           * Python version (state minimum required),
+           * git availability,
+           * project tether.yaml validity (if present),
+           * adapter availability for each registered adapter,
+           * audit directory writability (create/verify .tether/sessions),
+           * backup directory writability,
+           * existing stale lock files,
+           * dirty-tree status of the target project.
+       - Print a concise per-check report with an overall verdict; exit nonzero
+         only when a critical check fails (git missing, directories not
+         writable). Advisory checks (dirty tree) do not fail the command.
+
+    6. SECURITY / THREAT-MODEL DOCUMENTATION:
+       - Create docs/SECURITY.md covering:
+           * untrusted agent output (agents can write arbitrary files within
+             allowed_paths; sandbox is detection not enforcement),
+           * prompt injection via repository content,
+           * secret leakage into prompts, logs, and audit artifacts,
+             including redaction limits,
+           * verification commands execute with full user privileges,
+           * rollback limits (untracked-file edge cases, non-git restore),
+           * local single-writer lock scope (per-project, advisory against
+             concurrent local use only),
+           * event hash chain as tamper-EVIDENT, not tamper-proof.
+       - Do not overstate guarantees; be precise about what Tether does and
+         does not protect against.
+
+    Change NOTHING outside this scope. All current tests must keep passing.
+
+  context:
+    - Read src/tether/git_safety.py, src/tether/cli.py, src/tether/orchestrator.py,
+      README.md, and existing tests before changing code.
+    - The single-writer lock currently uses a non-atomic create-then-check pattern.
+    - Non-git backups are tar archives created in git_safety.py; there is no
+      checksum or restore verification today.
+    - Rollback logic and scoped clean rollback live in git_safety.py; the CLI
+      rollback command is in cli.py.
+    - Session reports contain changed_files usable for preview plans.
+    - dogfood-07 added patch.diff/untracked.txt/manifest_diff.json capture and
+      auto_rollback; do not regress those features or tests.
+
+  constraints:
+    - do not change AgentAdapter interface signatures
+    - do not weaken existing tests; all current tests must keep passing
+    - subprocess usage stays shell=False
+    - no new third-party dependencies
+    - keep changes minimal, typed, and scoped
+
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+  timeout_seconds: 900
+
+recovery:
+  max_attempts: 3
+
+adapter: opencode
+
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 1800
+
+allowed_paths:
+  - src/**
+  - tests/**
+  - docs/**
+  - README.md
+  - pyproject.toml
+
+forbidden_paths:
+  - .git/**
+  - .tether/**
+  - missions/**
