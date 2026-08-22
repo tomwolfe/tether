@@ -1,0 +1,115 @@
+mission:
+  name: dogfood-11-certification-and-artifacts
+  goal: |
+    Close two remaining credibility gaps: missions must fail when required
+    deliverables are missing, and adapter certification must combine
+    behavioral conformance with a live probe of the real CLI.
+
+    Tasks:
+
+    1. VERIFICATION ARTIFACT ASSERTIONS:
+       - Extend the verification block of the mission contract with an
+         optional top-level-in-verification key:
+             verification:
+               commands: [...]
+               artifacts:
+                 - docs/SECURITY.md
+                 - src/tether/conformance.py
+         Paths are relative to the target project directory; fnmatch-style
+         glob patterns are allowed.
+       - Parsing: validate-mission accepts 'artifacts' as a list of strings
+         (structural validation only).
+       - Enforcement in the orchestrator: after ALL verification commands
+         pass on an attempt, check each artifact pattern against the target
+         project. Every pattern must match at least one existing file;
+         otherwise the attempt counts as failed with clear output naming the
+         unmatched patterns, and recovery proceeds normally.
+       - Artifacts are NOT checked when all commands already failed for other
+         reasons mid-attempt ordering is up to you, but a missing artifact on
+         an otherwise-green attempt MUST fail that attempt.
+       - Report per-attempt artifact results alongside verification_results
+         (command results plus an artifacts result entry with matched files).
+       - This closes the dogfood-08 lesson: the agent skipped
+         docs/SECURITY.md and still reported success because nothing asserted
+         its existence.
+
+    2. ADAPTER CERTIFICATION COMMAND:
+       - Add `tether adapters certify <name>` which runs, in order:
+           1. availability check,
+           2. the full conformance battery,
+           3. a live smoke probe against the REAL configured command
+              ('tether adapters smoke' behavior) inside a throwaway dir,
+         then prints a combined verdict:
+             CERTIFIED (experimental): conformance passed + live probe passed;
+             promote candidate once real-mission behavior is demonstrated.
+             FAILED: name the failing stage.
+         Exit nonzero if any stage fails.
+       - The live probe must use the adapter's own configured command (not
+         stubs). If the real command is unavailable, certify fails at the
+         live-probe stage with the reason.
+       - Update docs/ADAPTERS.md: promotion criteria become concrete —
+         'tether adapters certify <name>' passing plus demonstrated behavior
+         on at least one real mission qualifies an adapter for verified=true.
+
+    3. TESTS:
+       - Artifacts: patterns match existing file; missing file fails the
+         attempt; glob patterns work; report includes artifact entry;
+         validate-mission structural checks.
+       - Certify: mock adapter end-to-end (conformance passes but live probe
+         semantics for mock — define mock's live probe as its normal send,
+         so certify mock should pass); unavailable real command fails at the
+         right stage with clear message; exit codes.
+       - All existing tests keep passing; do not weaken any test.
+
+    Change NOTHING outside this scope.
+
+  context:
+    - Read src/tether/mission.py (verification parsing), models.py
+      (VerificationSpec), orchestrator.py verification loop, cli.py
+      (adapters subcommands), smoke.py, conformance.py first.
+    - VerificationSpec currently carries commands and timeout_seconds; add
+      artifacts there.
+    - The verification loop lives in orchestrator.run(); each attempt's
+      results append to report['verification_results'].
+    - smoke.build_smoke_adapter / smoke.run_smoke implement the throwaway-dir
+      probe; reuse them for the live stage.
+    - dogfood-10 added context_files and sandbox enforce; do not regress.
+
+  constraints:
+    - do not change AgentAdapter method signatures
+    - do not weaken existing tests; all current tests must keep passing
+    - subprocess usage stays shell=False
+    - no new third-party dependencies
+    - keep changes minimal, typed, and scoped
+
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+    - ".venv/bin/tether adapters conformance mock"
+  artifacts:
+    - "src/tether/context_files.py"
+    - "docs/ADAPTERS.md"
+  timeout_seconds: 900
+
+recovery:
+  max_attempts: 3
+
+adapter: opencode
+
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 1800
+
+allowed_paths:
+  - src/**
+  - tests/**
+  - docs/**
+  - README.md
+
+forbidden_paths:
+  - .git/**
+  - .tether/**
+  - missions/**
