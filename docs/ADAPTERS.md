@@ -75,22 +75,60 @@ Notes:
   `AgentAdapter` instance, so new adapters can self-certify; checks needing
   fault injection a class cannot express are skipped, never silently passed.
 
+## Certification (`tether adapters certify <name>`)
+
+Conformance alone proves behavior against stubs; certification adds a live
+probe of the real CLI. One command runs three stages, in order:
+
+1. **Availability** — `is_available()` reports a working setup.
+2. **Conformance** — the full battery above must print `Verdict: PASS`.
+3. **Live probe** — the exact `tether adapters smoke` behavior (a trivial
+   send inside a throwaway directory) against the adapter's REAL configured
+   command — never stubs.
+
+It then prints a combined verdict:
+
+- `CERTIFIED (experimental): conformance passed + live probe passed; promote
+  candidate once real-mission behavior is demonstrated.` — exit 0.
+- `FAILED at <stage>: <reason>` — exit 1, naming availability, conformance,
+  or the live probe.
+
+Notes:
+
+- Mock's live probe is its normal send, so `tether adapters certify mock`
+  certifies out of the box.
+- An unavailable real command fails at the **live-probe stage** with the
+  underlying reason (missing binary, unconfigured `command`, ...). When no
+  command is configured for generic command plumbing, conformance still
+  certifies via stubs, but certification then correctly gates on the live
+  probe.
+- A configured command that misbehaves fails earlier, at the stage that
+  observed the problem (conformance checks drive fault-injection variants,
+  while `success_completes` exercises the instance itself).
+
+```bash
+tether adapters certify mock      # CERTIFIED out of the box
+tether adapters certify opencode  # live probe requires a real `opencode` binary
+```
+
 ## Experimental vs verified (promotion criteria)
 
-`verified` is earned, not declared. An adapter may claim `verified` only when
-all of the following hold:
+`verified` is earned, not declared. An adapter may claim `verified=true` only
+when all of the following hold:
 
-1. **Conformance**: `tether adapters conformance <name>` prints `Verdict: PASS`.
-2. **Demonstrated real CLI behavior**: at least one recorded
-   `tether adapters smoke <name>` against an actually installed binary,
-   showing a completed trivial run with real exit codes and logs — evidence
-   beyond stub executables.
+1. **Certification**: `tether adapters certify <name>` passes — behavioral
+   conformance **plus** a live probe of the real CLI (see above).
+2. **Demonstrated real-mission behavior**: at least one recorded Tether
+   mission ran end-to-end through the adapter against a real project
+   (`completed` agent state, verification passed), showing behavior beyond
+   trivial probes and stub executables.
 3. **Honest metadata**: `name`, `verified`, and the five capability flags
    match observed behavior.
 
-Until then an adapter stays `experimental`. opencode and pi are intentionally
-experimental today: their command shapes were checked against `--help`
-output, but end-to-end runs are not exercised by Tether's tests.
+Until then an adapter stays `experimental`. Passing conformance alone is not
+sufficient evidence anymore; opencode and pi are intentionally experimental
+today: their command shapes were checked against `--help` output, but neither
+a certify live probe nor a real mission has been recorded yet.
 
 ## MockAdapter (verified)
 
@@ -154,7 +192,8 @@ Both report `experimental` maturity in `tether adapters list` and fail cleanly w
 2. Set `name`, `verified` and the five capability flags honestly.
 3. Register it: `tether.adapters.register("myname", MyClass)` (or add to `_REGISTRY` in `src/tether/adapters/__init__.py`).
 4. Optionally add a preset class in `experimental.py` with documented assumptions.
-5. Self-certify: `tether adapters conformance myname` must print PASS before
-   `verified` may be claimed (see promotion criteria above).
+5. Self-certify: `tether adapters certify myname` must pass (and a real
+   mission must demonstrate behavior) before `verified` may be claimed
+   (see promotion criteria above).
 
 No changes to the core loop are needed or allowed for agent-specific behavior.

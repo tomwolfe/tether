@@ -62,6 +62,14 @@ def load_mission(path: str | Path) -> MissionContract:
     ):
         raise MissionError("'verification.timeout_seconds' must be a positive integer")
 
+    # Structural validation only: existence of the referenced files is
+    # enforced per attempt by the orchestrator against the target project.
+    artifacts = verification.get("artifacts")
+    if artifacts is not None and (
+        not isinstance(artifacts, list) or not all(isinstance(a, str) for a in artifacts)
+    ):
+        raise MissionError("'verification.artifacts' must be a list of strings")
+
     recovery = data.get("recovery") or {}
     if not isinstance(recovery, dict):
         raise MissionError("'recovery' must be a mapping")
@@ -112,7 +120,9 @@ def load_mission(path: str | Path) -> MissionContract:
             goal=goal,
             context=data.get("context", []) or [],
             constraints=data.get("constraints", []) or [],
-            verification=VerificationSpec(commands=commands, timeout_seconds=timeout_seconds),
+            verification=VerificationSpec(
+                commands=commands, timeout_seconds=timeout_seconds, artifacts=artifacts
+            ),
             recovery=RecoverySpec(max_attempts=max_attempts),
             adapter=adapter,
             adapters=adapters_block,

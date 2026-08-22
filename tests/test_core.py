@@ -876,3 +876,160 @@ def test_context_files_audit_event_lists_paths_and_sizes(tmp_path):
     ev = next(e for e in events if e["kind"] == "context_files")
     assert ev["files"] == [{"path": "notes.txt", "bytes": len(body)}]
     assert ev["total_bytes"] == len(body)
+
+
+# ------------------------------------- verification artifacts (dogfood-11)
+
+
+from tether.verification import check_artifacts, summarize_artifacts  # noqa: E402
+
+
+def _artifact_mission(tmp_path, artifacts, commands=None, max_attempts=2):
+    cmds = [PASS_CMD] if commands is None else list(commands)
+    cmd_lines = "".join(f"    - {json.dumps(c)}\n" for c in cmds)
+    art_lines = "".join(f"    - '{a}'\n" for a in artifacts)
+    p = tmp_path / "m.yaml"
+    p.write_text(
+        "mission:\n  name: art\n  goal: g\n"
+        "verification:\n  commands:\n"
+        f"{cmd_lines}"
+        f"  artifacts:\n{art_lines}"
+        f"recovery:\n  max_attempts: {max_attempts}\n"
+        "adapter: mock\n",
+        encoding="utf-8",
+    )
+    return load_mission(p)
+
+
+def _run_artifacts(tmp_path, mission, scenario="success", dry_run=False):
+    adapter = resolve_adapter("mock", {"mock": {"scenario": scenario}})
+    cfg = TetherConfig(audit_dir=".tether/sessions",
+                       max_attempts=mission.recovery.max_attempts or 3,
+                       dry_run=dry_run)
+    return Orchestrator(adapter, cfg, tmp_path).run(mission)
+
+
+def test_mission_artifacts_parse_as_list_of_strings(tmp_path):
+    m = _artifact_mission(tmp_path, ["docs/SECURITY.md", "src/**/*.py"])
+    assert m.verification.artifacts == ["docs/SECURITY.md", "src/**/*.py"]
+    assert m.verification.commands == [PASS_CMD]
+
+
+@pytest.mark.parametrize("bad", [
+    "mission:\n  name: x\n  goal: y\nverification:\n  artifacts: not-a-list\n",
+    "mission:\n  name: x\n  goal: y\nverification:\n  artifacts: ['a', 42]\n",
+])
+def test_artifacts_structural_errors_raise_mission_error(tmp_path, bad):
+    p = tmp_path / "bad.yaml"
+    p.write_text(bad)
+    with pytest.raises(MissionError):
+        load_mission(p)
+
+
+def test_existing_artifact_passes_and_report_includes_entry(tmp_path):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "SECURITY.md").write_text("trust but verify\n")
+    report = _run_artifacts(tmp_path,
+                            _artifact_mission(tmp_path, ["docs/SECURITY.md"],
+                                              max_attempts=3))
+    assert report["status"] == "success"
+    entries = report["verification_results"]
+    # command results and the artifact entry sit alongside each other
+    assert any("command" in e for e in entries)
+    artifact_entries = [e for e in entries if "pattern" in e]
+    assert artifact_entries == [{
+        "pattern": "docs/SECURITY.md",
+        "matched_files": ["docs/SECURITY.md"],
+        "passed": True,
+        "detail": "",
+    }]
+    session = find_session_dir(tmp_path, ".tether/sessions",
+                               report["session_id"])
+    saved = json.loads(
+        (session / "verification" / "attempt-01.json").read_text())
+    assert any(e.get("pattern") == "docs/SECURITY.md" for e in saved)
+
+
+def test_missing_artifact_fails_green_attempt_and_recovery_runs(tmp_path):
+    report = _run_artifacts(
+        tmp_path,
+        _artifact_mission(tmp_path, ["docs/ghost.md"], max_attempts=2),
+    )
+    assert report["status"] == "failed"
+    # attempt 1 was green on commands, so recovery ran over the missing file
+    assert len(report["recovery_attempts"]) == 1
+    reason = report["recovery_attempts"][0]["failing_output"]
+    assert "missing required artifacts" in reason
+    assert "docs/ghost.md" in reason
+    last_entry = report["verification_results"][-1]
+    assert last_entry["pattern"] == "docs/ghost.md"
+    assert last_entry["matched_files"] == [] and last_entry["passed"] is False
+    assert any("missing required artifacts" in s and "docs/ghost.md" in s
+               for s in report["next_steps"])
+
+
+def test_verification_command_can_satisfy_artifact_during_recovery(tmp_path):
+    creator = py_cmd('from pathlib import Path; '
+                     'Path("docs").mkdir(exist_ok=True); '
+                     'Path("docs/SECURITY.md").write_text("s")')
+    report = _run_artifacts(
+        tmp_path,
+        _artifact_mission(tmp_path, ["docs/SECURITY.md"], commands=[creator],
+                          max_attempts=3),
+        scenario="fail_then_succeed",
+    )
+    assert report["status"] == "success"
+    assert len(report["recovery_attempts"]) == 1
+
+
+def test_artifact_glob_patterns_match(tmp_path):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "a.md").write_text("x")
+    (docs / "b.txt").write_text("x")
+    report = _run_artifacts(tmp_path,
+                            _artifact_mission(tmp_path, ["docs/*.md"]))
+    assert report["status"] == "success"
+    entry = next(e for e in report["verification_results"] if "pattern" in e)
+    assert entry["passed"] is True
+    assert entry["matched_files"] == ["docs/a.md"]
+
+
+def test_failing_commands_skip_the_artifact_gate(tmp_path):
+    report = _run_artifacts(
+        tmp_path,
+        _artifact_mission(tmp_path, ["docs/ghost.md"], commands=[FAIL_CMD],
+                          max_attempts=2),
+    )
+    assert report["status"] == "failed"
+    reason = report["recovery_attempts"][0]["failing_output"]
+    assert "exit code 1" in reason
+    assert "missing required artifacts" not in reason
+
+
+def test_dry_run_does_not_enforce_artifacts(tmp_path):
+    report = _run_artifacts(
+        tmp_path, _artifact_mission(tmp_path, ["docs/ghost.md"]), dry_run=True)
+    assert report["status"] == "success"
+    entry = next(e for e in report["verification_results"] if "pattern" in e)
+    assert entry["passed"] is True and "dry-run" in entry["detail"]
+
+
+def test_check_artifacts_matches_files_and_skips_tether_dir(tmp_path):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "a.md").write_text("x")
+    tether_dir = tmp_path / ".tether" / "sessions" / "s"
+    tether_dir.mkdir(parents=True)
+    (tether_dir / "report.json").write_text("{}")
+
+    results = check_artifacts(["docs/*.md", "*.json", "nope.bin"], tmp_path)
+    by_pattern = {r.pattern: r for r in results}
+    assert by_pattern["docs/*.md"].passed is True
+    assert by_pattern["docs/*.md"].matched_files == ["docs/a.md"]
+    # tether's own audit output never satisfies a deliverable
+    assert by_pattern["*.json"].passed is False
+    assert by_pattern["*.json"].matched_files == []
+    assert by_pattern["nope.bin"].passed is False
+    ok, message = summarize_artifacts(results)
+    assert not ok
+    assert "*.json" in message and "nope.bin" in message

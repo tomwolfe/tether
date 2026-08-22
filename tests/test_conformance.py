@@ -201,3 +201,86 @@ def test_cli_conformance_unknown_adapter_exits_nonzero(tmp_path, monkeypatch):
     r = runner.invoke(app, ["adapters", "conformance", "no-such-adapter"])
     assert r.exit_code != 0
     assert "no-such-adapter" in r.output
+
+
+# ---------------------------------------------------------------- certify
+
+
+from tether.certify import (  # noqa: E402
+    STAGE_AVAILABILITY,
+    STAGE_CONFORMANCE,
+    STAGE_LIVE_PROBE,
+    run_certify,
+)
+
+
+def test_certify_mock_passes_end_to_end():
+    # mock's live probe is its normal send, so certify passes out of the box
+    result = run_certify(MockAdapter(), "mock")
+    assert result.ok and result.failed_stage == ""
+    assert result.available
+    assert result.conformance is not None and result.conformance.ok
+    assert result.live_probe is not None and result.live_probe.ok
+    assert result.verdict_line == (
+        "CERTIFIED (experimental): conformance passed + live probe passed; "
+        "promote candidate once real-mission behavior is demonstrated.")
+
+
+def test_certify_unconfigured_command_fails_at_live_probe():
+    # no configured command: conformance certifies the plumbing via stubs,
+    # but the live probe gates on the REAL command and fails with the reason
+    adapter = CommandAdapter({"timeout_seconds": 30})
+    result = run_certify(adapter, "command")
+    assert not result.ok
+    assert result.conformance is not None and result.conformance.ok
+    assert result.failed_stage == STAGE_LIVE_PROBE
+    assert "FAILED at live probe" in result.verdict_line
+    assert "settings['command']" in result.verdict_line
+
+
+def test_certify_missing_binary_fails_at_availability():
+    adapter = CommandAdapter({"command": ["tether-no-such-binary-xyz"]})
+    result = run_certify(adapter, "command")
+    assert not result.ok
+    assert result.failed_stage == STAGE_AVAILABILITY
+    assert "binary not found" in result.verdict_line
+
+
+def test_certify_broken_command_fails_at_conformance(tmp_path):
+    adapter = CommandAdapter({
+        "command": [sys.executable, "-c", "raise SystemExit(3)"],
+        "timeout_seconds": 30,
+    })
+    result = run_certify(adapter, "command")
+    assert not result.ok
+    assert result.failed_stage == STAGE_CONFORMANCE
+    assert "success_completes" in result.verdict_line
+    assert result.live_probe is None  # short-circuited before the probe
+
+
+def test_cli_certify_mock_exit_zero(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    r = runner.invoke(app, ["adapters", "certify", "mock"])
+    assert r.exit_code == 0, r.output
+    assert "CERTIFIED (experimental)" in r.output
+    assert "Verdict: PASS" in r.output
+    assert "Live probe [PASS]" in r.output
+    assert "[FAIL]" not in r.output
+    # throwaway directories only: the caller's tree is untouched
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_cli_certify_unconfigured_command_exits_nonzero(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)  # empty dir: no tether.yaml, no configured command
+    r = runner.invoke(app, ["adapters", "certify", "command"])
+    assert r.exit_code == 1
+    assert "FAILED at live probe" in r.output
+    assert "settings['command']" in r.output
+    assert "CERTIFIED" not in r.output
+
+
+def test_cli_certify_unknown_adapter_exits_nonzero(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    r = runner.invoke(app, ["adapters", "certify", "no-such-adapter"])
+    assert r.exit_code == 1
+    assert "no-such-adapter" in r.output

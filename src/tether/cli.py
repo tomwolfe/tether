@@ -10,7 +10,7 @@ import typer
 
 import tether.adapters as registry
 from tether import __version__
-from tether import conformance, smoke
+from tether import certify, conformance, smoke
 from tether.audit import find_session_dir, new_session_id
 from tether.config import load_project_config, resolve_config
 from tether.git_safety import rollback as git_rollback
@@ -98,7 +98,9 @@ def validate_mission(mission_file: Path) -> None:
     try:
         mission = load_mission(mission_file)
         typer.echo(f"OK: mission {mission.name!r} is valid "
-                   f"({len(mission.verification.commands or [])} verification command(s))")
+                   f"({len(mission.verification.commands or [])} verification "
+                   f"command(s), {len(mission.verification.artifacts or [])} "
+                   f"artifact pattern(s))")
     except MissionError as e:
         typer.echo(f"INVALID: {e}", err=True)
         raise typer.Exit(code=1)
@@ -176,6 +178,61 @@ def adapters_conformance(
         raise typer.Exit(code=1)
     typer.echo(report.summary())
     if not report.ok:
+        raise typer.Exit(code=1)
+
+
+@adapters_app.command("certify")
+def adapters_certify(
+    name: str = typer.Argument(..., help="Adapter name (see `tether adapters list`)."),
+    project_dir: Optional[Path] = typer.Option(
+        None, "--project-dir",
+        help="Project whose tether.yaml configures the adapter."),
+) -> None:
+    """Certify an adapter: availability, conformance, then a live probe.
+
+    The live probe sends a trivial prompt through the adapter's REAL
+    configured command inside a throwaway directory; stub-driven conformance
+    alone never certifies. Exit nonzero when any stage fails.
+    """
+    pd = _project_dir(project_dir)
+    try:
+        adapter_instance = smoke.build_smoke_adapter(name, pd)
+    except Exception as e:
+        typer.echo(f"Certify FAILED: {e}", err=True)
+        raise typer.Exit(code=1)
+    result = certify.run_certify(adapter_instance, name)
+
+    typer.echo(f"{'Adapter:':<14}{name}")
+    availability = ("available" if result.available
+                    else f"unavailable ({result.availability_reason})")
+    if result.failed_stage == certify.STAGE_AVAILABILITY:
+        typer.echo(f"{'Availability:':<14}{availability}")
+    elif result.availability_note:
+        typer.echo(f"{'Availability:':<14}{availability} -- {result.availability_note}")
+    else:
+        typer.echo(f"{'Availability:':<14}{availability}")
+
+    if result.conformance is not None:
+        for line in result.conformance.summary().splitlines():
+            typer.echo(f"  {line}")
+    else:
+        typer.echo("  Conformance: skipped (availability failed)")
+
+    probe = result.live_probe
+    if probe is not None:
+        exit_label = "-" if probe.exit_code is None else str(probe.exit_code)
+        status_line = (
+            f"status={probe.status or '-'} exit_code={exit_label} "
+            f"elapsed={probe.elapsed_seconds:.2f}s"
+        )
+        typer.echo(f"  Live probe [{'PASS' if probe.ok else 'FAIL'}] ({status_line}):")
+        for line in (probe.excerpt or "(no output)").splitlines() or ["(no output)"]:
+            typer.echo(f"    {line}")
+    else:
+        typer.echo("  Live probe: skipped (previous stage failed)")
+
+    typer.echo(result.verdict_line)
+    if not result.ok:
         raise typer.Exit(code=1)
 
 

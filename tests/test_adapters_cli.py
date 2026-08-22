@@ -166,7 +166,9 @@ def test_check_adapter_settings_strict_raises():
 def test_experimental_adapters_are_unverified_presets():
     oc = OpencodeAdapter()
     assert oc.verified is False
-    assert oc.command == ["opencode", "run", "{prompt}"]
+    assert oc.command == [
+        "opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}",
+    ]
     ok, _ = oc.is_available()
     assert isinstance(ok, bool)
     pi = PiAdapter()

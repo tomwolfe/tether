@@ -26,8 +26,19 @@ from tether.git_safety import (
 )
 from tether.git_safety import rollback as git_rollback
 from tether.manifest import diff_manifests, snapshot_manifest
-from tether.models import AgentState, CheckpointInfo, TetherConfig, VerificationResult
-from tether.verification import run_verification, summarize
+from tether.models import (
+    AgentState,
+    ArtifactResult,
+    CheckpointInfo,
+    TetherConfig,
+    VerificationResult,
+)
+from tether.verification import (
+    check_artifacts,
+    run_verification,
+    summarize,
+    summarize_artifacts,
+)
 
 log = logging.getLogger("tether")
 
@@ -261,6 +272,11 @@ class Orchestrator:
             return mission.verification.timeout_seconds
         return self.config.verification_timeout_seconds
 
+    def _effective_verification_artifacts(self, mission: Any) -> list[str]:
+        if mission.verification.artifacts is not None:
+            return list(mission.verification.artifacts)
+        return list(self.config.verification.artifacts or [])
+
     def _sandbox_violations(self, mission: Any,
                             changed: list[str]) -> list[Dict[str, str]]:
         """Post-execution write-sandbox check over detected changed files.
@@ -480,6 +496,7 @@ class Orchestrator:
 
         status = "failed"
         verification_results: list[VerificationResult] = []
+        artifact_results: list[ArtifactResult] = []
         recovery_attempts: list[Dict[str, Any]] = []
         plan_text = ""
         next_steps: list[str] = []
@@ -735,6 +752,7 @@ class Orchestrator:
             # Any non-completed agent state counts as failure: a mission must
             # never report success unless the last agent send completed.
             agent_failed = state.status != "completed"
+            artifact_patterns = self._effective_verification_artifacts(mission)
             while True:
                 attempt += 1
                 log.info("Verification attempt %d/%d", attempt, max_attempts)
@@ -743,13 +761,37 @@ class Orchestrator:
                     timeout_seconds=timeout,
                     dry_run=dry_run,
                 )
-                audit.save_verification(attempt, verification_results)
-                passed, failing_output = summarize(verification_results)
+                commands_passed, failing_output = summarize(verification_results)
+                # Artifact assertions gate only otherwise-green attempts: when
+                # every declared command passed and the agent completed, each
+                # pattern must match at least one existing file in the target
+                # project. A missing deliverable fails the attempt exactly like
+                # a failing command (recovery proceeds normally); when commands
+                # already failed there is nothing more to learn from artifacts.
+                artifact_results = []
+                if artifact_patterns and commands_passed and not agent_failed:
+                    if dry_run:
+                        artifact_results = [
+                            ArtifactResult(pattern=p, detail="skipped (dry-run)",
+                                           passed=True)
+                            for p in artifact_patterns
+                        ]
+                    else:
+                        artifact_results = check_artifacts(
+                            artifact_patterns, self.project_dir)
+                audit.save_verification(
+                    attempt, [*verification_results, *artifact_results])
+                artifacts_passed, missing_output = summarize_artifacts(artifact_results)
+                if not artifacts_passed:
+                    log.warning("%s", missing_output)
+                passed = commands_passed and artifacts_passed
                 if passed and not agent_failed:
                     status = "success"
                     break
                 if attempt >= max_attempts:
                     status = "failed"
+                    if missing_output and not failing_output:
+                        next_steps.append(missing_output)
                     next_steps.append(
                         f"Verification failed after {max_attempts} attempts. "
                         f"Roll back with: tether rollback {self.session_id} "
@@ -757,7 +799,8 @@ class Orchestrator:
                     )
                     break
                 # Recovery attempt
-                reason = failing_output or (state.error or "agent reported failure")
+                reason = failing_output or missing_output or (
+                    state.error or "agent reported failure")
                 recovery_attempts.append({"attempt": attempt, "failing_output": reason[:4000]})
                 repair_prompt = self.adapter.repair_prompt(
                     self.mission_summary(mission), reason
@@ -827,7 +870,9 @@ class Orchestrator:
             "status": status,
             "started_at": started_at,
             "finished_at": finished_at,
-            "verification_results": [r.model_dump() for r in verification_results],
+            "verification_results": [
+                r.model_dump() for r in [*verification_results, *artifact_results]
+            ],
             "recovery_attempts": recovery_attempts,
             "changed_files": changed_files,
             "sandbox_violations": sandbox_violations,

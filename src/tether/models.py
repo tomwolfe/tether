@@ -11,6 +11,10 @@ class VerificationSpec(BaseModel):
     precedence (mission > project config > defaults) can be applied later."""
     commands: Optional[List[str]] = None
     timeout_seconds: Optional[int] = Field(default=None, gt=0)
+    # Required deliverables: fnmatch globs relative to the target project;
+    # each pattern must match at least one existing file after the commands
+    # pass, or the attempt fails.
+    artifacts: Optional[List[str]] = None
 
 
 class RecoverySpec(BaseModel):
@@ -98,6 +102,14 @@ class VerificationResult(BaseModel):
     timed_out: bool = False
     skipped_dry_run: bool = False
     passed: bool = False
+
+
+class ArtifactResult(BaseModel):
+    """Outcome of one verification artifact pattern against the project."""
+    pattern: str
+    matched_files: List[str] = []
+    passed: bool = False
+    detail: str = ""
 
 
 class CheckpointInfo(BaseModel):

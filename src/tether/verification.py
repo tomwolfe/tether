@@ -1,11 +1,13 @@
 """Verification engine: runs only explicitly declared commands, safely."""
 from __future__ import annotations
 
+import fnmatch
+import os
 import shlex
 import subprocess
 from pathlib import Path
 
-from tether.models import VerificationResult
+from tether.models import ArtifactResult, VerificationResult
 
 
 def run_verification(
@@ -56,6 +58,51 @@ def _run_one(command: str, project_dir: Path, timeout_seconds: int) -> Verificat
 
 
 REPAIR_OUTPUT_BUDGET = 8192
+
+
+def _project_files(project_dir: Path) -> list[str]:
+    """Existing files under project_dir as sorted relative POSIX paths.
+
+    Tether's own bookkeeping directory (.tether/) is excluded so audit
+    artifacts can never satisfy a mission deliverable.
+    """
+    files: list[str] = []
+    for root, dirnames, filenames in os.walk(project_dir):
+        rel_root = os.path.relpath(root, project_dir)
+        if rel_root == ".":
+            # Prune before descending; os.walk does not follow symlinked
+            # directories by default.
+            dirnames[:] = [d for d in dirnames if d != ".tether"]
+        for name in filenames:
+            rel = name if rel_root == "." else f"{rel_root}{os.sep}{name}"
+            files.append(Path(rel).as_posix())
+    return sorted(files)
+
+
+def check_artifacts(patterns: list[str], project_dir: Path) -> list[ArtifactResult]:
+    """Match each artifact pattern against existing files in the target project.
+
+    Patterns use fnmatch semantics relative to project_dir (same globs as the
+    write sandbox); every pattern must match at least one existing file.
+    """
+    files = _project_files(project_dir)
+    results: list[ArtifactResult] = []
+    for pattern in patterns:
+        matched = [f for f in files if fnmatch.fnmatch(f, pattern)]
+        results.append(ArtifactResult(
+            pattern=pattern,
+            matched_files=matched,
+            passed=bool(matched),
+        ))
+    return results
+
+
+def summarize_artifacts(results: list[ArtifactResult]) -> tuple[bool, str]:
+    """Return (all_matched, reason naming every unmatched pattern)."""
+    unmatched = [r.pattern for r in results if not r.passed]
+    if not unmatched:
+        return True, ""
+    return False, "missing required artifacts: " + ", ".join(unmatched)
 
 
 def clip_output(text: str, budget: int = REPAIR_OUTPUT_BUDGET) -> str:

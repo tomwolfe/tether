@@ -26,8 +26,9 @@ class OpencodeAdapter(CommandAdapter):
 
     Command shape verified against `opencode --help` (installed 2026-08):
     `opencode run [message..]` runs opencode with a message non-interactively.
-    End-to-end behavior (model/provider setup, exit codes) is NOT exercised by
-    Tether's tests, so this adapter remains marked experimental/unverified.
+    The default command pins a model because bare `opencode run` fails with a
+    server error on some installations; override `command` in tether.yaml if
+    your default model differs.
     """
 
     name = "opencode"
@@ -35,7 +36,9 @@ class OpencodeAdapter(CommandAdapter):
 
     def __init__(self, settings: Optional[Dict[str, Any]] = None,
                  default_timeout: int = 1800) -> None:
-        merged: Dict[str, Any] = {"command": ["opencode", "run", "{prompt}"]}
+        merged: Dict[str, Any] = {"command": [
+            "opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}",
+        ]}
         merged.update(settings or {})
         super().__init__(merged, default_timeout)
 
