@@ -7,8 +7,25 @@ import re
 import shlex
 import subprocess
 from pathlib import Path
+from typing import Optional
 
-from tether.models import ArtifactResult, AssertionResult, AssertionSpec, VerificationResult
+from pydantic import BaseModel
+
+from tether.models import ArtifactResult, AssertionResult, AssertionSpec, ProbeSpec, VerificationResult
+
+
+class ProbeResult(BaseModel):
+    """Outcome of one behavioral probe against the target project.
+
+    ``passed`` reflects the probe's OUTPUT criteria (contains/matches over the
+    combined stdout+stderr); ``exit_code`` is recorded for evidence but is NOT
+    itself the pass criterion.
+    """
+    command: str
+    passed: bool = False
+    exit_code: Optional[int] = None
+    matched: bool = False
+    detail: str = ""
 
 
 def run_verification(
@@ -171,6 +188,88 @@ def summarize_assertions(results: list[AssertionResult]) -> tuple[bool, str]:
     for r in failed:
         parts.append(f"{r.path}: {r.detail}" if r.detail else r.path)
     return False, "verification assertions failed: " + "; ".join(parts)
+
+
+def run_probes(
+    probes: list[ProbeSpec],
+    project_dir: Path,
+    timeout_seconds: int = 600,
+) -> list[ProbeResult]:
+    """Run behavioral probes and assert on their OUTPUT, not their exit code.
+
+    Each probe's command runs via subprocess with shell=False, in the target
+    project directory, with a timeout, capturing stdout+stderr. A probe PASSES
+    when the combined output satisfies ALL of its ``contains``/``matches``
+    criteria; the exit code is recorded but never decides the outcome. A
+    timeout, missing binary, or unparseable command fails the probe with a
+    clear detail.
+    """
+    results: list[ProbeResult] = []
+    for probe in probes:
+        results.append(_run_probe(probe, project_dir, timeout_seconds))
+    return results
+
+
+def _run_probe(probe: ProbeSpec, project_dir: Path,
+               timeout_seconds: int) -> ProbeResult:
+    try:
+        argv = shlex.split(probe.command)
+    except ValueError as e:
+        return ProbeResult(command=probe.command,
+                           detail=f"failed to parse command: {e}")
+    if not argv:
+        return ProbeResult(command=probe.command, detail="empty command")
+    try:
+        proc = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            cwd=str(project_dir),
+            shell=False,
+        )
+    except FileNotFoundError:
+        return ProbeResult(command=probe.command,
+                           detail=f"binary not found: {argv[0]}")
+    except subprocess.TimeoutExpired:
+        return ProbeResult(command=probe.command,
+                           detail=f"timed out after {timeout_seconds}s")
+    except OSError as e:
+        return ProbeResult(command=probe.command,
+                           detail=f"failed to execute: {e}")
+    output = f"{proc.stdout}{proc.stderr}"
+    ok = True
+    if probe.contains is not None and probe.contains not in output:
+        ok = False
+    if probe.matches is not None and re.search(probe.matches, output) is None:
+        ok = False
+    detail = ""
+    if not ok:
+        missing = []
+        if probe.contains is not None and probe.contains not in output:
+            missing.append(f"output does not contain {probe.contains!r}")
+        if probe.matches is not None \
+                and re.search(probe.matches, output) is None:
+            missing.append(f"output does not match {probe.matches!r}")
+        detail = "; ".join(missing)
+    return ProbeResult(
+        command=probe.command,
+        passed=ok,
+        exit_code=proc.returncode,
+        matched=ok,
+        detail=detail,
+    )
+
+
+def summarize_probes(results: list[ProbeResult]) -> tuple[bool, str]:
+    """Return (all_passed, reason naming every failing probe)."""
+    failed = [r for r in results if not r.passed]
+    if not failed:
+        return True, ""
+    parts = []
+    for r in failed:
+        parts.append(f"{r.command}: {r.detail}" if r.detail else r.command)
+    return False, "verification probes failed: " + "; ".join(parts)
 
 
 def clip_output(text: str, budget: int = REPAIR_OUTPUT_BUDGET) -> str:

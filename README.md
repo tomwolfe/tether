@@ -40,7 +40,7 @@ tether logs <session-id>                           # event log of a session
 tether rollback <session-id-or-prefix>             # restore the git checkpoint
 ```
 
-`tether sessions stats` aggregates cross-session analytics from every session's `report.json`, including a `review_gate` block that counts reviewed sessions, `approve`/`request_changes` verdicts, and rejections that caused failures. For every mission with at least two recorded sessions it also prints per-mission baselines: success rate, median/max verification attempts, and a trend that compares the latest session's attempt count to the trailing median of prior sessions (`stable`, `regression`, or `improvement`).
+`tether sessions stats` aggregates cross-session analytics from every session's `report.json`, including a `review_gate` block that counts reviewed sessions, `approve`/`request_changes` verdicts, and rejections that caused failures. When at least one session reports adapter `usage`, it also totals every numeric usage metric across those sessions (shown in human output and the `--json` block). For every mission with at least two recorded sessions it also prints per-mission baselines: success rate, median/max verification attempts, and a trend that compares the latest session's attempt count to the trailing median of prior sessions (`stable`, `regression`, or `improvement`).
 
 Useful `run` flags: `--adapter`, `--project-dir`, `--dry-run/--no-dry-run`, `--max-attempts`, `--allow-dirty/--no-allow-dirty`, `--auto-rollback/--no-auto-rollback`, `--strict`, `--verbose`. The boolean flags are tri-state: when omitted they do not override project config; when given they always do.
 
@@ -71,7 +71,9 @@ Placeholders: `{prompt}`, `{project_dir}`, `{session_id}`.
 
 ### Unknown adapter settings
 
-Each adapter declares the settings keys it knows (e.g. `command`, `timeout_seconds`, `prompt_via_stdin`, `env` for the generic command adapter; `scenario` for mock). Configured keys outside that set are reported as warnings when the adapter is built, e.g. `adapter 'myagent': unknown setting 'promt_via_stdin'` — handy for typos. Pass `--strict` to `tether run` or `tether validate-config` to turn those warnings into errors that fail validation.
+Each adapter declares the settings keys it knows (e.g. `command`, `timeout_seconds`, `prompt_via_stdin`, `env`, `usage_patterns` for the generic command adapter; `scenario` for mock). Configured keys outside that set are reported as warnings when the adapter is built, e.g. `adapter 'myagent': unknown setting 'promt_via_stdin'` — handy for typos. Pass `--strict` to `tether run` or `tether validate-config` to turn those warnings into errors that fail validation.
+
+The generic command adapter's optional `usage_patterns` setting extracts usage/cost telemetry from the agent's own output: a list of `{metric, regex}` entries, each searched over the combined stdout+stderr of every send; on a match, capture group 1 (or the whole match without groups) is recorded as the metric's value (float when numeric, else string) alongside the usual `elapsed_seconds`/`exit_code`, flows into `report["usage"]`, and is totaled by `tether sessions stats`.
 
 ### Smoke-testing an adapter
 
@@ -134,6 +136,18 @@ verification:
 ```
 
 Each assertion glob-matches `path` against existing project files (excluding `.tether/`), then filters the matches by `contains` and/or `matches` on file content (read as UTF-8); it passes only when at least `min_occurrences` files satisfy all conditions. Assertions run on otherwise-green verification attempts, right after artifact checks; a failing assertion fails the attempt exactly like a missing deliverable — recovery proceeds normally — and results are recorded in `report["verification_results"]` alongside command and artifact entries.
+
+The deepest check is a **behavioral probe** (`verification.probes`, dogfood-20): a probe runs a command and asserts on its OUTPUT, not its exit code, so it exercises the produced code instead of trusting file contents or exit statuses:
+
+```yaml
+verification:
+  probes:
+    - command: "python -m myapp --selfcheck"   # run via subprocess, shell=False
+      contains: "all checks passed"            # literal substring required...
+      matches: "checks:\\s*\\d+/\\d+"           # ...and/or regex (re.search)
+```
+
+Each probe's command runs in the target project directory with the same timeout as verification commands; stdout+stderr are combined for matching. A probe PASSES when the combined output satisfies ALL of its `contains`/`matches` criteria — the exit code is recorded but is NOT itself the pass criterion (a command that exits 3 while printing the expected behavior output still passes; a green command printing the wrong thing fails). Timeout or a missing binary fails the probe. Probes run after command + artifact + assertion checks pass on an otherwise-green attempt; a failing probe fails the attempt like any other deliverable miss, results land in `report["verification_results"]`, and dry-runs record probes as skipped without executing them.
 
 ## Dry-run
 
@@ -207,6 +221,7 @@ Two options tune who reviews and what a rejection does:
 
 - **Independent reviewer** — `review.adapter: <name>` routes the review through a different adapter than the worker (e.g. `review: {enabled: true, adapter: pi}` while the mission runs on `opencode`). The named adapter is resolved from the same registry/`adapters` config and its availability is checked up front: an unavailable or unknown reviewer aborts before any agent runs. When `review.adapter` is unset, the gate stays self-review on the mission's own adapter.
 - **Bounded retry** — `retry_on_rejection: true` makes a required rejection route back into the normal recovery machinery instead of failing immediately: the worker gets one more repair prompt carrying the goal, the review reason, and the captured change excerpt; verification and the review gate then run again. These extra attempts draw from the same bounded `recovery.max_attempts` budget; when it is exhausted, the mission fails with the last review reason in `next_steps`. Default `false`: a rejection fails immediately.
+- **Full context** — `review.context: full` embeds the ENTIRE captured change artifact (up to 64 KiB) into the reviewer prompt instead of the default bounded ~4KB excerpt, and instructs the reviewer to cite specific hunks/lines when raising concerns. Default `"excerpt"` keeps today's behavior byte-for-byte; both modes parse the verdict with the same fail-safe last-marker rule.
 
 This is a **heuristic adversarial pass, NOT proof of correctness**. By default it is self-review (the reviewer runs on the same adapter instance as the worker), which is weaker than independent review — configure `review.adapter` when your setup offers a stronger second opinion. `tether validate-mission --strict` additionally lints weak authoring: it warns (or fails under `--strict`) when all verification commands are trivial (`true`, `:`, `echo ...`) and no artifacts are declared, and fails when neither commands nor artifacts are declared at all.
 
@@ -229,7 +244,7 @@ Tests use only temp directories, git temp repos with local identity, and the Moc
 - No streaming/interactive agent sessions; adapters are one-shot prompt→result.
 - Non-git changed-file detection is best-effort: files smaller than 1 MiB (`manifest.HASH_SIZE_LIMIT`) are fingerprinted by sha256 content hash, larger files fall back to size+mtime; there is no content diff. `manifest_diff.json` carries those fingerprints, not file contents.
 - Process-tree containment is best-effort: descendants that escape the process group (e.g. by double-forking into a new session on POSIX) or survive `taskkill /T /F` on Windows cannot be force-killed by Tether.
-- Token/cost usage is only reported if an adapter provides it (Mock provides none; Command only elapsed time and exit code).
+- Token/cost usage is only reported if an adapter provides it (Mock provides none; Command reports elapsed time and exit code, plus any metrics extracted from the agent's own output via the per-adapter `usage_patterns` config — regexes over stdout+stderr — so extraction is config-driven, not guaranteed).
 - the `pi` preset is an unverified assumption; override its command template in config (opencode is verified).
 - The review gate is a heuristic single-pass judgment of the captured diff, not proof of correctness; without `review.adapter` configured it reviews with the same adapter as the worker (self-review), and `retry_on_rejection` recovery is bounded by `recovery.max_attempts`, not guaranteed to converge.
 - Ctrl-C during adapter interaction is handled gracefully: the adapter's `cancel()` terminates the running command tree best-effort, the report is finalized with status `cancelled` (CLI exit code 2), and the rollback hint is printed — but a second interrupt or one outside the agent loop still aborts hard.

@@ -28,10 +28,12 @@ class _ReviewingAdapter(AgentAdapter):
     name = "reviewable"
     verified = True
 
-    def __init__(self, review_logs, name="reviewable"):
+    def __init__(self, review_logs, name="reviewable",
+                 change_text="changed by agent\n"):
         super().__init__({})
         self.review_logs = review_logs
         self.name = name
+        self.change_text = change_text
         self.review_prompts: list[str] = []
         self.session_ids: list[str] = []
         self._planned = False
@@ -56,7 +58,7 @@ class _ReviewingAdapter(AgentAdapter):
             self._planned = True
             return AgentState(status="completed", logs="plan")
         self._executed = True
-        (Path(self.project_dir) / "f.txt").write_text("changed by agent\n")
+        (Path(self.project_dir) / "f.txt").write_text(self.change_text)
         return AgentState(status="completed", logs="done")
 
     def cancel(self, session):
@@ -575,3 +577,102 @@ def test_readme_documents_review_adapter_and_retry():
     readme = (root / "README.md").read_text(encoding="utf-8")
     assert "review.adapter" in readme
     assert "retry_on_rejection" in readme
+
+
+# ------------------------- dogfood-20: full-context review mode
+
+BIG_CHANGE = "".join(
+    f"+FULL-CONTEXT-LINE-{i:04d} {'x' * 180}\n" for i in range(40))
+
+
+def _review_run(tmp_path, review_block, review_logs,
+                change_text="changed by agent\n"):
+    _git_repo(tmp_path)
+    mp = tmp_path / "m.yaml"
+    mp.write_text(
+        f"mission:\n  name: rev\n  goal: make f.txt say done\n"
+        f"verification:\n  commands:\n    - {PASS_CMD}\n"
+        f"adapter: mock\n{review_block}"
+    )
+    subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "mission"],
+                   check=True)
+    cfg = TetherConfig(audit_dir=".tether/sessions")
+    adapter = _ReviewingAdapter(review_logs, change_text=change_text)
+    report = Orchestrator(adapter, cfg, tmp_path).run(load_mission(mp))
+    return report, adapter
+
+
+def test_review_context_defaults_to_excerpt(tmp_path):
+    m_path = tmp_path / "m.yaml"
+    m_path.write_text("mission:\n  name: x\n  goal: y\n")
+    assert load_mission(m_path).review is None
+    ok = tmp_path / "ok.yaml"
+    ok.write_text("mission:\n  name: x\n  goal: y\n"
+                  "review:\n  enabled: true\n")
+    m = load_mission(ok)
+    assert m.review is not None
+    assert m.review.context == "excerpt"
+
+
+def test_review_context_invalid_value_rejected_at_validation(tmp_path):
+    p = tmp_path / "bad.yaml"
+    p.write_text("mission:\n  name: x\n  goal: y\n"
+                 "review:\n  enabled: true\n  context: everything\n")
+    with pytest.raises(MissionError):
+        load_mission(p)
+
+
+def test_review_excerpt_mode_prompt_unchanged_by_context_option(tmp_path):
+    # Regression guard: an explicit context: "excerpt" must produce the
+    # byte-for-byte same review prompt as no context key at all.
+    _, plain = _review_run(tmp_path, "review:\n  enabled: true\n",
+                           REVIEW_APPROVED)
+    _, explicit = _review_run(
+        tmp_path, "review:\n  enabled: true\n  context: excerpt\n",
+        REVIEW_APPROVED)
+    assert len(plain.review_prompts) == 1
+    assert len(explicit.review_prompts) == 1
+    assert plain.review_prompts[0] == explicit.review_prompts[0]
+    assert "Cite specific hunks" not in plain.review_prompts[0]
+
+
+def test_review_full_context_embeds_entire_artifact_and_cites_hunks(tmp_path):
+    report, adapter = _review_run(
+        tmp_path, "review:\n  enabled: true\n  context: full\n",
+        REVIEW_APPROVED, change_text=BIG_CHANGE)
+    assert report["status"] == "success"
+    assert report["review"]["verdict"] == "approve"
+    prompt = adapter.review_prompts[0]
+    # Substantially more of the artifact than the ~4KB excerpt budget:
+    # head, middle, AND tail lines are all present (excerpt mode would
+    # clip the middle behind a truncation marker).
+    assert "+FULL-CONTEXT-LINE-0000" in prompt
+    assert "+FULL-CONTEXT-LINE-0020" in prompt
+    assert "+FULL-CONTEXT-LINE-0039" in prompt
+    assert "[truncated" not in prompt
+    # The reviewer is asked to cite specific hunks/lines.
+    assert "Cite specific hunks or lines" in prompt
+
+
+def test_review_excerpt_mode_still_bounds_a_large_artifact(tmp_path):
+    _, adapter = _review_run(tmp_path, "review:\n  enabled: true\n",
+                             REVIEW_APPROVED, change_text=BIG_CHANGE)
+    prompt = adapter.review_prompts[0]
+    assert "+FULL-CONTEXT-LINE-0000" in prompt      # head kept
+    assert "+FULL-CONTEXT-LINE-0039" in prompt      # tail kept
+    assert "+FULL-CONTEXT-LINE-0020" not in prompt  # middle clipped
+    assert "[truncated" in prompt
+    assert "Cite specific hunks" not in prompt
+
+
+@pytest.mark.parametrize("review_block", [
+    "review:\n  enabled: true\n",
+    "review:\n  enabled: true\n  context: full\n",
+])
+def test_review_both_modes_fail_safe_on_garbage_output(
+        tmp_path, review_block):
+    report, _adapter = _review_run(
+        tmp_path, review_block, "looks good to me, ship it")
+    assert report["status"] == "failed"
+    assert report["review"]["verdict"] == "request_changes"

@@ -14,6 +14,11 @@ Settings (from config `adapters.<name>`):
     prompt_via_stdin: if true, the prompt is piped to stdin instead of {prompt}
     env:           extra environment variables
     timeout_seconds: override default command timeout
+    usage_patterns: optional list of {metric, regex} entries; each regex is
+                   searched (re.search) over the combined stdout+stderr of a
+                   send and a match sets usage[metric] from capture group 1
+                   (or the whole match when no groups), as float when numeric
+                   else str. Lets arbitrary agents surface token/cost totals.
 
 The child environment always includes TETHER_SESSION_ID, TETHER_PROJECT_DIR and
 (when known) TETHER_MISSION; user `env` entries take precedence.
@@ -27,6 +32,7 @@ Windows the child gets CREATE_NEW_PROCESS_GROUP and the tree is terminated via
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -61,7 +67,8 @@ class CommandAdapter(AgentAdapter):
     name = "command"
     verified = True
     known_settings: frozenset[str] = frozenset(
-        {"command", "timeout_seconds", "prompt_via_stdin", "env"}
+        {"command", "timeout_seconds", "prompt_via_stdin", "env",
+         "usage_patterns"}
     )
     # Capabilities (dogfood-09): cancel() terminates the whole process tree;
     # each send is a full one-shot prompt→result round trip; usage is not
@@ -173,6 +180,40 @@ class CommandAdapter(AgentAdapter):
         except OSError:
             pass
 
+    def _apply_usage_patterns(self, output: str,
+                              usage: Dict[str, Any]) -> None:
+        """Config-driven usage/cost telemetry (dogfood-20).
+
+        Applies each configured ``usage_patterns`` entry's regex (re.search)
+        to the combined stdout+stderr of a send; on a match records
+        ``usage[metric]`` from capture group 1 (or the whole match when the
+        pattern has no groups) as float when numeric, else str. Best-effort:
+        malformed entries and non-matching patterns are skipped silently so
+        adapters that emit no usage output are unaffected.
+        """
+        patterns = self.settings.get("usage_patterns")
+        if not isinstance(patterns, list):
+            return
+        for entry in patterns:
+            if not isinstance(entry, dict):
+                continue
+            metric = entry.get("metric")
+            regex = entry.get("regex")
+            if (not isinstance(metric, str) or not metric
+                    or not isinstance(regex, str) or metric in usage):
+                continue
+            try:
+                match = re.search(regex, output)
+            except re.error:
+                continue
+            if match is None:
+                continue
+            value = match.group(1) if match.groups() else match.group(0)
+            try:
+                usage[metric] = float(value)
+            except (TypeError, ValueError):
+                usage[metric] = str(value)
+
     # -- adapter contract -----------------------------------------------------
 
     def send(self, prompt: str, session: SessionInfo) -> AgentState:
@@ -252,6 +293,9 @@ class CommandAdapter(AgentAdapter):
             "elapsed_seconds": time.monotonic() - started_at,
             "exit_code": proc.returncode,
         }
+        # Config-driven usage/cost extraction over the raw combined output
+        # (completed AND failed sends alike; timeouts included).
+        self._apply_usage_patterns(f"{_text(stdout)}{_text(stderr)}", usage)
         if timed_out:
             return AgentState(
                 status="failed",

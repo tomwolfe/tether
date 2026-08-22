@@ -27,6 +27,14 @@ def test_readme_documents_verification_assertions():
     assert "min_occurrences" in verification
     assert '"contains"' in verification or "contains:" in verification
     assert '"matches"' in verification or "matches:" in verification
+    # dogfood-20: behavioral probes are documented under Verification
+    assert "probes" in verification
+
+
+def test_readme_documents_probes_and_usage_patterns():
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "probes" in readme
+    assert "usage_patterns" in readme
 
 
 def test_readme_documents_secret_scrubbing_and_per_mission_stats():

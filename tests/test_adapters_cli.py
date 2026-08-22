@@ -181,12 +181,152 @@ def test_cli_adapters_smoke_unknown_adapter(tmp_path, monkeypatch):
 
 def test_known_settings_attributes():
     assert CommandAdapter.known_settings == frozenset(
-        {"command", "timeout_seconds", "prompt_via_stdin", "env"}
+        {"command", "timeout_seconds", "prompt_via_stdin", "env",
+         "usage_patterns"}
     )
     assert MockAdapter.known_settings == frozenset({"scenario"})
     # presets inherit the generic command adapter's settings
     assert OpencodeAdapter.known_settings == CommandAdapter.known_settings
     assert PiAdapter.known_settings == CommandAdapter.known_settings
+
+
+# ------------------------- dogfood-20: usage/cost telemetry
+
+
+def test_command_adapter_usage_patterns_extract_tokens_and_cost(tmp_path):
+    stub = [sys.executable, "-c", 'print("tokens: 123 cost: 0.42")']
+    adapter = CommandAdapter({
+        "command": stub,
+        "usage_patterns": [
+            {"metric": "tokens", "regex": r"tokens:\s*(\d+)"},
+            {"metric": "cost", "regex": r"cost:\s*([0-9.]+)"},
+        ],
+    })
+    session = adapter.start_session(str(tmp_path), "sid-usage")
+    state = adapter.send("ignored", session)
+    assert state.status == "completed"
+    usage = state.usage
+    assert usage is not None
+    assert usage["tokens"] == 123.0
+    assert usage["cost"] == 0.42
+    # existing keys untouched
+    assert isinstance(usage["elapsed_seconds"], float)
+    assert usage["exit_code"] == 0
+
+    # failed sends extract too
+    fail = CommandAdapter({
+        "command": [sys.executable, "-c",
+                    'print("tokens: 7"); raise SystemExit(2)'],
+        "usage_patterns": [{"metric": "tokens", "regex": r"tokens:\s*(\d+)"}],
+    })
+    failed = fail.send("x", session)
+    assert failed.status == "failed"
+    assert failed.usage is not None
+    assert failed.usage["tokens"] == 7.0
+    assert failed.usage["exit_code"] == 2
+
+
+def test_command_adapter_without_usage_patterns_stays_clean(tmp_path):
+    adapter = CommandAdapter({
+        "command": [sys.executable, "-c", 'print("tokens: 999")'],
+    })
+    session = adapter.start_session(str(tmp_path), "sid-clean")
+    state = adapter.send("x", session)
+    assert state.status == "completed"
+    assert set(state.usage or {}) == {"elapsed_seconds", "exit_code"}
+
+
+def _usage_project(tmp_path):
+    config = {
+        "default_adapter": "command",
+        "adapters": {"command": {
+            "command": [sys.executable, "-c",
+                        'print("tokens: 123 cost: 0.42")'],
+            "usage_patterns": [
+                {"metric": "tokens", "regex": r"tokens:\s*(\d+)"},
+                {"metric": "cost", "regex": r"cost:\s*([0-9.]+)"},
+            ],
+        }},
+    }
+    (tmp_path / "tether.json").write_text(json.dumps(config))
+    mission = tmp_path / "m.yaml"
+    mission.write_text("mission:\n  name: telemetry\n  goal: g\n"
+                       "adapter: command\n")
+    return mission
+
+
+def test_full_run_report_and_sessions_show_carry_extracted_usage(tmp_path):
+    from tether.audit import find_session_dir
+    mission = _usage_project(tmp_path)
+    r = runner.invoke(app, ["run", str(mission), "--project-dir",
+                            str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    sid = r.output.split("Session: ")[1].split()[0]
+    session_dir = find_session_dir(tmp_path, ".tether/sessions", sid)
+    report = json.loads(
+        (session_dir / "report.json").read_text(encoding="utf-8"))
+    usage = report.get("usage")
+    assert usage is not None
+    assert usage["tokens"] == 123.0
+    assert usage["cost"] == 0.42
+
+    r = runner.invoke(app, ["sessions", "show", sid,
+                            "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    assert "Usage:" in r.output
+    assert '"tokens"' in r.output and "123" in r.output
+    assert '"cost"' in r.output and "0.42" in r.output
+
+
+def test_sessions_stats_aggregates_usage_totals(tmp_path):
+    _usage_project(tmp_path)
+    mission = tmp_path / "m.yaml"
+    r = runner.invoke(app, ["run", str(mission), "--project-dir",
+                            str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    r = runner.invoke(app, ["run", str(mission), "--project-dir",
+                            str(tmp_path)])
+    assert r.exit_code == 0, r.output
+
+    rj = runner.invoke(app, ["sessions", "stats", "--json",
+                             "--project-dir", str(tmp_path)])
+    assert rj.exit_code == 0, rj.output
+    data = json.loads(rj.output)
+    assert data["usage"]["sessions_reporting"] == 2
+    assert data["usage"]["totals"]["tokens"] == 246
+    assert data["usage"]["totals"]["cost"] == 0.84
+
+    rh = runner.invoke(app, ["sessions", "stats",
+                             "--project-dir", str(tmp_path)])
+    assert rh.exit_code == 0, rh.output
+    assert "Usage: 2 session(s) reporting;" in rh.output
+    assert "tokens total 246" in rh.output
+    assert "cost total 0.84" in rh.output
+
+
+def test_sessions_stats_unchanged_when_no_usage_present(tmp_path):
+    config = {
+        "default_adapter": "mock",
+        "adapters": {"mock": {"scenario": "success"}},
+    }
+    (tmp_path / "tether.json").write_text(json.dumps(config))
+    mission = tmp_path / "m.yaml"
+    mission.write_text(
+        "mission:\n  name: nousage\n  goal: g\nadapter: mock\n")
+    r = runner.invoke(app, ["run", str(mission), "--project-dir",
+                            str(tmp_path)])
+    assert r.exit_code == 0, r.output
+
+    rj = runner.invoke(app, ["sessions", "stats", "--json",
+                             "--project-dir", str(tmp_path)])
+    assert rj.exit_code == 0, rj.output
+    data = json.loads(rj.output)
+    assert "usage" not in data
+
+    rh = runner.invoke(app, ["sessions", "stats",
+                             "--project-dir", str(tmp_path)])
+    assert rh.exit_code == 0, rh.output
+    assert "Usage:" not in rh.output
 
 
 def test_unknown_adapter_setting_warns_but_still_constructs(caplog):

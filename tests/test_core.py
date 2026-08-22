@@ -1612,3 +1612,218 @@ def test_sessions_stats_without_repeat_missions_stays_unchanged(tmp_path):
                              "--project-dir", str(tmp_path)])
     assert rj.exit_code == 0, rj.output
     assert "missions" not in json.loads(rj.output)
+
+
+# --------------------- behavioral verification probes (dogfood-20)
+
+
+import yaml as _yaml  # noqa: E402
+
+from tether.models import ProbeSpec  # noqa: E402
+from tether.verification import (  # noqa: E402
+    run_probes,
+    summarize_probes,
+)
+
+
+def _probe_mission(tmp_path, probes, commands=None, max_attempts=2):
+    mission = {
+        "mission": {"name": "probe", "goal": "g"},
+        "verification": {
+            "commands": [PASS_CMD] if commands is None else list(commands),
+            "probes": probes,
+        },
+        "recovery": {"max_attempts": max_attempts},
+        "adapter": "mock",
+    }
+    p = tmp_path / "m.yaml"
+    p.write_text(_yaml.safe_dump(mission), encoding="utf-8")
+    return load_mission(p)
+
+
+def _run_probes_mission(tmp_path, mission, scenario="success"):
+    adapter = resolve_adapter("mock", {"mock": {"scenario": scenario}})
+    cfg = TetherConfig(audit_dir=".tether/sessions")
+    return Orchestrator(adapter, cfg, tmp_path).run(mission)
+
+
+def test_probes_parse_into_spec_models_and_default_none(tmp_path):
+    m = _probe_mission(tmp_path, [
+        {"command": py_cmd("print('hello')"), "contains": "hello",
+         "matches": "h(e)l+"},
+    ])
+    specs = m.verification.probes
+    assert specs is not None and len(specs) == 1
+    spec = specs[0]
+    assert isinstance(spec, ProbeSpec)
+    assert spec.command.startswith(f"{sys.executable} -c ")
+    assert (spec.contains, spec.matches) == ("hello", "h(e)l+")
+    # absent -> None: existing missions validate and behave unchanged
+    plain_path = tmp_path / "plain.yaml"
+    plain_path.write_text(MISSION, encoding="utf-8")
+    assert load_mission(plain_path).verification.probes is None
+
+
+@pytest.mark.parametrize("bad", [
+    {"contains": "x"},                        # missing command
+    {"command": ""},                          # empty command
+    {"command": 42},                          # non-string command
+    {"command": "true", "contains": 5},       # non-string contains
+    {"command": "true", "matches": []},       # non-string matches
+])
+def test_probe_structural_errors_raise_mission_error(tmp_path, bad):
+    p = tmp_path / "bad.yaml"
+    p.write_text(_yaml.safe_dump({
+        "mission": {"name": "x", "goal": "y"},
+        "verification": {"commands": ["true"], "probes": [bad]},
+        "adapter": "mock",
+    }), encoding="utf-8")
+    with pytest.raises(MissionError):
+        load_mission(p)
+
+
+@pytest.mark.parametrize("bad", [
+    "mission:\n  name: x\n  goal: y\nverification:\n  probes: not-a-list\n",
+    "mission:\n  name: x\n  goal: y\nverification:\n  probes: ['a']\n",
+])
+def test_probes_top_level_structural_errors_raise(tmp_path, bad):
+    p = tmp_path / "bad.yaml"
+    p.write_text(bad)
+    with pytest.raises(MissionError):
+        load_mission(p)
+
+
+def test_run_probes_contains_passes_on_stdout_and_fails_on_wrong_output(
+        tmp_path):
+    ok = run_probes(
+        [ProbeSpec(command=py_cmd('print("BEHAVIOR-OK")'),
+                   contains="BEHAVIOR-OK")], tmp_path)
+    assert len(ok) == 1
+    assert ok[0].passed is True
+    assert ok[0].matched is True
+    assert ok[0].detail == ""
+    bad = run_probes(
+        [ProbeSpec(command=py_cmd('print("something else")'),
+                   contains="BEHAVIOR-OK")], tmp_path)
+    assert bad[0].passed is False
+    assert "does not contain" in bad[0].detail
+    ok2, reason = summarize_probes(ok)
+    assert ok2 and reason == ""
+    ok3, reason = summarize_probes(bad)
+    assert not ok3
+    assert "verification probes failed" in reason
+
+
+def test_run_probes_matches_regex(tmp_path):
+    results = run_probes(
+        [ProbeSpec(command=py_cmd('print("version: 1.2.3")'),
+                   matches=r"version:\s*\d+\.\d+\.\d+")], tmp_path)
+    assert results[0].passed is True
+    results = run_probes(
+        [ProbeSpec(command=py_cmd('print("no version here")'),
+                   matches=r"version:\s*\d+")], tmp_path)
+    assert results[0].passed is False
+    assert "does not match" in results[0].detail
+
+
+def test_run_probes_exit_code_alone_does_not_decide(tmp_path):
+    # Nonzero exit but the expected behavior output -> probe PASSES.
+    results = run_probes(
+        [ProbeSpec(command=py_cmd(
+            'import sys; print("BEHAVIOR-OK"); sys.exit(3)'),
+            contains="BEHAVIOR-OK")], tmp_path)
+    assert results[0].passed is True
+    assert results[0].exit_code == 3  # recorded, but not decisive
+    # Zero exit but the wrong output -> probe FAILS.
+    results = run_probes(
+        [ProbeSpec(command=py_cmd("import sys; sys.exit(0)"),
+                   contains="BEHAVIOR-OK")], tmp_path)
+    assert results[0].passed is False
+    assert results[0].exit_code == 0
+
+
+def test_run_probes_stderr_counts_toward_output(tmp_path):
+    results = run_probes(
+        [ProbeSpec(command=py_cmd(
+            'import sys; sys.stderr.write("ON-STDERR\\n")'),
+            contains="ON-STDERR")], tmp_path)
+    assert results[0].passed is True
+
+
+def test_run_probes_missing_binary_fails(tmp_path):
+    results = run_probes(
+        [ProbeSpec(command="no-such-binary-xyz --version",
+                   contains="v1")], tmp_path)
+    assert results[0].passed is False
+    assert "binary not found" in results[0].detail
+
+
+def test_run_probes_timeout_fails(tmp_path):
+    results = run_probes(
+        [ProbeSpec(command=py_cmd("import time; time.sleep(5)"),
+                   contains="done")],
+        tmp_path, timeout_seconds=1)
+    assert results[0].passed is False
+    assert "timed out after 1s" in results[0].detail
+
+
+def test_run_probes_combined_criteria_all_required(tmp_path):
+    results = run_probes(
+        [ProbeSpec(command=py_cmd('print("alpha beta")'),
+                   contains="alpha", matches=r"beta$")], tmp_path)
+    assert results[0].passed is True
+    results = run_probes(
+        [ProbeSpec(command=py_cmd('print("alpha gamma")'),
+                   contains="alpha", matches=r"beta$")], tmp_path)
+    assert results[0].passed is False
+
+
+def test_report_includes_probe_entries_on_success(tmp_path):
+    report = _run_probes_mission(tmp_path, _probe_mission(tmp_path, [
+        {"command": py_cmd('print("PROOF-OF-BEHAVIOR")'),
+         "contains": "PROOF-OF-BEHAVIOR"},
+    ]))
+    assert report["status"] == "success"
+    entries = [e for e in report["verification_results"] if "matched" in e]
+    assert entries == [{
+        "command": entries[0]["command"],
+        "passed": True,
+        "exit_code": 0,
+        "matched": True,
+        "detail": "",
+    }]
+    session = find_session_dir(tmp_path, ".tether/sessions",
+                               report["session_id"])
+    saved = json.loads(
+        (session / "verification" / "attempt-01.json").read_text())
+    assert any(e.get("matched") is True for e in saved)
+
+
+def test_failing_probe_fails_attempt_and_recovery_runs(tmp_path):
+    report = _run_probes_mission(tmp_path, _probe_mission(tmp_path, [
+        {"command": py_cmd('print("wrong behavior")'),
+         "contains": "EXPECTED-BEHAVIOR"},
+    ], max_attempts=2))
+    assert report["status"] == "failed"
+    # commands were green, so recovery ran over the failed probe
+    assert len(report["recovery_attempts"]) == 1
+    reason = report["recovery_attempts"][0]["failing_output"]
+    assert "verification probes failed" in reason
+    last_entry = report["verification_results"][-1]
+    assert last_entry["passed"] is False
+    assert last_entry["matched"] is False
+    assert last_entry["exit_code"] == 0  # green exit did not save it
+
+
+def test_dry_run_marks_probes_skipped(tmp_path):
+    mission = _probe_mission(tmp_path, [
+        {"command": py_cmd('print("never runs")'), "contains": "never runs"},
+    ])
+    adapter = resolve_adapter("mock", {"mock": {"scenario": "success"}})
+    cfg = TetherConfig(audit_dir=".tether/sessions", dry_run=True)
+    report = Orchestrator(adapter, cfg, tmp_path).run(mission)
+    assert report["status"] == "success"
+    entries = [e for e in report["verification_results"] if "matched" in e]
+    assert len(entries) == 1
+    assert entries[0]["passed"] is True
+    assert entries[0]["detail"] == "skipped (dry-run)"

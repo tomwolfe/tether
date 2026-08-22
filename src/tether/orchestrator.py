@@ -32,19 +32,23 @@ from tether.models import (
     AssertionResult,
     AssertionSpec,
     CheckpointInfo,
+    ProbeSpec,
     TetherConfig,
     VerificationResult,
 )
 from tether.verification import (
     REPAIR_OUTPUT_BUDGET,
+    ProbeResult,
     check_artifacts,
     check_assertions,
     classify_failure,
     clip_output,
+    run_probes,
     run_verification,
     summarize,
     summarize_artifacts,
     summarize_assertions,
+    summarize_probes,
 )
 
 log = logging.getLogger("tether")
@@ -57,6 +61,11 @@ FORENSIC_EXCERPT_BUDGET = REPAIR_OUTPUT_BUDGET // 2
 # a bounded reason recorded with the verdict.
 REVIEW_EXCERPT_BUDGET = REPAIR_OUTPUT_BUDGET // 2
 REVIEW_REASON_BUDGET = 500
+# Full-context review (dogfood-20): `review.context: "full"` embeds the ENTIRE
+# captured artifact up to this larger cap instead of REVIEW_EXCERPT_BUDGET and
+# asks the reviewer to cite specific hunks/lines. The default excerpt path is
+# unchanged byte-for-byte.
+REVIEW_FULL_CONTEXT_BUDGET = 64 * 1024
 # Fail-safe verdict contract (case-insensitive scan of the reviewer's logs):
 # only lines STARTING with a verdict marker count, and the LAST such line
 # decides. Bare substring matching is unsafe twice over: command adapters
@@ -405,6 +414,11 @@ class Orchestrator:
             return list(mission.verification.assertions)
         return list(self.config.verification.assertions or [])
 
+    def _effective_verification_probes(self, mission: Any) -> list[ProbeSpec]:
+        if mission.verification.probes is not None:
+            return list(mission.verification.probes)
+        return list(self.config.verification.probes or [])
+
     def _sandbox_violations(self, mission: Any,
                             changed: list[str]) -> list[Dict[str, str]]:
         """Post-execution write-sandbox check over detected changed files.
@@ -589,7 +603,11 @@ class Orchestrator:
         adapter instance unless an independent reviewer adapter was injected
         (dogfood-17) — and sends goal + a bounded excerpt of the
         already-captured change artifact (``patch.diff`` for git,
-        ``manifest_diff.json`` otherwise; no re-diff). The verdict is parsed
+        ``manifest_diff.json`` otherwise; no re-diff). With
+        ``review.context: "full"`` (dogfood-20) the ENTIRE artifact is
+        embedded up to REVIEW_FULL_CONTEXT_BUDGET instead, with an
+        instruction to cite specific hunks/lines; the default "excerpt"
+        prompt stays byte-for-byte unchanged. The verdict is parsed
         fail-safe from the reviewer's logs: the LAST line BEGINNING with
         either marker decides (echoed prompts and diff hunks never begin a
         line with the marker, even when they contain the token mid-line);
@@ -598,22 +616,34 @@ class Orchestrator:
         the ACTUAL reviewer adapter name.
         """
         name = "patch.diff" if checkpoint.is_git_repo else "manifest_diff.json"
+        review_spec = getattr(mission, "review", None)
+        full_context = bool(
+            review_spec is not None
+            and getattr(review_spec, "context", "excerpt") == "full")
         try:
             excerpt = clip_output(
                 (audit.dir / name).read_text(encoding="utf-8",
                                              errors="replace").strip(),
-                REVIEW_EXCERPT_BUDGET)
+                REVIEW_FULL_CONTEXT_BUDGET if full_context
+                else REVIEW_EXCERPT_BUDGET)
         except OSError:
             excerpt = ""
+        verdict_instruction = (
+            "Review the change above as an adversarial reviewer and answer "
+            "with exactly one verdict line — 'REVIEW: APPROVE' or "
+            "'REVIEW: REQUEST_CHANGES' — followed by one line of reasoning."
+        )
+        if full_context:
+            verdict_instruction = (
+                "Cite specific hunks or lines from the captured change when "
+                "raising concerns.\n" + verdict_instruction)
         prompt = (
             "You are acting as an adversarial code reviewer. Judge whether "
             "the captured change below actually accomplishes the mission "
             "goal. Verification passing is NOT proof of correctness.\n\n"
             f"Mission goal:\n{mission.goal}\n\n"
             f"Captured change ({name}):\n{excerpt or '(no change captured)'}\n\n"
-            "Review the change above as an adversarial reviewer and answer "
-            "with exactly one verdict line — 'REVIEW: APPROVE' or "
-            "'REVIEW: REQUEST_CHANGES' — followed by one line of reasoning."
+            + verdict_instruction
         )
         audit.save_prompt("review", prompt)
         state_json: Dict[str, Any] = {"status": "unavailable", "logs": ""}
@@ -791,6 +821,7 @@ class Orchestrator:
         verification_results: list[VerificationResult] = []
         artifact_results: list[ArtifactResult] = []
         assertion_results: list[AssertionResult] = []
+        probe_results: list[ProbeResult] = []
         recovery_attempts: list[Dict[str, Any]] = []
         plan_text = ""
         next_steps: list[str] = []
@@ -1051,6 +1082,7 @@ class Orchestrator:
             agent_failed = state.status != "completed"
             artifact_patterns = self._effective_verification_artifacts(mission)
             assertion_specs = self._effective_verification_assertions(mission)
+            probe_specs = self._effective_verification_probes(mission)
             prev_changed: Optional[list[str]] = None
             while True:
                 attempt += 1
@@ -1096,9 +1128,6 @@ class Orchestrator:
                         else:
                             assertion_results = check_assertions(
                                 assertion_specs, self.project_dir)
-                audit.save_verification(
-                    attempt, [*verification_results, *artifact_results,
-                              *assertion_results])
                 artifacts_passed, missing_output = summarize_artifacts(artifact_results)
                 if not artifacts_passed:
                     log.warning("%s", missing_output)
@@ -1106,7 +1135,40 @@ class Orchestrator:
                     summarize_assertions(assertion_results)
                 if not assertions_passed:
                     log.warning("%s", assertion_output)
-                passed = commands_passed and artifacts_passed and assertions_passed
+                # Behavioral probes (dogfood-20): run only on otherwise-green
+                # attempts (commands + artifacts + assertions all pass). A
+                # probe asserts on a command's OUTPUT, not its exit status, so
+                # it exercises the produced code; a failing probe fails the
+                # attempt like any other deliverable miss and recovery
+                # proceeds normally. Dry-run records them as skipped.
+                probe_results = []
+                if commands_passed and not agent_failed \
+                        and artifacts_passed and assertions_passed:
+                    if probe_specs:
+                        if dry_run:
+                            probe_results = [
+                                ProbeResult(command=p.command,
+                                            detail="skipped (dry-run)",
+                                            passed=True)
+                                for p in probe_specs
+                            ]
+                        else:
+                            probe_results = run_probes(
+                                probe_specs, self.project_dir,
+                                timeout_seconds=timeout)
+                        probes_passed, probe_output = \
+                            summarize_probes(probe_results)
+                        if not probes_passed:
+                            log.warning("%s", probe_output)
+                    else:
+                        probes_passed, probe_output = True, ""
+                else:
+                    probes_passed, probe_output = True, ""
+                audit.save_verification(
+                    attempt, [*verification_results, *artifact_results,
+                              *assertion_results, *probe_results])
+                passed = commands_passed and artifacts_passed \
+                    and assertions_passed and probes_passed
                 # Set when a required review rejects but retry_on_rejection
                 # is enabled and attempt budget remains (dogfood-17): control
                 # falls through into the normal recovery machinery below
@@ -1162,7 +1224,8 @@ class Orchestrator:
                         break
                 if attempt >= max_attempts:
                     status = "failed"
-                    deliverable_output = missing_output or assertion_output
+                    deliverable_output = missing_output or assertion_output \
+                        or probe_output
                     if deliverable_output and not failing_output:
                         next_steps.append(deliverable_output)
                     next_steps.append(
@@ -1186,7 +1249,7 @@ class Orchestrator:
                     guidance = FAILURE_CLASS_GUIDANCE.get(
                         failure_class, FAILURE_CLASS_GUIDANCE["unknown"])
                     reason = (failing_output or missing_output
-                              or assertion_output
+                              or assertion_output or probe_output
                               or (state.error or "agent reported failure"))
                 recovery_attempt: Dict[str, Any] = {
                     "attempt": attempt,
@@ -1292,7 +1355,7 @@ class Orchestrator:
             "finished_at": finished_at,
             "verification_results": [
                 r.model_dump() for r in [*verification_results, *artifact_results,
-                                        *assertion_results]
+                                        *assertion_results, *probe_results]
             ],
             "recovery_attempts": recovery_attempts,
             "changed_files": changed_files,

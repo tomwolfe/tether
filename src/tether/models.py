@@ -18,6 +18,20 @@ class VerificationSpec(BaseModel):
     # Structural content assertions (dogfood-19): deeper checks over files
     # matched by a glob. Default None so existing missions work unchanged.
     assertions: Optional[List[AssertionSpec]] = None
+    # Behavioral probes (dogfood-20): assert on a command's OUTPUT, not its
+    # exit code. Default None so existing missions work unchanged.
+    probes: Optional[List[ProbeSpec]] = None
+
+
+class ProbeSpec(BaseModel):
+    """Behavioral probe: run ``command`` via subprocess (shell=False) in the
+    project dir and assert on its combined stdout+stderr. ``contains`` requires
+    a literal substring, ``matches`` a regex (re.search); both are optional and
+    combinable. The probe passes when the output satisfies ALL conditions — the
+    exit code is recorded but is not itself the pass criterion."""
+    command: str
+    contains: Optional[str] = None
+    matches: Optional[str] = None
 
 
 class AssertionSpec(BaseModel):
@@ -48,6 +62,11 @@ class ReviewSpec(BaseModel):
     # When a required review rejects, route back into the bounded recovery
     # loop instead of failing immediately (default off = current behavior).
     retry_on_rejection: bool = False
+    # How much of the captured change artifact the reviewer sees (dogfood-20):
+    # "excerpt" (today, bounded ~4KB) or "full" (entire artifact up to 64KiB,
+    # with an instruction to cite specific hunks/lines). Default keeps
+    # existing review behavior unchanged.
+    context: str = "excerpt"
 
 
 class MissionContract(BaseModel):

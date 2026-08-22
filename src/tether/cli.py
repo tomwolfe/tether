@@ -735,6 +735,10 @@ def sessions_stats(
     review_rejections_caused_failures = 0
     failing_commands: Counter[str] = Counter()
     mission_sessions: Dict[str, list[tuple[bool, int]]] = {}
+    # Usage telemetry (dogfood-20): simple totals per numeric usage metric
+    # across sessions whose report carries usage data.
+    usage_totals: Dict[str, float] = {}
+    usage_sessions = 0
     for d, data in entries:
         status = str(data.get("status", "?"))
         status_counts[status] = status_counts.get(status, 0) + 1
@@ -769,6 +773,17 @@ def sessions_stats(
             if (isinstance(r, dict) and r.get("passed") is False
                     and r.get("command")):
                 failing_commands[str(r["command"])] += 1
+        report_usage = data.get("usage")
+        if isinstance(report_usage, dict):
+            reported_numeric = False
+            for key, value in report_usage.items():
+                if isinstance(value, bool) or \
+                        not isinstance(value, (int, float)):
+                    continue
+                usage_totals[key] = usage_totals.get(key, 0.0) + float(value)
+                reported_numeric = True
+            if reported_numeric:
+                usage_sessions += 1
 
     top_failing = [{"command": cmd, "count": n} for cmd, n in
                    sorted(failing_commands.items(),
@@ -840,6 +855,12 @@ def sessions_stats(
     }
     if missions_stats:
         stats["missions"] = missions_stats
+    if usage_totals:
+        stats["usage"] = {
+            "sessions_reporting": usage_sessions,
+            "totals": {key: round(usage_totals[key], 6)
+                       for key in sorted(usage_totals)},
+        }
 
     if json_output:
         typer.echo(json.dumps(stats, indent=2))
@@ -881,6 +902,12 @@ def sessions_stats(
             f"approve {review_approves}, request_changes {review_rejections}, "
             f"rejections causing failures "
             f"{review_rejections_caused_failures}")
+    if usage_totals:
+        totals_text = ", ".join(
+            f"{key} total {usage_totals[key]:g}"
+            for key in sorted(usage_totals))
+        typer.echo(
+            f"Usage: {usage_sessions} session(s) reporting; {totals_text}")
 
 
 _DURATION_RE = re.compile(r"^(\d+)([mhd])$")

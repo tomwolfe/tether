@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from tether.models import (
     AssertionSpec,
     MissionContract,
+    ProbeSpec,
     RecoverySpec,
     ReviewSpec,
     VerificationSpec,
@@ -108,6 +109,34 @@ def load_mission(path: str | Path) -> MissionContract:
             ))
         assertions = parsed_assertions
 
+    # Structural validation only (dogfood-20): probes run per attempt by the
+    # orchestrator against the target project; existence/behavior of the
+    # commands is a run-time concern (tether.verification).
+    raw_probes = verification.get("probes")
+    probes: list[ProbeSpec] | None = None
+    if raw_probes is not None:
+        if not isinstance(raw_probes, list) or not all(
+                isinstance(p, dict) for p in raw_probes):
+            raise MissionError(
+                "'verification.probes' must be a list of mappings")
+        parsed_probes: list[ProbeSpec] = []
+        for idx, entry in enumerate(raw_probes):
+            where = f"'verification.probes[{idx}]'"
+            command = entry.get("command")
+            if not isinstance(command, str) or not command:
+                raise MissionError(
+                    f"{where}.command' must be a non-empty string")
+            for key in ("contains", "matches"):
+                value = entry.get(key)
+                if value is not None and not isinstance(value, str):
+                    raise MissionError(f"{where}.{key}' must be a string")
+            parsed_probes.append(ProbeSpec(
+                command=command,
+                contains=entry.get("contains"),
+                matches=entry.get("matches"),
+            ))
+        probes = parsed_probes
+
     recovery = data.get("recovery") or {}
     if not isinstance(recovery, dict):
         raise MissionError("'recovery' must be a mapping")
@@ -133,18 +162,24 @@ def load_mission(path: str | Path) -> MissionContract:
         review_adapter = review_block.get("adapter")
         if review_adapter is not None and not isinstance(review_adapter, str):
             raise MissionError("'review.adapter' must be a string")
+        review_context = review_block.get("context", "excerpt")
+        if review_context not in ("excerpt", "full"):
+            raise MissionError(
+                "'review.context' must be 'excerpt' or 'full'")
         unknown = set(review_block) - {
-            "enabled", "required", "adapter", "retry_on_rejection"}
+            "enabled", "required", "adapter", "retry_on_rejection",
+            "context"}
         if unknown:
             raise MissionError(
                 "'review' accepts only 'enabled', 'required', 'adapter', "
-                "and 'retry_on_rejection'; got: "
+                "'retry_on_rejection', and 'context'; got: "
                 + ", ".join(sorted(unknown)))
         review = ReviewSpec(
             enabled=review_block.get("enabled", False),
             required=review_block.get("required", True),
             adapter=review_adapter,
             retry_on_rejection=review_block.get("retry_on_rejection", False),
+            context=review_context,
         )
 
     adapter = data.get("adapter")
@@ -191,6 +226,7 @@ def load_mission(path: str | Path) -> MissionContract:
                 commands=commands, timeout_seconds=timeout_seconds,
                 artifacts=artifacts,
                 assertions=assertions,
+                probes=probes,
             ),
             recovery=RecoverySpec(max_attempts=max_attempts),
             review=review,
