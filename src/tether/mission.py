@@ -9,7 +9,13 @@ import yaml
 
 from pydantic import ValidationError
 
-from tether.models import MissionContract, RecoverySpec, ReviewSpec, VerificationSpec
+from tether.models import (
+    AssertionSpec,
+    MissionContract,
+    RecoverySpec,
+    ReviewSpec,
+    VerificationSpec,
+)
 
 
 class MissionError(ValueError):
@@ -69,6 +75,38 @@ def load_mission(path: str | Path) -> MissionContract:
         not isinstance(artifacts, list) or not all(isinstance(a, str) for a in artifacts)
     ):
         raise MissionError("'verification.artifacts' must be a list of strings")
+
+    # Structural validation only: content checks run per attempt by the
+    # orchestrator against the target project (tether.verification).
+    raw_assertions = verification.get("assertions")
+    assertions: list[AssertionSpec] | None = None
+    if raw_assertions is not None:
+        if not isinstance(raw_assertions, list) or not all(
+                isinstance(a, dict) for a in raw_assertions):
+            raise MissionError(
+                "'verification.assertions' must be a list of mappings")
+        parsed_assertions: list[AssertionSpec] = []
+        for idx, entry in enumerate(raw_assertions):
+            where = f"'verification.assertions[{idx}]'"
+            path_value = entry.get("path")
+            if not isinstance(path_value, str) or not path_value:
+                raise MissionError(f"{where}.path' must be a non-empty string")
+            for key in ("contains", "matches"):
+                value = entry.get(key)
+                if value is not None and not isinstance(value, str):
+                    raise MissionError(f"{where}.{key}' must be a string")
+            min_occurrences = entry.get("min_occurrences", 1)
+            if (not isinstance(min_occurrences, int)
+                    or isinstance(min_occurrences, bool) or min_occurrences < 1):
+                raise MissionError(
+                    f"{where}.min_occurrences' must be a positive integer")
+            parsed_assertions.append(AssertionSpec(
+                path=path_value,
+                contains=entry.get("contains"),
+                matches=entry.get("matches"),
+                min_occurrences=min_occurrences,
+            ))
+        assertions = parsed_assertions
 
     recovery = data.get("recovery") or {}
     if not isinstance(recovery, dict):
@@ -150,7 +188,9 @@ def load_mission(path: str | Path) -> MissionContract:
             context=data.get("context", []) or [],
             constraints=data.get("constraints", []) or [],
             verification=VerificationSpec(
-                commands=commands, timeout_seconds=timeout_seconds, artifacts=artifacts
+                commands=commands, timeout_seconds=timeout_seconds,
+                artifacts=artifacts,
+                assertions=assertions,
             ),
             recovery=RecoverySpec(max_attempts=max_attempts),
             review=review,

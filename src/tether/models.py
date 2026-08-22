@@ -15,6 +15,20 @@ class VerificationSpec(BaseModel):
     # each pattern must match at least one existing file after the commands
     # pass, or the attempt fails.
     artifacts: Optional[List[str]] = None
+    # Structural content assertions (dogfood-19): deeper checks over files
+    # matched by a glob. Default None so existing missions work unchanged.
+    assertions: Optional[List[AssertionSpec]] = None
+
+
+class AssertionSpec(BaseModel):
+    """Content assertion over files matched by a fnmatch glob relative to
+    the project dir. ``contains`` requires a literal substring, ``matches``
+    a regex (re.search); both are optional and combinable. The assertion
+    passes when at least ``min_occurrences`` files satisfy all conditions."""
+    path: str
+    contains: Optional[str] = None
+    matches: Optional[str] = None
+    min_occurrences: int = Field(default=1, ge=1)
 
 
 class RecoverySpec(BaseModel):
@@ -134,6 +148,14 @@ class VerificationResult(BaseModel):
 class ArtifactResult(BaseModel):
     """Outcome of one verification artifact pattern against the project."""
     pattern: str
+    matched_files: List[str] = []
+    passed: bool = False
+    detail: str = ""
+
+
+class AssertionResult(BaseModel):
+    """Outcome of one structural content assertion against the project."""
+    path: str
     matched_files: List[str] = []
     passed: bool = False
     detail: str = ""

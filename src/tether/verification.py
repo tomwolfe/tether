@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import re
 import shlex
 import subprocess
 from pathlib import Path
 
-from tether.models import ArtifactResult, VerificationResult
+from tether.models import ArtifactResult, AssertionResult, AssertionSpec, VerificationResult
 
 
 def run_verification(
@@ -103,6 +104,73 @@ def summarize_artifacts(results: list[ArtifactResult]) -> tuple[bool, str]:
     if not unmatched:
         return True, ""
     return False, "missing required artifacts: " + ", ".join(unmatched)
+
+
+def check_assertions(
+    assertions: list[AssertionSpec],
+    project_dir: Path,
+) -> list[AssertionResult]:
+    """Structural content checks over files in the target project.
+
+    Each assertion glob-matches its ``path`` pattern against existing files
+    (excluding .tether/, same walk as artifacts), then filters the matches
+    by ``contains`` (literal substring) and/or ``matches`` (re.search) on
+    file content read as UTF-8 with errors='replace'. An assertion passes
+    when at least ``min_occurrences`` files satisfy all conditions.
+    """
+    files = _project_files(project_dir)
+    results: list[AssertionResult] = []
+    for assertion in assertions:
+        candidates = [f for f in files if fnmatch.fnmatch(f, assertion.path)]
+        matched: list[str] = []
+        first_error = ""
+        for relpath in candidates:
+            try:
+                text = (project_dir / relpath).read_text(
+                    encoding="utf-8", errors="replace")
+            except OSError as e:
+                if not first_error:
+                    first_error = f"{relpath}: unreadable ({e})"
+                continue
+            if assertion.contains is not None \
+                    and assertion.contains not in text:
+                continue
+            if assertion.matches is not None \
+                    and re.search(assertion.matches, text) is None:
+                continue
+            matched.append(relpath)
+        enough = len(matched) >= assertion.min_occurrences
+        detail = ""
+        if not enough:
+            if not candidates:
+                detail = f"no files match {assertion.path}"
+                if first_error:
+                    detail += f"; {first_error}"
+            else:
+                detail = (
+                    f"{len(matched)} of {len(candidates)} matching file(s) "
+                    f"satisfied the assertion; min_occurrences is "
+                    f"{assertion.min_occurrences}")
+                if first_error:
+                    detail += f"; {first_error}"
+        results.append(AssertionResult(
+            path=assertion.path,
+            matched_files=matched,
+            passed=enough,
+            detail=detail,
+        ))
+    return results
+
+
+def summarize_assertions(results: list[AssertionResult]) -> tuple[bool, str]:
+    """Return (all_passed, reason naming every failing assertion)."""
+    failed = [r for r in results if not r.passed]
+    if not failed:
+        return True, ""
+    parts = []
+    for r in failed:
+        parts.append(f"{r.path}: {r.detail}" if r.detail else r.path)
+    return False, "verification assertions failed: " + "; ".join(parts)
 
 
 def clip_output(text: str, budget: int = REPAIR_OUTPUT_BUDGET) -> str:

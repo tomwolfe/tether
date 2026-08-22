@@ -29,6 +29,8 @@ from tether.manifest import diff_manifests, snapshot_manifest
 from tether.models import (
     AgentState,
     ArtifactResult,
+    AssertionResult,
+    AssertionSpec,
     CheckpointInfo,
     TetherConfig,
     VerificationResult,
@@ -36,11 +38,13 @@ from tether.models import (
 from tether.verification import (
     REPAIR_OUTPUT_BUDGET,
     check_artifacts,
+    check_assertions,
     classify_failure,
     clip_output,
     run_verification,
     summarize,
     summarize_artifacts,
+    summarize_assertions,
 )
 
 log = logging.getLogger("tether")
@@ -395,6 +399,11 @@ class Orchestrator:
         if mission.verification.artifacts is not None:
             return list(mission.verification.artifacts)
         return list(self.config.verification.artifacts or [])
+
+    def _effective_verification_assertions(self, mission: Any) -> list[AssertionSpec]:
+        if mission.verification.assertions is not None:
+            return list(mission.verification.assertions)
+        return list(self.config.verification.assertions or [])
 
     def _sandbox_violations(self, mission: Any,
                             changed: list[str]) -> list[Dict[str, str]]:
@@ -781,6 +790,7 @@ class Orchestrator:
         status = "failed"
         verification_results: list[VerificationResult] = []
         artifact_results: list[ArtifactResult] = []
+        assertion_results: list[AssertionResult] = []
         recovery_attempts: list[Dict[str, Any]] = []
         plan_text = ""
         next_steps: list[str] = []
@@ -823,6 +833,20 @@ class Orchestrator:
         elif checkpoint.created:
             log.info("Checkpoint created at %s (HEAD=%s)",
                      checkpoint.ref, (checkpoint.original_head or "")[:12])
+
+        # Sandbox posture advisory (dogfood-19): with allowed_paths set,
+        # warn-mode detection relies only on content-based change detection;
+        # enforce additionally unions the filesystem-metadata diff that
+        # catches writes invisible to diffing (e.g. gitignored paths).
+        if getattr(mission, "allowed_paths", None) \
+                and self.config.sandbox_mode == "warn":
+            log.warning(
+                "allowed_paths is set but sandbox_mode is 'warn'; consider "
+                "sandbox_mode: enforce for stronger detection")
+            audit.log_event("sandbox_mode_advisory", {
+                "sandbox_mode": self.config.sandbox_mode,
+                "allowed_paths": list(mission.allowed_paths),
+            })
 
         # P0 safety: refuse to run against a dirty git tree unless allowed.
         if checkpoint.is_git_repo and checkpoint.dirty and not allow_dirty:
@@ -1026,6 +1050,7 @@ class Orchestrator:
             # never report success unless the last agent send completed.
             agent_failed = state.status != "completed"
             artifact_patterns = self._effective_verification_artifacts(mission)
+            assertion_specs = self._effective_verification_assertions(mission)
             prev_changed: Optional[list[str]] = None
             while True:
                 attempt += 1
@@ -1043,22 +1068,45 @@ class Orchestrator:
                 # a failing command (recovery proceeds normally); when commands
                 # already failed there is nothing more to learn from artifacts.
                 artifact_results = []
-                if artifact_patterns and commands_passed and not agent_failed:
-                    if dry_run:
-                        artifact_results = [
-                            ArtifactResult(pattern=p, detail="skipped (dry-run)",
-                                           passed=True)
-                            for p in artifact_patterns
-                        ]
-                    else:
-                        artifact_results = check_artifacts(
-                            artifact_patterns, self.project_dir)
+                assertion_results = []
+                if commands_passed and not agent_failed:
+                    if artifact_patterns:
+                        if dry_run:
+                            artifact_results = [
+                                ArtifactResult(pattern=p, detail="skipped (dry-run)",
+                                               passed=True)
+                                for p in artifact_patterns
+                            ]
+                        else:
+                            artifact_results = check_artifacts(
+                                artifact_patterns, self.project_dir)
+                    # Structural content assertions (dogfood-19): deeper than
+                    # existence checks — run on otherwise-green attempts right
+                    # after artifact checks pass their gate; a failing
+                    # assertion fails the attempt like any other deliverable
+                    # miss and recovery proceeds normally.
+                    if assertion_specs:
+                        if dry_run:
+                            assertion_results = [
+                                AssertionResult(path=a.path,
+                                                detail="skipped (dry-run)",
+                                                passed=True)
+                                for a in assertion_specs
+                            ]
+                        else:
+                            assertion_results = check_assertions(
+                                assertion_specs, self.project_dir)
                 audit.save_verification(
-                    attempt, [*verification_results, *artifact_results])
+                    attempt, [*verification_results, *artifact_results,
+                              *assertion_results])
                 artifacts_passed, missing_output = summarize_artifacts(artifact_results)
                 if not artifacts_passed:
                     log.warning("%s", missing_output)
-                passed = commands_passed and artifacts_passed
+                assertions_passed, assertion_output = \
+                    summarize_assertions(assertion_results)
+                if not assertions_passed:
+                    log.warning("%s", assertion_output)
+                passed = commands_passed and artifacts_passed and assertions_passed
                 # Set when a required review rejects but retry_on_rejection
                 # is enabled and attempt budget remains (dogfood-17): control
                 # falls through into the normal recovery machinery below
@@ -1114,8 +1162,9 @@ class Orchestrator:
                         break
                 if attempt >= max_attempts:
                     status = "failed"
-                    if missing_output and not failing_output:
-                        next_steps.append(missing_output)
+                    deliverable_output = missing_output or assertion_output
+                    if deliverable_output and not failing_output:
+                        next_steps.append(deliverable_output)
                     next_steps.append(
                         f"Verification failed after {max_attempts} attempts. "
                         f"Roll back with: tether rollback {self.session_id} "
@@ -1136,8 +1185,9 @@ class Orchestrator:
                     failure_class = classify_failure(verification_results)
                     guidance = FAILURE_CLASS_GUIDANCE.get(
                         failure_class, FAILURE_CLASS_GUIDANCE["unknown"])
-                    reason = failing_output or missing_output or (
-                        state.error or "agent reported failure")
+                    reason = (failing_output or missing_output
+                              or assertion_output
+                              or (state.error or "agent reported failure"))
                 recovery_attempt: Dict[str, Any] = {
                     "attempt": attempt,
                     "failure_class": failure_class,
@@ -1241,7 +1291,8 @@ class Orchestrator:
             "started_at": started_at,
             "finished_at": finished_at,
             "verification_results": [
-                r.model_dump() for r in [*verification_results, *artifact_results]
+                r.model_dump() for r in [*verification_results, *artifact_results,
+                                        *assertion_results]
             ],
             "recovery_attempts": recovery_attempts,
             "changed_files": changed_files,

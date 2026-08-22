@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -90,6 +91,62 @@ def redact_body(text: str) -> str:
             f"head={text[:64]!r} tail={text[-64:]!r}]")
 
 
+# Post-session scrub heuristics (dogfood-19): high-confidence secret VALUE
+# shapes, extending the SECRET_KEY_MARKERS key heuristics above. Assignment
+# forms anchor on a marker-bearing key; the remaining patterns match common
+# provider credential token shapes outright. Best-effort by design.
+SCRUB_VALUE_PATTERNS: Tuple[re.Pattern, ...] = (
+    # key containing a secret marker, then "key = value" / '"key": "value"'
+    re.compile(
+        r"(?i)[\w.\-]*(?:"
+        + "|".join(re.escape(m) for m in SECRET_KEY_MARKERS)
+        + r")[\w.\-]*['\"]?\s*[:=]\s*['\"]?"
+        r"([A-Za-z0-9_+/=\-]{12,})"),
+    # common credential token shapes
+    re.compile(r"\bsk-[A-Za-z0-9_\-]{16,}"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    # Authorization-style bearer credentials ("Bearer <token>")
+    re.compile(r"(?i)\bbearer\s+['\"]?([A-Za-z0-9_+/=\-.]{12,})"),
+)
+
+
+def find_secret_spans(text: str) -> list[Tuple[int, int]]:
+    """Sorted, merged character spans of secret-looking substrings in text.
+
+    Purely textual best-effort detection for ``sessions scrub``: matches
+    assignment values anchored by :data:`SECRET_KEY_MARKERS` and common
+    provider token shapes. Overlapping hits are merged so each secret
+    substring is reported once.
+    """
+    spans: list[Tuple[int, int]] = []
+    for pattern in SCRUB_VALUE_PATTERNS:
+        for m in pattern.finditer(text):
+            start, end = (m.span(1) if m.lastindex else m.span())
+            if end > start:
+                spans.append((start, end))
+    if not spans:
+        return []
+    spans.sort()
+    merged: list[list[int]] = [list(spans[0])]
+    for start, end in spans[1:]:
+        if start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return [(start, end) for start, end in merged]
+
+
+def redact_secret_value(value: str) -> str:
+    """redact_body()-style marker for one scrubbed secret substring.
+
+    Keeps the sha256/length auditability but — unlike redact_body() —
+    echoes no excerpt of the secret itself.
+    """
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return f"[REDACTED sha256={digest} len={len(value)}]"
+
+
 class AuditTrail:
     def __init__(self, project_dir: Path, audit_dir: str, mission_name: str,
                  session_id: str, redact_prompts: bool = False) -> None:
@@ -149,6 +206,31 @@ class AuditTrail:
         path = self.dir / "report.json"
         path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
         return path
+
+
+def append_event_to_log(session_dir: Path, kind: str,
+                        data: Dict[str, Any]) -> None:
+    """Append an event to an existing session's events.jsonl (dogfood-19).
+
+    Extends the tamper-evident chain: the new event's ``prev`` is the hash
+    of the last existing event, so ``tether logs <id> --verify`` stays
+    intact after a scrub. Best-effort: a missing or unparseable log simply
+    starts (or restarts) the chain segment.
+    """
+    events = session_dir / "events.jsonl"
+    prev_hash = ""
+    if events.exists():
+        lines = [ln for ln in events.read_text(encoding="utf-8").splitlines()
+                 if ln.strip()]
+        if lines:
+            try:
+                prev_hash = event_hash(json.loads(lines[-1]))
+            except json.JSONDecodeError:
+                pass  # unparseable tail: continue from an empty anchor
+    event: Dict[str, Any] = {"ts": utcnow(), "kind": kind, **data}
+    event["prev"] = prev_hash
+    with events.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(event, default=str) + "\n")
 
 
 def find_session_dir(project_dir: Path, audit_dir: str,

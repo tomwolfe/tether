@@ -17,7 +17,13 @@ import tether.adapters as registry
 from tether import __version__
 from tether import certify, conformance, smoke
 from tether.adapters.base import AgentAdapter
-from tether.audit import find_session_dir, new_session_id
+from tether.audit import (
+    append_event_to_log,
+    find_secret_spans,
+    find_session_dir,
+    new_session_id,
+    redact_secret_value,
+)
 from tether.config import load_project_config, resolve_config
 from tether.git_safety import rollback as git_rollback
 from tether.mission import MissionError, load_mission
@@ -728,6 +734,7 @@ def sessions_stats(
     reviewed_sessions = review_approves = review_rejections = 0
     review_rejections_caused_failures = 0
     failing_commands: Counter[str] = Counter()
+    mission_sessions: Dict[str, list[tuple[bool, int]]] = {}
     for d, data in entries:
         status = str(data.get("status", "?"))
         status_counts[status] = status_counts.get(status, 0) + 1
@@ -735,8 +742,13 @@ def sessions_stats(
         adapter_counts[adapter] = adapter_counts.get(adapter, 0) + 1
         if status == "success":
             adapter_successes[adapter] = adapter_successes.get(adapter, 0) + 1
-        attempt_counts.append(
-            len(list((d / "verification").glob("attempt-*.json"))))
+        attempts_here = len(list((d / "verification").glob("attempt-*.json")))
+        attempt_counts.append(attempts_here)
+        # Per-mission baselines (dogfood-19): keep (success, attempts) per
+        # session grouped by mission, in directory (= chronological) order.
+        mission_name = str(data.get("mission_name", "?"))
+        mission_sessions.setdefault(mission_name, []).append(
+            (status == "success", attempts_here))
         if len(data.get("recovery_attempts") or []) > 0:
             recovery_sessions += 1
             if status == "success":
@@ -774,6 +786,33 @@ def sessions_stats(
         for name in sorted(adapter_counts)
     }
 
+    # Per-mission baselines (dogfood-19): for every mission with >= 2
+    # sessions, compare the latest session's verification-attempt count to
+    # the trailing median of its prior sessions. Only missions meeting the
+    # threshold appear; with none, output stays byte-identical to before.
+    def _trend(prior: list[int], latest: int) -> str:
+        trailing = float(statistics.median(prior))
+        if latest > trailing + 1:
+            return "regression"
+        if latest < trailing - 1:
+            return "improvement"
+        return "stable"
+
+    missions_stats: Dict[str, Any] = {}
+    for name, sessions in sorted(mission_sessions.items()):
+        if len(sessions) < 2:
+            continue
+        successes = sum(1 for ok, _ in sessions if ok)
+        attempts_list = [a for _, a in sessions]
+        missions_stats[name] = {
+            "count": len(sessions),
+            "success_rate_pct": pct_round(successes, len(sessions)),
+            "median_attempts": round(float(statistics.median(attempts_list)), 2),
+            "max_attempts": max(attempts_list),
+            "latest_attempts": attempts_list[-1],
+            "trend": _trend(attempts_list[:-1], attempts_list[-1]),
+        }
+
     stats: Dict[str, Any] = {
         "total_sessions": total,
         "statuses": {s: {"count": c, "pct": pct(c)}
@@ -799,6 +838,8 @@ def sessions_stats(
             "rejections_caused_failures": review_rejections_caused_failures,
         },
     }
+    if missions_stats:
+        stats["missions"] = missions_stats
 
     if json_output:
         typer.echo(json.dumps(stats, indent=2))
@@ -825,6 +866,15 @@ def sessions_stats(
     for name, info in adapters_stats.items():
         typer.echo(f"  {name}: {info['count']} session(s), "
                    f"success rate {info['success_rate_pct']}%")
+    if missions_stats:
+        typer.echo("Per-mission:")
+        for name, info in missions_stats.items():
+            typer.echo(
+                f"  {name}: {info['count']} sessions, "
+                f"success {info['success_rate_pct']}%, "
+                f"median attempts {info['median_attempts']}, "
+                f"latest: {info['latest_attempts']} attempts "
+                f"({info['trend']})")
     if reviewed_sessions:
         typer.echo(
             f"Review gate: {reviewed_sessions} reviewed session(s), "
@@ -889,6 +939,86 @@ def sessions_clean(
         shutil.rmtree(d, ignore_errors=True)
     typer.echo(f"Deleted {len(candidates)} session "
                f"{'directory' if len(candidates) == 1 else 'directories'}")
+
+
+_SCRUB_SUBDIRS = ("prompts", "responses", "verification")
+_SCRUB_SUFFIXES = (".txt", ".json")
+
+
+def _scrub_targets(session: Path) -> list[Path]:
+    """All .txt/.json files under the scrubbed subdirs of one session dir.
+
+    Strictly bounded to <session>/prompts, <session>/responses, and
+    <session>/verification — nothing outside the session directory is
+    ever read or rewritten.
+    """
+    targets: list[Path] = []
+    for subdir in _SCRUB_SUBDIRS:
+        base = session / subdir
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*")):
+            if path.is_file() and path.suffix.lower() in _SCRUB_SUFFIXES:
+                targets.append(path)
+    return targets
+
+
+@sessions_app.command("scrub")
+def sessions_scrub(
+    session_id: str = typer.Argument(..., help="Session id (or prefix)."),
+    confirm: bool = typer.Option(
+        False, "--confirm",
+        help="Rewrite matching files in place. Without this flag nothing "
+             "is modified."),
+    project_dir: Optional[Path] = typer.Option(None, "--project-dir"),
+) -> None:
+    """Best-effort secret scrubbing of one session's audit records.
+
+    Scans .txt/.json files under prompts/, responses/, and verification/
+    for high-confidence secret patterns. Without --confirm prints a plan;
+    with --confirm rewrites matched substrings to redaction markers and
+    appends a scrub event to events.jsonl.
+    """
+    pd = _project_dir(project_dir)
+    session = _find_session_or_exit(pd, session_id)
+    plans: list[tuple[Path, int]] = []
+    for path in _scrub_targets(session):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        count = len(find_secret_spans(text))
+        if count:
+            plans.append((path, count))
+    if not plans:
+        typer.echo(f"No secret-like material found in {session}.")
+        return
+    verb = "Scrub" if confirm else "Would scrub"
+    for path, count in plans:
+        typer.echo(f"{verb}: {path} ({count} match(es))")
+    if not confirm:
+        typer.echo("Dry run: nothing modified (pass --confirm to scrub).")
+        return
+    scrubbed = 0
+    for path, _count in plans:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        spans = find_secret_spans(text)
+        if not spans:
+            continue
+        pieces: list[str] = []
+        cursor = 0
+        for start, end in spans:
+            pieces.append(text[cursor:start])
+            pieces.append(redact_secret_value(text[start:end]))
+            cursor = end
+        pieces.append(text[cursor:])
+        path.write_text("".join(pieces), encoding="utf-8")
+        scrubbed += 1
+    append_event_to_log(session, "scrub", {"files": scrubbed})
+    typer.echo(f"Scrubbed {scrubbed} file(s) in {session}.")
 
 
 @app.command()

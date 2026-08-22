@@ -1329,3 +1329,286 @@ def test_sessions_clean_without_any_threshold_errors(tmp_path):
                             "--project-dir", str(tmp_path)])
     assert r.exit_code == 1
     assert "retention_days" in r.output
+
+
+# --------------------- structural verification assertions (dogfood-19)
+
+
+import yaml  # noqa: E402
+
+from tether.models import AssertionSpec  # noqa: E402
+from tether.verification import (  # noqa: E402
+    check_assertions,
+    summarize_assertions,
+)
+
+
+def _assertion_mission(tmp_path, assertions, commands=None, max_attempts=2):
+    mission = {
+        "mission": {"name": "assert", "goal": "g"},
+        "verification": {
+            "commands": [PASS_CMD] if commands is None else list(commands),
+            "assertions": assertions,
+        },
+        "recovery": {"max_attempts": max_attempts},
+        "adapter": "mock",
+    }
+    p = tmp_path / "m.yaml"
+    p.write_text(yaml.safe_dump(mission), encoding="utf-8")
+    return load_mission(p)
+
+
+def _run_assertions(tmp_path, mission, scenario="success"):
+    adapter = resolve_adapter("mock", {"mock": {"scenario": scenario}})
+    cfg = TetherConfig(audit_dir=".tether/sessions")
+    return Orchestrator(adapter, cfg, tmp_path).run(mission)
+
+
+def test_assertions_parse_into_spec_models_and_default_none(tmp_path):
+    m = _assertion_mission(tmp_path, [
+        {"path": "docs/*.md", "contains": "x", "matches": "y+",
+         "min_occurrences": 2},
+    ])
+    specs = m.verification.assertions
+    assert specs is not None and len(specs) == 1
+    spec = specs[0]
+    assert isinstance(spec, AssertionSpec)
+    assert (spec.path, spec.contains, spec.matches,
+            spec.min_occurrences) == ("docs/*.md", "x", "y+", 2)
+    # absent -> None: existing missions validate and behave unchanged
+    plain_path = tmp_path / "plain.yaml"
+    plain_path.write_text(MISSION, encoding="utf-8")
+    assert load_mission(plain_path).verification.assertions is None
+
+
+@pytest.mark.parametrize("bad", [
+    {"contains": "x"},                          # missing path
+    {"path": ""},                               # empty path
+    {"path": 42},                               # non-string path
+    {"path": "a.txt", "contains": 5},           # non-string contains
+    {"path": "a.txt", "matches": []},           # non-string matches
+    {"path": "a.txt", "min_occurrences": 0},    # non-positive occurrences
+    {"path": "a.txt", "min_occurrences": True},  # bool is not an int here
+])
+def test_assertion_structural_errors_raise_mission_error(tmp_path, bad):
+    p = tmp_path / "bad.yaml"
+    p.write_text(yaml.safe_dump({
+        "mission": {"name": "x", "goal": "y"},
+        "verification": {"commands": ["true"], "assertions": [bad]},
+        "adapter": "mock",
+    }), encoding="utf-8")
+    with pytest.raises(MissionError):
+        load_mission(p)
+
+
+@pytest.mark.parametrize("bad", [
+    "mission:\n  name: x\n  goal: y\nverification:\n  assertions: not-a-list\n",
+    "mission:\n  name: x\n  goal: y\nverification:\n  assertions: ['a']\n",
+])
+def test_assertions_top_level_structural_errors_raise(tmp_path, bad):
+    p = tmp_path / "bad.yaml"
+    p.write_text(bad)
+    with pytest.raises(MissionError):
+        load_mission(p)
+
+
+def test_check_assertions_contains_passes_and_fails(tmp_path):
+    (tmp_path / "good.md").write_text("uses TETHER-MARKER inside\n")
+    (tmp_path / "bad.md").write_text("nothing relevant\n")
+    results = check_assertions(
+        [AssertionSpec(path="*.md", contains="TETHER-MARKER")], tmp_path)
+    assert len(results) == 1
+    assert results[0].passed is True
+    assert results[0].matched_files == ["good.md"]
+    ok, reason = summarize_assertions(results)
+    assert ok and reason == ""
+
+    results = check_assertions(
+        [AssertionSpec(path="*.md", contains="ABSENT-TOKEN")], tmp_path)
+    assert results[0].passed is False
+    assert results[0].matched_files == []
+    ok, reason = summarize_assertions(results)
+    assert not ok
+    assert "verification assertions failed" in reason
+    assert "*.md" in reason
+
+
+def test_check_assertions_matches_regex(tmp_path):
+    (tmp_path / "a.py").write_text("version = '1.2.3'\n")
+    results = check_assertions(
+        [AssertionSpec(path="*.py", matches=r"version\s*=\s*'\d+\.\d+\.\d+'")],
+        tmp_path)
+    assert results[0].passed is True
+    # a regex that does not match anywhere fails
+    results = check_assertions(
+        [AssertionSpec(path="*.py", matches=r"^#!/bin/sh")], tmp_path)
+    assert results[0].passed is False
+
+
+def test_check_assertions_min_occurrences_enforced(tmp_path):
+    for name in ("one.txt", "two.txt"):
+        (tmp_path / name).write_text("CHANGELOG-ENTRY\n")
+    # two satisfying files pass min_occurrences=2...
+    results = check_assertions(
+        [AssertionSpec(path="*.txt", contains="CHANGELOG-ENTRY",
+                       min_occurrences=2)], tmp_path)
+    assert results[0].passed is True
+    assert sorted(results[0].matched_files) == ["one.txt", "two.txt"]
+    # ...but not min_occurrences=3
+    results = check_assertions(
+        [AssertionSpec(path="*.txt", contains="CHANGELOG-ENTRY",
+                       min_occurrences=3)], tmp_path)
+    assert results[0].passed is False
+    assert "min_occurrences is 3" in results[0].detail
+
+
+def test_check_assertions_glob_plus_content_filter(tmp_path):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "api.md").write_text("see CHANGELOG-ENTRY here\n")
+    (docs / "intro.md").write_text("welcome\n")
+    (docs / "notes.txt").write_text("CHANGELOG-ENTRY in wrong suffix\n")
+    results = check_assertions(
+        [AssertionSpec(path="docs/*.md", contains="CHANGELOG-ENTRY")], tmp_path)
+    assert results[0].passed is True
+    # content filter narrows the glob matches to the one real deliverable
+    assert results[0].matched_files == ["docs/api.md"]
+
+
+def test_check_assertions_missing_file_fails(tmp_path):
+    results = check_assertions(
+        [AssertionSpec(path="reports/summary.md", contains="total")], tmp_path)
+    assert results[0].passed is False
+    assert results[0].matched_files == []
+    assert "no files match reports/summary.md" in results[0].detail
+
+
+def test_check_assertions_skips_tether_dir(tmp_path):
+    tether_dir = tmp_path / ".tether" / "sessions" / "sess0000"
+    (tether_dir / "prompts").mkdir(parents=True)
+    (tether_dir / "prompts" / "001-plan.txt").write_text("AUDIT-ONLY-MARKER\n")
+    (tmp_path / "app.txt").write_text("plain\n")
+    # fnmatch "*" spans directories, so the audit prompt WOULD match a naive walk
+    results = check_assertions(
+        [AssertionSpec(path="*.txt", contains="AUDIT-ONLY-MARKER")], tmp_path)
+    assert results[0].passed is False
+    assert results[0].matched_files == []
+
+
+def test_report_includes_assertion_entries_on_success(tmp_path):
+    (tmp_path / "README.md").write_text("usage: tether run\n")
+    report = _run_assertions(
+        tmp_path, _assertion_mission(tmp_path, [{"path": "*.md",
+                                                 "contains": "tether"}]))
+    assert report["status"] == "success"
+    entries = [e for e in report["verification_results"] if "path" in e]
+    assert entries == [{
+        "path": "*.md",
+        "matched_files": ["README.md"],
+        "passed": True,
+        "detail": "",
+    }]
+    session = find_session_dir(tmp_path, ".tether/sessions",
+                               report["session_id"])
+    saved = json.loads(
+        (session / "verification" / "attempt-01.json").read_text())
+    assert any(e.get("path") == "*.md" for e in saved)
+
+
+def test_failing_assertion_fails_attempt_and_recovery_runs(tmp_path):
+    (tmp_path / "out.txt").write_text("nothing expected here\n")
+    report = _run_assertions(
+        tmp_path, _assertion_mission(
+            tmp_path, [{"path": "out.txt", "contains": "EXPECTED-MARKER"}],
+            max_attempts=2))
+    assert report["status"] == "failed"
+    # commands were green, so recovery ran over the failed assertion
+    assert len(report["recovery_attempts"]) == 1
+    reason = report["recovery_attempts"][0]["failing_output"]
+    assert "verification assertions failed" in reason
+    last_entry = report["verification_results"][-1]
+    assert last_entry["path"] == "out.txt"
+    assert last_entry["passed"] is False
+    assert last_entry["matched_files"] == []
+
+
+# --------------------- per-mission baseline comparison (dogfood-19)
+
+
+def _stats_fixture(tmp_path):
+    root = tmp_path / ".tether" / "sessions"
+    root.mkdir(parents=True)
+    # alpha attempts 1, 2, 4: trailing median of [1, 2] is 1.5; 4 > 2.5
+    _fabricate_session(root, "20260801-000000", "aaaa11111111", "failed",
+                       mission_name="alpha", attempts=1)
+    _fabricate_session(root, "20260802-000000", "bbbb22222222", "success",
+                       mission_name="alpha", attempts=2)
+    _fabricate_session(root, "20260803-000000", "cccc33333333", "failed",
+                       mission_name="alpha", attempts=4)
+    # beta attempts 3, 1: trailing median of [3] is 3; 1 < 2
+    _fabricate_session(root, "20260801-100000", "dddd44444444", "success",
+                       mission_name="beta", attempts=3)
+    _fabricate_session(root, "20260802-100000", "eeee55555555", "failed",
+                       mission_name="beta", attempts=1)
+    # single-session missions never get a trend line or entry
+    _fabricate_session(root, "20260805-000000", "ffff66666666", "success",
+                       mission_name="solo", attempts=1)
+
+
+def test_sessions_stats_per_mission_human_trends(tmp_path):
+    _stats_fixture(tmp_path)
+    runner, app = _stats_runner(tmp_path)
+    r = runner.invoke(app, ["sessions", "stats",
+                            "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    out = r.output
+    assert "Per-mission:" in out
+    alpha_line = next(line.strip() for line in out.splitlines()
+                      if line.strip().startswith("alpha:"))
+    assert alpha_line == ("alpha: 3 sessions, success 33.3%, "
+                          "median attempts 2.0, latest: 4 attempts "
+                          "(regression)")
+    beta_line = next(line.strip() for line in out.splitlines()
+                     if line.strip().startswith("beta:"))
+    assert beta_line.endswith("latest: 1 attempts (improvement)")
+    assert "solo:" not in out
+    # Per-mission sits after the per-adapter section
+    assert out.index("Per-adapter:") < out.index("Per-mission:")
+
+
+def test_sessions_stats_json_includes_missions_block(tmp_path):
+    _stats_fixture(tmp_path)
+    runner, app = _stats_runner(tmp_path)
+    r = runner.invoke(app, ["sessions", "stats", "--json",
+                            "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    data = json.loads(r.output)
+    assert set(data["missions"]) == {"alpha", "beta"}  # solo excluded
+    assert data["missions"]["alpha"] == {
+        "count": 3,
+        "success_rate_pct": 33.3,
+        "median_attempts": 2.0,
+        "max_attempts": 4,
+        "latest_attempts": 4,
+        "trend": "regression",
+    }
+    assert data["missions"]["beta"]["trend"] == "improvement"
+    assert data["missions"]["beta"]["latest_attempts"] == 1
+
+
+def test_sessions_stats_without_repeat_missions_stays_unchanged(tmp_path):
+    root = tmp_path / ".tether" / "sessions"
+    root.mkdir(parents=True)
+    _fabricate_session(root, "20260801-000000", "aaaa11111111", "success",
+                       mission_name="one")
+    _fabricate_session(root, "20260802-000000", "bbbb22222222", "failed",
+                       mission_name="two")
+    runner, app = _stats_runner(tmp_path)
+    rh = runner.invoke(app, ["sessions", "stats",
+                             "--project-dir", str(tmp_path)])
+    assert rh.exit_code == 0, rh.output
+    assert "Per-mission" not in rh.output
+    rj = runner.invoke(app, ["sessions", "stats", "--json",
+                             "--project-dir", str(tmp_path)])
+    assert rj.exit_code == 0, rj.output
+    assert "missions" not in json.loads(rj.output)

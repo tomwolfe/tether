@@ -25,6 +25,10 @@ an OS-level enforcement boundary. A determined or buggy agent can:
   files (e.g. `make`, test runners importing code).
 
 `sandbox_mode: enforce` narrows this but is still not a security container.
+When you configure `allowed_paths`, run with `enforce` rather than the default
+`warn`: warn mode relies only on content-based change detection and can miss
+writes invisible to diffing (e.g. gitignored paths), which is exactly why
+Tether logs an advisory warning for that combination.
 Use OS-level isolation (containers, VMs, separate users) for untrusted agents.
 
 ### Prompt injection
@@ -44,6 +48,13 @@ settings in resolved config and offers optional prompt redaction, but
 **redaction is best-effort pattern matching, not a guarantee**. Assume anything
 in `.tether/sessions/` may contain sensitive material; treat that directory as
 sensitive and exclude it from backups/syncs you do not control.
+
+`tether sessions scrub <session-id> --confirm` rewrites high-confidence
+secret patterns found in one session's records, but scrub is **best-effort
+pattern redaction, not cryptographic erasure**: patterns it does not recognize
+survive, the sha256-based markers keep a verifiable trace of what was removed,
+and copies of scrubbed material can persist in backups, syncs, or earlier
+exports of the session directory.
 
 ### Verification command risk
 

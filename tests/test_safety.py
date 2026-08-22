@@ -1075,6 +1075,50 @@ def test_warn_misses_gitignored_write_but_enforce_flags_it(tmp_path):
     assert enforce_report["verification_results"] == []
 
 
+# -------------------------- dogfood-19: sandbox mode advisory warning
+
+
+def _events_of(tmp_path, report):
+    session = find_session_dir(tmp_path, ".tether/sessions",
+                               report["session_id"])
+    return [json.loads(ln) for ln in
+            (session / "events.jsonl").read_text().splitlines()]
+
+
+@pytest.mark.parametrize("allowed_paths,sandbox_mode,expected", [
+    (True, "warn", True),      # advisory fires exactly here
+    (True, "enforce", False),  # already the stronger mode: no nudge
+    (False, "warn", False),    # nothing to strengthen: no advisory
+    (False, "enforce", False),
+])
+def test_sandbox_mode_advisory_fires_exactly_when_allowed_paths_and_warn(
+        tmp_path, caplog, allowed_paths, sandbox_mode, expected):
+    import logging
+    allowed_block = "allowed_paths:\n  - 'src/**'\n" if allowed_paths else ""
+    mp = _mission(tmp_path, body=(
+        "mission:\n  name: sbx-adv\n  goal: g\n"
+        f"{allowed_block}"
+        f"verification:\n  commands:\n    - {PASS_CMD}\nadapter: mock\n"
+    ))
+    adapter = SpyAdapter({"scenario": "success"})
+    cfg = TetherConfig(audit_dir=".tether/sessions", sandbox_mode=sandbox_mode)
+    with caplog.at_level(logging.WARNING, logger="tether"):
+        report = Orchestrator(adapter, cfg, tmp_path).run(load_mission(mp))
+    assert report["status"] == "success"
+    warnings = [r for r in caplog.records
+                if r.getMessage() == "allowed_paths is set but sandbox_mode "
+                                     "is 'warn'; consider sandbox_mode: "
+                                     "enforce for stronger detection"]
+    advisories = [e for e in _events_of(tmp_path, report)
+                  if e["kind"] == "sandbox_mode_advisory"]
+    if expected:
+        assert len(warnings) == 1 and len(advisories) == 1
+        assert advisories[0]["allowed_paths"] == ["src/**"]
+        assert advisories[0]["sandbox_mode"] == "warn"
+    else:
+        assert warnings == [] and advisories == []
+
+
 # --------------------------------------------- dogfood-06: audit redaction
 
 

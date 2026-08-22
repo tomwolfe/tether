@@ -40,7 +40,7 @@ tether logs <session-id>                           # event log of a session
 tether rollback <session-id-or-prefix>             # restore the git checkpoint
 ```
 
-`tether sessions stats` aggregates cross-session analytics from every session's `report.json`, including a `review_gate` block that counts reviewed sessions, `approve`/`request_changes` verdicts, and rejections that caused failures.
+`tether sessions stats` aggregates cross-session analytics from every session's `report.json`, including a `review_gate` block that counts reviewed sessions, `approve`/`request_changes` verdicts, and rejections that caused failures. For every mission with at least two recorded sessions it also prints per-mission baselines: success rate, median/max verification attempts, and a trend that compares the latest session's attempt count to the trailing median of prior sessions (`stable`, `regression`, or `improvement`).
 
 Useful `run` flags: `--adapter`, `--project-dir`, `--dry-run/--no-dry-run`, `--max-attempts`, `--allow-dirty/--no-allow-dirty`, `--auto-rollback/--no-auto-rollback`, `--strict`, `--verbose`. The boolean flags are tri-state: when omitted they do not override project config; when given they always do.
 
@@ -121,6 +121,20 @@ Context files are sent verbatim to the agent (modulo redaction) and appear in au
 
 Only commands explicitly declared in the mission (or project config) are executed, via `subprocess` with `shell=False`, in the target project directory, with timeouts. Nonzero exit = failure. All output is stored in the session audit directory. If neither the mission nor project config declares commands, none run and verification passes trivially.
 
+Beyond existence-only `verification.artifacts` globs, missions can declare **assertions** — structural content checks over the files a glob matches:
+
+```yaml
+verification:
+  assertions:
+    - path: "src/**/*.py"
+      contains: "def main("           # literal substring required
+    - path: "CHANGELOG*.md"
+      matches: "\\d+\\.\\d+\\.\\d+"   # regex searched with re.search
+      min_occurrences: 2              # at least two files must qualify
+```
+
+Each assertion glob-matches `path` against existing project files (excluding `.tether/`), then filters the matches by `contains` and/or `matches` on file content (read as UTF-8); it passes only when at least `min_occurrences` files satisfy all conditions. Assertions run on otherwise-green verification attempts, right after artifact checks; a failing assertion fails the attempt exactly like a missing deliverable — recovery proceeds normally — and results are recorded in `report["verification_results"]` alongside command and artifact entries.
+
 ## Dry-run
 
 `--dry-run` is fully non-mutating for the target project: no git checkpoint refs are created, no tar backups are made, no adapters are invoked, and no verification commands are executed. Tether still writes its audit report under `.tether/` (its own directory, not target-project content).
@@ -143,6 +157,8 @@ Missions can restrict agent writes with the contract's `allowed_paths` / `forbid
 
 - `warn` (default): post-send detection. After every agent send — the initial execution and each recovery attempt — every detected changed file (git diff vs checkpoint HEAD plus untracked files; non-git projects use a before/after manifest) is checked against the globs. Violations fail the mission immediately, skip verification entirely, and point at rollback.
 - `enforce`: additionally snapshots the project tree before execution (the same file manifest used for non-git projects) and unions filesystem-metadata diffs into the post-send check. Untracked git files are already checked in both modes; the metadata diff additionally catches writes that content-based detection can miss, e.g. new files under `.gitignore`d paths in git repos.
+
+If your mission sets `allowed_paths`, prefer `sandbox_mode: enforce`. Warn mode relies solely on content-based change detection and can miss writes invisible to diffing (gitignored paths, metadata-only changes); when Tether sees `allowed_paths` combined with warn mode it logs an advisory warning (`sandbox_mode_advisory` event) suggesting enforce.
 
 Be honest about the limit: enforce mode narrows but does **not** eliminate risk. It is best-effort detection layered onto post-hoc analysis — **not OS-level containment** (see docs/SECURITY.md). Use containers, VMs, or separate users when isolating untrusted agents.
 
@@ -178,6 +194,10 @@ Each run creates `.tether/sessions/<timestamp>-<mission>-<short-id>/` containing
 ### Secret allow/denylists (config)
 
 Resolved-config redaction can be tuned with two config keys: `secret_denylist` (keys whose values are **always** redacted) and `secret_allowlist` (keys **never** redacted even when they contain a secret marker like `token` or `password`). Matching is exact and case-insensitive; the denylist wins over the allowlist; adapter `env` values are always redacted regardless. With both lists empty (the default), the built-in marker heuristics apply unchanged.
+
+### Secret scrubbing
+
+Because prompts and responses are stored unredacted by default, `tether sessions scrub <session-id-or-prefix> [--confirm]` scans one session's `.txt`/`.json` audit records under `prompts/`, `responses/`, and `verification/` for high-confidence secret patterns (marker-anchored assignments, provider token shapes, bearer credentials). Without `--confirm` it prints a plan — each file path and its match count — and touches nothing; with `--confirm` it rewrites the matched substrings to `[REDACTED ...]` markers in place and appends a `scrub` event to `events.jsonl`. It never reads or writes outside the session directory. Scrub is best-effort pattern redaction, not cryptographic erasure (see docs/SECURITY.md).
 
 ## Review gate
 
