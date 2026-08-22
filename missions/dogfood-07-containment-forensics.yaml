@@ -1,0 +1,123 @@
+mission:
+  name: dogfood-07-containment-forensics
+  goal: |
+    Close the highest-impact robustness gaps in Tether: process containment,
+    forensic change capture, and opt-in automatic rollback.
+
+    Tasks:
+
+    1. PROCESS TREE CONTAINMENT IN CommandAdapter:
+       - In src/tether/adapters/command.py, replace the one-shot subprocess.run
+         path with a Popen-based implementation while preserving shell=False.
+       - On POSIX, create the child process in its own process group using
+         start_new_session=True.
+       - On Windows, use CREATE_NEW_PROCESS_GROUP when available and terminate
+         the process tree best-effort using a stdlib-only mechanism such as
+         taskkill /PID <pid> /T /F.
+       - Track the active subprocess so cancel(session) can terminate it.
+       - CommandAdapter.cancel(session) must no longer be a no-op when a command
+         is active. It should attempt graceful termination first, then force-kill
+         after a short grace period.
+       - Timeout handling must terminate the full process tree, not just the
+         immediate child.
+       - Preserve current semantics:
+           * exit 0 => completed
+           * nonzero => failed
+           * spawn failure => unavailable
+           * timeout => failed
+           * stdout/stderr captured as logs
+       - Do not introduce third-party dependencies.
+
+    2. FORENSIC CHANGE CAPTURE:
+       - In src/tether/orchestrator.py, after changed-file detection and before
+         verification, persist a change artifact into the session audit directory.
+       - For git projects, save `git diff --no-color --binary <original_head>`
+         as patch.diff.
+       - Also save untracked.txt listing untracked files, because ordinary git
+         diff does not include untracked file contents.
+       - For non-git projects, save manifest_diff.json containing added,
+         modified, deleted, and the before/after fingerprints used by the
+         manifest.
+       - In src/tether/cli.py, extend `tether diff <session-id>` with a --patch
+         flag. When present, print the saved patch.diff or manifest_diff.json.
+       - Default `tether diff` behavior must remain unchanged.
+
+    3. OPT-IN AUTO ROLLBACK:
+       - Add `auto_rollback: bool = False` to TetherConfig in
+         src/tether/models.py.
+       - Add a tri-state `--auto-rollback/--no-auto-rollback` flag to
+         `tether run` in src/tether/cli.py.
+       - When enabled, and only when the final status is failed or cancelled,
+         Tether should attempt a scoped rollback automatically.
+       - Auto-rollback must happen after the initial report is written so that
+         scoped clean rollback can use the session's changed_files, but it must
+         then update report.json with the auto_rollback result.
+       - Use the existing scoped rollback path with clean=True for git projects
+         and backup restore for non-git projects.
+       - Never auto-rollback a successful run.
+       - Never auto-rollback in dry-run.
+       - Never remove pre-existing untracked files that are not attributable to
+         the session.
+       - Record the result in report.json under `auto_rollback` with fields such
+         as attempted, ok, and message.
+       - If automatic rollback fails, keep the original failed/cancelled status
+         and preserve manual rollback guidance.
+
+    4. TESTS AND DOCS:
+       - Add tests for process timeout/cancel behavior using stub Python scripts.
+       - Keep tests deterministic and cross-platform. Skip only truly
+         platform-unavailable behavior, and do not weaken existing tests.
+       - Add tests proving patch.diff is created for git sessions.
+       - Add tests proving manifest_diff.json is created for non-git sessions.
+       - Add tests proving auto_rollback restores a failed git session, does not
+         run on success, and does not run in dry-run.
+       - Update README.md current limitations and docs/ARCHITECTURE.md to
+         describe process containment, patch capture, and auto_rollback.
+
+    Change NOTHING outside this scope.
+
+  context:
+    - Read docs/ARCHITECTURE.md, docs/ADAPTERS.md, README.md, and existing tests
+      before changing code.
+    - CommandAdapter currently uses subprocess.run and cancel() is a no-op.
+    - The orchestrator already computes changed_files before verification.
+    - The audit session directory is available as audit.dir.
+    - The rollback implementation lives in src/tether/git_safety.py and already
+      supports scoped clean rollback using session-report changed_files.
+    - subprocess must remain shell=False.
+
+  constraints:
+    - do not change AgentAdapter interface signatures
+    - do not weaken existing tests; all current tests must keep passing
+    - subprocess usage stays shell=False
+    - no new third-party dependencies
+    - auto_rollback must default to false
+    - keep changes minimal, typed, and scoped
+
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+  timeout_seconds: 900
+
+recovery:
+  max_attempts: 3
+
+adapter: opencode
+
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 1800
+
+allowed_paths:
+  - src/**
+  - tests/**
+  - docs/**
+  - README.md
+
+forbidden_paths:
+  - .git/**
+  - .tether/**
+  - missions/**
