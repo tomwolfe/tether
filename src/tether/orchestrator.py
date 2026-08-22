@@ -49,6 +49,43 @@ log = logging.getLogger("tether")
 # whole forensic context still goes through clip_output at the ~8KB budget.
 FORENSIC_EXCERPT_BUDGET = REPAIR_OUTPUT_BUDGET // 2
 
+# Review gate (dogfood-15): bounded diff excerpt for the reviewer prompt and
+# a bounded reason recorded with the verdict.
+REVIEW_EXCERPT_BUDGET = REPAIR_OUTPUT_BUDGET // 2
+REVIEW_REASON_BUDGET = 500
+# Fail-safe verdict contract (case-insensitive scan of the reviewer's logs):
+# exactly one APPROVE and no REQUEST_CHANGES => approve; anything else
+# (missing, both, garbage) => request_changes.
+REVIEW_APPROVE_TOKEN = "review: approve"
+REVIEW_CHANGES_TOKEN = "review: request_changes"
+
+
+def _parse_review_verdict(logs: str) -> tuple[str, str]:
+    """Fail-safe verdict parse over raw reviewer output.
+
+    Returns ``(verdict, reason)`` where verdict is ``"approve"`` or
+    ``"request_changes"``. Unparseable output fails safe as request_changes;
+    the reason is the first line after the decisive marker (bounded), or a
+    short diagnostic when no marker is present.
+    """
+    lowered = logs.lower()
+    n_approve = lowered.count(REVIEW_APPROVE_TOKEN)
+    n_reject = lowered.count(REVIEW_CHANGES_TOKEN)
+    approved = n_approve == 1 and n_reject == 0
+    verdict = "approve" if approved else "request_changes"
+    marker = REVIEW_APPROVE_TOKEN if approved else (
+        REVIEW_CHANGES_TOKEN if n_reject else None)
+    if marker is None:
+        if n_approve > 1:
+            return verdict, "ambiguous reviewer output: multiple APPROVE markers"
+        return verdict, "no valid review verdict found in reviewer output"
+    lines = logs.splitlines()
+    for idx, line in enumerate(lines):
+        if marker in line.lower():
+            reason = lines[idx + 1].strip() if idx + 1 < len(lines) else ""
+            return verdict, clip_output(reason, REVIEW_REASON_BUDGET)
+    return verdict, ""
+
 # Tailored recovery guidance per verification failure class (dogfood-14);
 # emitted as the header of every repair prompt after a failed attempt.
 FAILURE_CLASS_GUIDANCE: Dict[str, str] = {
@@ -515,6 +552,58 @@ class Orchestrator:
                 + clip_output(artifact.strip(), FORENSIC_EXCERPT_BUDGET))
         return "\n\n".join(lines)
 
+    def _run_review_gate(self, audit: AuditTrail, mission: Any,
+                         checkpoint: CheckpointInfo) -> Dict[str, Any]:
+        """Adversarial review gate over the captured change (dogfood-15).
+
+        Opens a FRESH reviewer session on this mission's adapter instance
+        and sends goal + a bounded excerpt of the already-captured change
+        artifact (``patch.diff`` for git, ``manifest_diff.json`` otherwise;
+        no re-diff). The verdict is parsed fail-safe from the reviewer's
+        logs: exactly one APPROVE marker and no REQUEST_CHANGES marker
+        approves; anything else counts as request_changes. A rejection does
+        NOT re-execute anything — recovery routing is a documented
+        follow-up. Returns the ``report["review"]`` payload.
+        """
+        name = "patch.diff" if checkpoint.is_git_repo else "manifest_diff.json"
+        try:
+            excerpt = clip_output(
+                (audit.dir / name).read_text(encoding="utf-8",
+                                             errors="replace").strip(),
+                REVIEW_EXCERPT_BUDGET)
+        except OSError:
+            excerpt = ""
+        prompt = (
+            "You are acting as an adversarial code reviewer. Judge whether "
+            "the captured change below actually accomplishes the mission "
+            "goal. Verification passing is NOT proof of correctness.\n\n"
+            f"Mission goal:\n{mission.goal}\n\n"
+            f"Captured change ({name}):\n{excerpt or '(no change captured)'}\n\n"
+            "Review the change above as an adversarial reviewer and answer "
+            "with exactly one verdict line — 'REVIEW: APPROVE' or "
+            "'REVIEW: REQUEST_CHANGES' — followed by one line of reasoning."
+        )
+        audit.save_prompt("review", prompt)
+        state_json: Dict[str, Any] = {"status": "unavailable", "logs": ""}
+        try:
+            reviewer_session = self.adapter.start_session(
+                str(self.project_dir), f"{self.session_id}-review")
+            state = self.adapter.send(prompt, reviewer_session)
+            verdict, reason = _parse_review_verdict(state.logs)
+            state_json = state.model_dump()
+        except Exception as e:  # noqa: BLE001 - gate must fail safe
+            log.warning("Reviewer interaction failed: %r", e)
+            verdict, reason = "request_changes", f"reviewer failed: {e!r}"
+        audit.save_response("review", state_json)
+        info: Dict[str, Any] = {
+            "enabled": True,
+            "adapter": self.adapter.name,
+            "verdict": verdict,
+            "reason": reason,
+        }
+        audit.log_event("review", info)
+        return info
+
     def _auto_rollback(self, checkpoint: CheckpointInfo,
                        pre_existing_untracked: Optional[list[str]] = None
                        ) -> Dict[str, Any]:
@@ -671,6 +760,9 @@ class Orchestrator:
         next_steps: list[str] = []
         manifest_before: dict[str, tuple[int, str | int]] | None = None
         sandbox_violations: list[Dict[str, str]] = []
+        # Review gate outcome (dogfood-15); None unless review is enabled, so
+        # reports of existing missions stay byte-for-byte unchanged.
+        review_result: Optional[Dict[str, Any]] = None
 
         # Crash-recovery detection (advisory): prior session directories
         # whose event log never reached session_end were interrupted
@@ -942,6 +1034,33 @@ class Orchestrator:
                     log.warning("%s", missing_output)
                 passed = commands_passed and artifacts_passed
                 if passed and not agent_failed:
+                    # Review gate (dogfood-15): an independent adversarial
+                    # pass over the captured diff, run only after every
+                    # verification command AND artifact assertion is green.
+                    review_spec = getattr(mission, "review", None)
+                    if review_spec is not None and review_spec.enabled:
+                        if dry_run:
+                            # Dry-run makes no adapter calls; record the
+                            # configured-but-not-executed gate honestly.
+                            review_result = {
+                                "enabled": True,
+                                "adapter": self.adapter.name,
+                                "verdict": "skipped",
+                                "reason": "dry-run",
+                            }
+                            audit.log_event("review", review_result)
+                        else:
+                            review_result = self._run_review_gate(
+                                audit, mission, checkpoint)
+                        if (review_result["verdict"] == "request_changes"
+                                and review_spec.required):
+                            status = "failed"
+                            next_steps.append(
+                                "Review gate rejected the change: "
+                                + (review_result["reason"] or "no reason given"))
+                            log.warning("Review gate rejected the change: %s",
+                                        review_result["reason"])
+                            break
                     status = "success"
                     break
                 if attempt >= max_attempts:
@@ -1077,6 +1196,8 @@ class Orchestrator:
             "next_steps": next_steps,
             "audit_dir": str(audit.dir),
         }
+        if review_result is not None:
+            report["review"] = review_result
         report_path = audit.write_report(report)
 
         # Opt-in automatic rollback: only for failed/cancelled outcomes, never

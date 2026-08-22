@@ -21,6 +21,14 @@ class RecoverySpec(BaseModel):
     max_attempts: Optional[int] = Field(default=None, ge=1, le=20)
 
 
+class ReviewSpec(BaseModel):
+    """Optional review gate: an adversarial reviewer pass over the captured
+    change after verification passes (dogfood-15). Default OFF so existing
+    missions validate and behave unchanged."""
+    enabled: bool = False   # default OFF; existing missions unchanged
+    required: bool = True   # when enabled, a rejection fails the mission
+
+
 class MissionContract(BaseModel):
     mission: Dict[str, Any]
     name: str
@@ -29,6 +37,8 @@ class MissionContract(BaseModel):
     constraints: List[str] = Field(default_factory=list)
     verification: VerificationSpec = Field(default_factory=VerificationSpec)
     recovery: RecoverySpec = Field(default_factory=RecoverySpec)
+    # Optional review gate; None (absent) keeps existing missions unchanged.
+    review: Optional[ReviewSpec] = None
     adapter: Optional[str] = None
     adapters: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     # Optional write sandbox (post-execution gate): fnmatch globs relative to

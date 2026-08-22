@@ -9,7 +9,7 @@ import yaml
 
 from pydantic import ValidationError
 
-from tether.models import MissionContract, RecoverySpec, VerificationSpec
+from tether.models import MissionContract, RecoverySpec, ReviewSpec, VerificationSpec
 
 
 class MissionError(ValueError):
@@ -80,6 +80,27 @@ def load_mission(path: str | Path) -> MissionContract:
     ):
         raise MissionError("'recovery.max_attempts' must be an integer between 1 and 20")
 
+    # Structural validation only: the review gate itself runs at mission
+    # runtime (orchestrator), never during validate-mission.
+    review_block = data.get("review")
+    review: ReviewSpec | None = None
+    if review_block is not None:
+        if not isinstance(review_block, dict):
+            raise MissionError("'review' must be a mapping")
+        for key in ("enabled", "required"):
+            value = review_block.get(key)
+            if key in review_block and not isinstance(value, bool):
+                raise MissionError(f"'review.{key}' must be a boolean")
+        unknown = set(review_block) - {"enabled", "required"}
+        if unknown:
+            raise MissionError(
+                "'review' accepts only 'enabled' and 'required'; got: "
+                + ", ".join(sorted(unknown)))
+        review = ReviewSpec(
+            enabled=review_block.get("enabled", False),
+            required=review_block.get("required", True),
+        )
+
     adapter = data.get("adapter")
     if adapter is not None and not isinstance(adapter, str):
         raise MissionError("'adapter' must be a string")
@@ -124,6 +145,7 @@ def load_mission(path: str | Path) -> MissionContract:
                 commands=commands, timeout_seconds=timeout_seconds, artifacts=artifacts
             ),
             recovery=RecoverySpec(max_attempts=max_attempts),
+            review=review,
             adapter=adapter,
             adapters=adapters_block,
             allowed_paths=sandbox_globs.get("allowed_paths"),

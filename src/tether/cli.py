@@ -97,18 +97,50 @@ def validate_config(
         raise typer.Exit(code=1)
 
 
+# Verification-strength lint (dogfood-15): authoring-time guidance only.
+# A TRIVIAL command proves nothing; missions should not pass on these alone.
+_TRIVIAL_COMMANDS = {"true", ":"}
+
+
+def _is_trivial_command(command: str) -> bool:
+    stripped = command.strip()
+    return stripped in _TRIVIAL_COMMANDS or stripped.startswith("echo ")
+
+
 @app.command()
-def validate_mission(mission_file: Path) -> None:
+def validate_mission(
+    mission_file: Path,
+    strict: bool = typer.Option(
+        False, "--strict",
+        help="Fail on weak verification: all-trivial commands without "
+             "artifacts, or neither commands nor artifacts declared."),
+) -> None:
     """Load and validate a mission contract file."""
     try:
         mission = load_mission(mission_file)
-        typer.echo(f"OK: mission {mission.name!r} is valid "
-                   f"({len(mission.verification.commands or [])} verification "
-                   f"command(s), {len(mission.verification.artifacts or [])} "
-                   f"artifact pattern(s))")
     except MissionError as e:
         typer.echo(f"INVALID: {e}", err=True)
         raise typer.Exit(code=1)
+    # Authoring-time guidance only: runtime verification behavior unchanged.
+    commands = mission.verification.commands or []
+    artifacts = mission.verification.artifacts or []
+    if not commands and not artifacts:
+        if strict:
+            typer.echo("INVALID: no verification commands and no artifact "
+                       "patterns declared; verification would pass "
+                       "trivially (--strict)", err=True)
+            raise typer.Exit(code=1)
+    elif all(_is_trivial_command(c) for c in commands) and not artifacts:
+        message = ("all verification commands are trivial (true/:/echo*) "
+                   "and no artifact patterns are declared")
+        if strict:
+            typer.echo(f"INVALID: {message} (--strict)", err=True)
+            raise typer.Exit(code=1)
+        typer.echo(f"WARNING: {message}")
+    typer.echo(f"OK: mission {mission.name!r} is valid "
+               f"({len(commands)} verification "
+               f"command(s), {len(artifacts)} "
+               f"artifact pattern(s))")
 
 
 @adapters_app.command("list")

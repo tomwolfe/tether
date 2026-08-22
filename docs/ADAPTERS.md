@@ -111,6 +111,15 @@ tether adapters certify mock      # CERTIFIED out of the box
 tether adapters certify opencode  # live probe requires a real `opencode` binary
 ```
 
+## Reviewer sessions (review gate)
+
+The optional mission review gate opens a fresh session on the **mission's own
+adapter instance** and sends an adversarial review prompt over the captured
+change; the reviewer is just another `send()` — no extra interface. Today this
+is self-review (same adapter as the worker), which is weaker than independent
+review; routing the review through a **different adapter** is a documented
+future option and requires no core-loop changes.
+
 ## Experimental vs verified (promotion criteria)
 
 `verified` is earned, not declared. An adapter may claim `verified=true` only

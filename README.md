@@ -173,6 +173,12 @@ With `--auto-rollback` (or `auto_rollback: true` in config), a mission that ends
 
 Each run creates `.tether/sessions/<timestamp>-<mission>-<short-id>/` containing: resolved config (with secrets such as adapter `env` values redacted), mission contract, prompts sent, adapter responses, verification results per attempt, recovery attempts, changed files, checkpoint info, `events.jsonl`, and a machine-readable `report.json`.
 
+## Review gate
+
+Verification passing is not the same as the change being correct. Missions can opt into a **review gate** (`review: {enabled: true}` in the contract): after every verification command AND artifact assertion passes, Tether opens a fresh session on the mission's adapter and asks it to act as an adversarial reviewer over a bounded excerpt of the captured change (`patch.diff` for git projects, `manifest_diff.json` otherwise), judging the diff against the mission goal. The reviewer must answer with exactly one verdict line (`REVIEW: APPROVE` or `REVIEW: REQUEST_CHANGES`); anything else — missing, ambiguous, or garbage output — fails safe as a rejection. When `required: true` (the default) a rejection fails the mission with the review reason in `next_steps`; there is no automatic re-execution. The verdict, reason, prompt, and response are recorded in `report["review"]`, an audit event, and the session directory.
+
+This is a **heuristic adversarial pass, NOT proof of correctness**. It is also self-review today: the reviewer runs on the same adapter instance as the worker, which is weaker than an independent reviewer adapter (a documented follow-up). `tether validate-mission --strict` additionally lints weak authoring: it warns (or fails under `--strict`) when all verification commands are trivial (`true`, `:`, `echo ...`) and no artifacts are declared, and fails when neither commands nor artifacts are declared at all.
+
 ## Development & tests
 
 The `dev` extra installs everything needed to run the test suite and the
@@ -194,4 +200,5 @@ Tests use only temp directories, git temp repos with local identity, and the Moc
 - Process-tree containment is best-effort: descendants that escape the process group (e.g. by double-forking into a new session on POSIX) or survive `taskkill /T /F` on Windows cannot be force-killed by Tether.
 - Token/cost usage is only reported if an adapter provides it (Mock provides none; Command only elapsed time and exit code).
 - opencode/pi presets are unverified assumptions; override their command templates in config.
+- The review gate is a heuristic single-pass judgment of the captured diff, not proof of correctness; it reviews with the same adapter as the worker (self-review), and a rejected mission is not automatically re-executed — recovery routing after a rejection is future work.
 - Ctrl-C during adapter interaction is handled gracefully: the adapter's `cancel()` terminates the running command tree best-effort, the report is finalized with status `cancelled` (CLI exit code 2), and the rollback hint is printed — but a second interrupt or one outside the agent loop still aborts hard.
