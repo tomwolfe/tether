@@ -1,0 +1,106 @@
+mission:
+  name: dogfood-13-credibility-and-truth
+  goal: |
+    Close Tether's remaining credibility, telemetry, and documentation-truth
+    gaps. Each task is proven by tests that fail before and pass after. All
+    existing tests must keep passing. Change NOTHING outside this scope.
+
+    Tasks (implement in order; keep every change minimal, typed, and scoped):
+
+    1. AUDITABLE CERTIFICATION ARTIFACTS:
+       - In src/tether/certify.py, add a `to_dict(result: CertifyResult) -> dict`
+         serializer producing: adapter name, utc timestamp, availability,
+         conformance verdict + per-check statuses, live-probe
+         status/exit_code/elapsed, overall ok, and the verdict line.
+       - In src/tether/cli.py `adapters certify`, after computing the result,
+         write the certificate JSON to
+         <project-dir>/.tether/certificates/<name>-<utc-timestamp>.json and
+         print the path. Add a --json flag that ALSO prints the full
+         certificate JSON to stdout.
+       - Keep the existing human-readable output and exit-code semantics
+         unchanged (exit nonzero on any stage failure).
+       - Add tests: certify mock writes a certificate whose overall ok is true
+         and which records the conformance verdict; --json prints parseable
+         JSON; a failing certify still writes a certificate naming the failing
+         stage.
+
+    2. USAGE TELEMETRY PLUMBING:
+       - In src/tether/adapters/command.py, populate AgentState.usage on
+         completed and failed sends with at least
+         {"elapsed_seconds": <float>, "exit_code": <int or null>}.
+         Do NOT change any AgentAdapter signature.
+       - The orchestrator already surfaces state.usage into report.json; keep
+         that true.
+       - In src/tether/cli.py `sessions show`, print a Usage: line when the
+         report's usage is non-null.
+       - Add tests: a CommandAdapter run against a stub returns usage with
+         elapsed_seconds >= 0; a full run's report contains usage; sessions
+         show displays it.
+
+    3. DOCUMENTATION TRUTH:
+       - README.md "Current limitations": fix the non-git bullet to state that
+         non-git change detection fingerprints files by sha256 below 1 MiB
+         (manifest.HASH_SIZE_LIMIT) and falls back to size+mtime above it, and
+         that manifest_diff.json carries fingerprints, not file contents.
+       - docs/ARCHITECTURE.md module map: add entries for smoke.py,
+         conformance.py, and certify.py with one-line descriptions.
+       - Add a test asserting the ARCHITECTURE.md module map mentions
+         smoke.py, conformance.py, and certify.py.
+
+    4. TESTS: cover all new behavior; every existing test keeps passing; do not
+       weaken any test.
+
+context:
+  - Read docs/ARCHITECTURE.md, docs/ADAPTERS.md, README.md, src/tether/certify.py,
+    src/tether/cli.py, src/tether/adapters/command.py, and tests/test_conformance.py
+    before changing anything.
+  - dogfood-09 added the conformance harness, dogfood-11 added certify + artifact
+    assertions, dogfood-06 added the content-hash manifest. Build on them; do not
+    re-implement or regress them.
+  - The core loop must stay adapter-agnostic (AgentAdapter interface only).
+  - subprocess stays shell=False everywhere.
+
+context_files:
+  - docs/ARCHITECTURE.md
+  - README.md
+  - src/tether/certify.py
+  - src/tether/cli.py
+  - src/tether/adapters/command.py
+
+constraints:
+  - do not change AgentAdapter method signatures
+  - do not weaken existing tests; all current tests must keep passing
+  - subprocess usage stays shell=False
+  - no new third-party dependencies (stdlib only)
+  - keep changes minimal, typed, and scoped to the four tasks
+  - certify must exit nonzero on failure exactly as it does today
+
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+    - ".venv/bin/tether adapters conformance mock"
+  artifacts:
+    - "README.md"
+    - "docs/ARCHITECTURE.md"
+  timeout_seconds: 900
+
+recovery:
+  max_attempts: 3
+
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 1800
+
+allowed_paths:
+  - src/**
+  - tests/**
+  - docs/**
+  - README.md
+forbidden_paths:
+  - .git/**
+  - .tether/**
+  - missions/**
