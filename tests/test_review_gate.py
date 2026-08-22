@@ -144,8 +144,7 @@ def test_review_not_required_rejection_keeps_success(tmp_path):
 
 @pytest.mark.parametrize("logs", [
     "looks good to me, ship it",
-    "REVIEW: APPROVE\nonce\nREVIEW: APPROVE\ntwice",
-    "REVIEW: APPROVE\nok\nREVIEW: REQUEST_CHANGES\nconflicting",
+    "",
 ])
 def test_review_unparseable_output_fails_safe(tmp_path, logs):
     _git_repo(tmp_path)
@@ -161,6 +160,30 @@ def test_review_unparseable_output_fails_safe(tmp_path, logs):
     cfg = TetherConfig(audit_dir=".tether/sessions")
     report = Orchestrator(_ReviewingAdapter(logs), cfg, tmp_path)\
         .run(load_mission(mp))
+    assert report["status"] == "failed"
+    assert report["review"]["verdict"] == "request_changes"
+
+
+ECHOED_PROMPT = (
+    "$ opencode run '...answer with exactly one verdict line — "
+    "'REVIEW: APPROVE' or 'REVIEW: REQUEST_CHANGES' — followed by one line "
+    "of reasoning.'\n"
+)
+
+
+def test_review_last_marker_decides_over_echoed_prompt(tmp_path):
+    # Regression (dogfood-16): command adapters echo the full prompt into
+    # logs; both tokens therefore appear before the reviewer's real verdict.
+    # The LAST marker must decide.
+    logs = ECHOED_PROMPT + "REVIEW: APPROVE\nthe change meets the goal"
+    report = _run(tmp_path, "review:\n  enabled: true\n", review_logs=logs)
+    assert report["status"] == "success"
+    assert report["review"]["verdict"] == "approve"
+
+
+def test_review_late_request_changes_beats_echoed_approve(tmp_path):
+    logs = ECHOED_PROMPT + "REVIEW: REQUEST_CHANGES\nartifact misses task 2"
+    report = _run(tmp_path, "review:\n  enabled: true\n", review_logs=logs)
     assert report["status"] == "failed"
     assert report["review"]["verdict"] == "request_changes"
 

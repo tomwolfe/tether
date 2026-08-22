@@ -54,8 +54,10 @@ FORENSIC_EXCERPT_BUDGET = REPAIR_OUTPUT_BUDGET // 2
 REVIEW_EXCERPT_BUDGET = REPAIR_OUTPUT_BUDGET // 2
 REVIEW_REASON_BUDGET = 500
 # Fail-safe verdict contract (case-insensitive scan of the reviewer's logs):
-# exactly one APPROVE and no REQUEST_CHANGES => approve; anything else
-# (missing, both, garbage) => request_changes.
+# the DECISIVE marker is the LAST occurrence of either token — command
+# adapters echo the full prompt (which mentions both tokens) ahead of the
+# reviewer's actual verdict line, so counting occurrences misclassifies every
+# real run. No marker at all => request_changes.
 REVIEW_APPROVE_TOKEN = "review: approve"
 REVIEW_CHANGES_TOKEN = "review: request_changes"
 
@@ -64,21 +66,22 @@ def _parse_review_verdict(logs: str) -> tuple[str, str]:
     """Fail-safe verdict parse over raw reviewer output.
 
     Returns ``(verdict, reason)`` where verdict is ``"approve"`` or
-    ``"request_changes"``. Unparseable output fails safe as request_changes;
-    the reason is the first line after the decisive marker (bounded), or a
-    short diagnostic when no marker is present.
+    ``"request_changes"``. The last occurrence of either marker decides
+    (the reviewer's final verdict line follows any echoed prompt); output
+    with no marker fails safe as request_changes; the reason is the first
+    line after the decisive marker (bounded), or a short diagnostic when no
+    marker is present.
     """
     lowered = logs.lower()
-    n_approve = lowered.count(REVIEW_APPROVE_TOKEN)
-    n_reject = lowered.count(REVIEW_CHANGES_TOKEN)
-    approved = n_approve == 1 and n_reject == 0
-    verdict = "approve" if approved else "request_changes"
-    marker = REVIEW_APPROVE_TOKEN if approved else (
-        REVIEW_CHANGES_TOKEN if n_reject else None)
-    if marker is None:
-        if n_approve > 1:
-            return verdict, "ambiguous reviewer output: multiple APPROVE markers"
-        return verdict, "no valid review verdict found in reviewer output"
+    i_approve = lowered.rfind(REVIEW_APPROVE_TOKEN)
+    i_reject = lowered.rfind(REVIEW_CHANGES_TOKEN)
+    if i_approve < 0 and i_reject < 0:
+        return ("request_changes",
+                "no valid review verdict found in reviewer output")
+    if i_approve >= i_reject:
+        marker, verdict = REVIEW_APPROVE_TOKEN, "approve"
+    else:
+        marker, verdict = REVIEW_CHANGES_TOKEN, "request_changes"
     lines = logs.splitlines()
     for idx, line in enumerate(lines):
         if marker in line.lower():
@@ -560,8 +563,10 @@ class Orchestrator:
         and sends goal + a bounded excerpt of the already-captured change
         artifact (``patch.diff`` for git, ``manifest_diff.json`` otherwise;
         no re-diff). The verdict is parsed fail-safe from the reviewer's
-        logs: exactly one APPROVE marker and no REQUEST_CHANGES marker
-        approves; anything else counts as request_changes. A rejection does
+        logs: the LAST occurrence of either marker decides (command
+        adapters echo the prompt, which mentions both tokens, ahead of the
+        verdict line); output with no marker counts as request_changes. A
+        rejection does
         NOT re-execute anything — recovery routing is a documented
         follow-up. Returns the ``report["review"]`` payload.
         """
@@ -750,7 +755,11 @@ class Orchestrator:
             "dry_run": dry_run,
         })
         audit.save_json("mission.json", mission.model_dump())
-        audit.save_json("resolved-config.json", redact_secrets(self.config.model_dump()))
+        audit.save_json("resolved-config.json", redact_secrets(
+            self.config.model_dump(),
+            denylist=self.config.secret_denylist,
+            allowlist=self.config.secret_allowlist,
+        ))
 
         status = "failed"
         verification_results: list[VerificationResult] = []

@@ -6,7 +6,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, FrozenSet, Iterable, Optional, Tuple
 
 
 def new_session_id() -> str:
@@ -29,32 +29,59 @@ SECRET_KEY_MARKERS = ("secret", "token", "password", "passwd", "api_key",
 REDACTED = "[REDACTED]"
 
 
-def _is_secret_key(key: str) -> bool:
+def _normalize_keys(keys: Optional[Iterable[str]]) -> FrozenSet[str]:
+    """Lower-cased set of operator-supplied key names for exact matching."""
+    return frozenset(k.lower() for k in keys) if keys else frozenset()
+
+
+def _is_secret_key(key: str, deny: FrozenSet[str] = frozenset(),
+                   allow: FrozenSet[str] = frozenset()) -> bool:
     lowered = key.lower()
+    # Explicit operator lists: the denylist wins over the allowlist; the
+    # allowlist only exempts a key from the built-in marker heuristics.
+    if lowered in deny:
+        return True
+    if lowered in allow:
+        return False
     if any(m in lowered for m in SECRET_KEY_MARKERS):
         return True
     # adapter env blocks: every value is potentially sensitive
     return lowered == "env"
 
 
-def redact_secrets(obj: Any) -> Any:
+def redact_secrets(obj: Any, denylist: Optional[Iterable[str]] = None,
+                   allowlist: Optional[Iterable[str]] = None) -> Any:
     """Recursively replace values of obviously sensitive keys with a marker.
     Structure is preserved; adapter ``env`` mappings keep their keys but have
-    every value redacted."""
-    if isinstance(obj, dict):
-        out: dict = {}
-        for k, v in obj.items():
-            if str(k).lower() == "env" and isinstance(v, dict):
-                out[k] = {ek: (REDACTED if ev is not None else None)
-                          for ek, ev in v.items()}
-            elif _is_secret_key(str(k)) and v not in (None, {}, []):
-                out[k] = REDACTED
-            else:
-                out[k] = redact_secrets(v)
-        return out
-    if isinstance(obj, list):
-        return [redact_secrets(x) for x in obj]
-    return obj
+    every value redacted.
+
+    ``denylist`` names extra keys whose values are always redacted;
+    ``allowlist`` names keys never redacted even when they contain a secret
+    marker. Matching is exact and case-insensitive; the denylist wins over
+    the allowlist. With both absent or empty, the built-in behavior is
+    unchanged.
+    """
+    deny = _normalize_keys(denylist)
+    allow = _normalize_keys(allowlist)
+
+    def _walk(node: Any) -> Any:
+        if isinstance(node, dict):
+            out: dict = {}
+            for k, v in node.items():
+                if str(k).lower() == "env" and isinstance(v, dict):
+                    out[k] = {ek: (REDACTED if ev is not None else None)
+                              for ek, ev in v.items()}
+                elif (_is_secret_key(str(k), deny, allow)
+                        and v not in (None, {}, [])):
+                    out[k] = REDACTED
+                else:
+                    out[k] = _walk(v)
+            return out
+        if isinstance(node, list):
+            return [_walk(x) for x in node]
+        return node
+
+    return _walk(obj)
 
 
 def utcnow() -> str:
