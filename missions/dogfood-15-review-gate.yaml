@@ -1,0 +1,155 @@
+mission:
+  name: dogfood-15-review-gate
+  goal: |
+    Close Tether's deepest trust gap: "verification passed" is not the same as
+    "the change is correct." Add an independent REVIEW GATE that judges the
+    captured diff against the mission goal, plus verification-strength linting
+    so missions can't pass on trivial commands. Each task proven by tests that
+    fail before and pass after. All existing tests keep passing. Change NOTHING
+    outside this scope.
+
+    Tasks (implement in order; keep every change minimal, typed, scoped):
+
+    1. REVIEW GATE (semantic correctness):
+       - In src/tether/models.py add an optional ReviewSpec wired onto
+         MissionContract as an optional `review:` block:
+             review:
+               enabled: bool = False     # default OFF; existing missions unchanged
+               required: bool = True     # when enabled, a rejection fails the mission
+         Keep fields Optional so existing missions validate unchanged.
+       - In src/tether/mission.py, structurally validate `review` (mapping;
+         booleans); raise MissionError otherwise. validate-mission accepts it
+         structurally only.
+       - In src/tether/orchestrator.py, after verification passes (all commands
+         AND artifact assertions green) and before finalizing success: if
+         review.enabled, open a FRESH reviewer session on the mission's adapter
+         instance and send review_prompt = goal + a bounded excerpt of the
+         captured change artifact (patch.diff for git, manifest_diff.json
+         otherwise) + an instruction to act as an adversarial reviewer and answer
+         with exactly one verdict line. Do NOT change any AgentAdapter signature.
+       - Verdict contract (fail-safe, case-insensitive): scan the reviewer's
+         AgentState.logs for the tokens `REVIEW: APPROVE` or
+         `REVIEW: REQUEST_CHANGES`. Exactly one APPROVE and no REQUEST_CHANGES =>
+         approve. Anything else (missing, both, garbage) => request_changes.
+         Record reason (first line after the marker, bounded).
+       - Record report["review"] = {enabled, adapter, verdict, reason} and a
+         `review` audit event; save the review prompt/response in the session
+         audit dir.
+       - If verdict is request_changes and review.required: status "failed",
+         append the review reason to next_steps, and do NOT count the mission as
+         success. No automatic re-execution here; recovery-routing is a
+         documented follow-up.
+       - Tests (new file tests/test_review_gate.py): reviewer APPROVE => success
+         and report["review"].verdict=="approve"; REQUEST_CHANGES => failed;
+         garbage/no marker => failed (fail-safe); review disabled => behavior
+         byte-for-byte unchanged; review prompt contains a diff excerpt; review
+         event + prompt/response persisted. Use scripted reviewer adapters
+         (patterns in tests/test_core.py and tests/test_recovery_integrity.py).
+
+    2. VERIFICATION-STRENGTH LINT:
+       - In src/tether/cli.py extend `tether validate-mission` with a `--strict`
+         flag. Treat a command as TRIVIAL if, after strip, it is one of
+         {"true", ":"} or starts with "echo ". Non-strict: warn when all
+         verification commands are trivial AND no artifacts are declared. Strict:
+         fail (exit 1) in that case, and also fail when there are ZERO
+         verification commands and ZERO artifacts.
+       - Do not change runtime verification behavior; this is authoring-time
+         guidance only.
+       - Tests: trivial-only mission warns non-strict and fails strict; a real
+         command passes; artifacts present passes; empty verification+artifacts
+         fails strict.
+
+    3. DOCUMENTATION TRUTH:
+       - README.md: add a short "Review gate" section stating it is a heuristic
+         adversarial pass, NOT proof of correctness, and that self-review (same
+         adapter) is weaker than an independent reviewer adapter (follow-up).
+         Update "Current limitations" accordingly.
+       - docs/ARCHITECTURE.md: add the review stage to the core-loop section and
+         note it runs after verification passes.
+       - docs/ADAPTERS.md: note that a reviewer may be a different adapter in
+         future. Do NOT change opencode's verified status or the promotion record.
+       - A test asserts ARCHITECTURE.md mentions the review stage.
+
+    4. TESTS AND DOCS: cover all new behavior in existing/new test files; every
+       existing test keeps passing; do not weaken any test.
+
+context:
+  - >-
+    Read docs/ARCHITECTURE.md, docs/SECURITY.md, docs/ADAPTERS.md, README.md,
+    src/tether/orchestrator.py, src/tether/models.py, src/tether/mission.py,
+    src/tether/verification.py, src/tether/cli.py, src/tether/audit.py, and
+    tests/test_recovery_integrity.py first.
+  - >-
+    opencode was promoted to verified in dogfood-14 (see docs/ADAPTERS.md
+    promotion record). This mission uses opencode as the worker. Do not regress
+    that status or the promotion record.
+  - >-
+    The orchestrator already captures patch.diff/manifest_diff.json into
+    audit.dir before verification (_persist_change_artifact via
+    _gate_and_capture). Reuse those artifacts for the review prompt; do not
+    re-diff.
+  - >-
+    Keep the core loop adapter-agnostic: the reviewer is just another send() on
+    a fresh session of the mission's adapter instance. No AgentAdapter signature
+    changes.
+  - >-
+    dogfood-11 added artifact assertions; dogfood-12 added recovery re-gating +
+    forensic capture; dogfood-14 added failure classification + telemetry. Build
+    on them; do not regress.
+  - >-
+    subprocess stays shell=False everywhere; no new third-party dependencies.
+
+context_files:
+  - docs/ARCHITECTURE.md
+  - docs/ADAPTERS.md
+  - docs/SECURITY.md
+  - README.md
+  - src/tether/orchestrator.py
+  - src/tether/models.py
+  - src/tether/mission.py
+  - src/tether/verification.py
+  - src/tether/cli.py
+  - src/tether/audit.py
+
+constraints:
+  - do not change AgentAdapter method signatures
+  - do not weaken existing tests; all current tests must keep passing
+  - subprocess usage stays shell=False
+  - no new third-party dependencies (stdlib only)
+  - keep changes minimal, typed, and scoped to the four tasks
+  - review must default to disabled so existing missions behave identically
+  - unparseable reviewer output must fail safe (treat as request_changes)
+  - verification-strength lint must never change runtime verification behavior
+  - do not change opencode/pi verified status or the promotion record
+
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+    - ".venv/bin/tether adapters conformance mock"
+  artifacts:
+    - "tests/test_review_gate.py"
+    - "README.md"
+    - "docs/ARCHITECTURE.md"
+  timeout_seconds: 900
+
+recovery:
+  max_attempts: 4
+
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 1800
+
+allowed_paths:
+  - src/**
+  - tests/**
+  - docs/**
+  - README.md
+
+forbidden_paths:
+  - .git/**
+  - .tether/**
+  - missions/**
