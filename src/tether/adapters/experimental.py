@@ -32,7 +32,10 @@ class OpencodeAdapter(CommandAdapter):
     """
 
     name = "opencode"
-    verified = False
+    # Promoted per docs/ADAPTERS.md promotion record (2026-08-22): certified
+    # (conformance + live probe) plus multiple end-to-end real missions
+    # (dogfood-14, -16, -17, -18) through the real CLI.
+    verified = True
 
     def __init__(self, settings: Optional[Dict[str, Any]] = None,
                  default_timeout: int = 1800) -> None:

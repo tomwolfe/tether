@@ -85,7 +85,7 @@ tether adapters smoke opencode --prompt "Say hi"
 
 `smoke` builds the named adapter from project config, reports whether it is available, then sends a trivial prompt (default: `Reply with the single word OK`) **inside a temporary directory** — your git tree and files are never touched and no audit sessions are created. It prints availability, status, exit code, an output excerpt, and elapsed time; the exit code is 0 only if the adapter was available and its run completed successfully.
 
-`opencode` and `pi` presets exist but are **experimental/unverified** — see docs/ADAPTERS.md.
+The `opencode` preset is **verified** (certified plus multiple recorded real missions — docs/ADAPTERS.md); `pi` remains experimental/unverified — see docs/ADAPTERS.md.
 
 For a deeper probe, `tether adapters conformance <name>` runs a behavioral battery (availability reporting, success/failure/timeout state mapping, cancellation, stdout+stderr log capture, project-directory containment, spawn failure) and prints per-check results with a PASS/FAIL verdict; the exit code is nonzero on FAIL. `mock` passes out of the box and command-family adapters are exercised against deterministic stub executables. An adapter earns `verified` only by passing conformance plus a demonstrated real-CLI run — promotion criteria in docs/ADAPTERS.md.
 
@@ -210,6 +210,6 @@ Tests use only temp directories, git temp repos with local identity, and the Moc
 - Non-git changed-file detection is best-effort: files smaller than 1 MiB (`manifest.HASH_SIZE_LIMIT`) are fingerprinted by sha256 content hash, larger files fall back to size+mtime; there is no content diff. `manifest_diff.json` carries those fingerprints, not file contents.
 - Process-tree containment is best-effort: descendants that escape the process group (e.g. by double-forking into a new session on POSIX) or survive `taskkill /T /F` on Windows cannot be force-killed by Tether.
 - Token/cost usage is only reported if an adapter provides it (Mock provides none; Command only elapsed time and exit code).
-- opencode/pi presets are unverified assumptions; override their command templates in config.
+- the `pi` preset is an unverified assumption; override its command template in config (opencode is verified).
 - The review gate is a heuristic single-pass judgment of the captured diff, not proof of correctness; without `review.adapter` configured it reviews with the same adapter as the worker (self-review), and `retry_on_rejection` recovery is bounded by `recovery.max_attempts`, not guaranteed to converge.
 - Ctrl-C during adapter interaction is handled gracefully: the adapter's `cancel()` terminates the running command tree best-effort, the report is finalized with status `cancelled` (CLI exit code 2), and the rollback hint is printed — but a second interrupt or one outside the agent loop still aborts hard.

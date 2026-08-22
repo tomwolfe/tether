@@ -35,7 +35,7 @@ Built-ins (`tether adapters list` shows these as the CAPABILITIES column):
 |---|---|---|---|---|---|---|
 | mock | no | no | no | no | yes | verified |
 | command | yes | yes | no | no | yes | verified |
-| opencode | yes* | yes* | no | no | yes | experimental |
+| opencode | yes* | yes* | no | no | yes | verified |
 | pi | yes* | yes* | no | no | yes | experimental |
 
 \* inherited from the generic command plumbing; it is the presets'
@@ -153,10 +153,11 @@ on 2026-08-22 and is promoted accordingly (record below).
    document update itself ships in that session's change set.
 3. **Metadata**: the earned status is recorded here per the promotion
    criteria. The preset's *static* class tag (`OpencodeAdapter.verified`,
-   which `tether adapters list` prints) intentionally still reads
-   `experimental`: flipping it must land together with the existing tests
-   that pin that value, and is left as a deliberate one-line follow-up so
-   this mission keeps every existing test passing unchanged.
+   which `tether adapters list` prints) was flipped to `true` in a direct
+   follow-up (2026-08-22) together with the test that pins it, after three
+   further end-to-end real missions through the real CLI
+   (`dogfood-16-review-gate-live`, `dogfood-17-independent-reviewer-and-routing`,
+   `dogfood-18-review-telemetry`) satisfied the promotion criteria.
 
 ## MockAdapter (verified)
 

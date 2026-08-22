@@ -215,7 +215,9 @@ def test_check_adapter_settings_strict_raises():
 
 def test_experimental_adapters_are_unverified_presets():
     oc = OpencodeAdapter()
-    assert oc.verified is False
+    # Promoted 2026-08-22 (docs/ADAPTERS.md): certified + multiple real
+    # missions (dogfood-14/16/17/18).
+    assert oc.verified is True
     assert oc.command == [
         "opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}",
     ]
