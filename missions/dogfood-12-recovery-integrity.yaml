@@ -1,0 +1,111 @@
+mission:
+  name: dogfood-12-recovery-integrity
+  goal: |
+    Close the recovery loop's integrity and effectiveness gaps, each proven by
+    tests that fail before and pass after. All existing tests must keep passing.
+    Change NOTHING outside this scope.
+
+    Tasks (implement in order; keep every change minimal, typed, and scoped):
+
+    1. RECOVERY-LOOP RE-GATING & FORENSIC REFRESH:
+       - In src/tether/orchestrator.py the write-sandbox gate
+         (_sandbox_violations) and forensic capture (_persist_change_artifact)
+         currently run ONCE, after the initial execute send and before the
+         `while True` verification/recovery loop. Changes made during recovery
+         sends (attempts 2..N) are never re-gated and never re-captured.
+       - Extract a helper (e.g. _gate_and_capture) that recomputes
+         changed_files, re-runs the sandbox gate, and refreshes the change
+         artifact (patch.diff + untracked.txt for git, manifest_diff.json for
+         non-git). Invoke it after the initial execute AND after EVERY recovery
+         adapter.send(), before the next verification runs.
+       - If any recovery attempt violates allowed_paths/forbidden_paths, fail
+         immediately: status "failed", record in report["sandbox_violations"],
+         log a sandbox_violations audit event, and skip verification — exactly
+         as the initial-execution gate does today.
+       - report["changed_files"] must keep reflecting ALL changes across the
+         whole session (it already recomputes at the end; keep that true).
+       - Update docs/ARCHITECTURE.md (core loop) and README.md where they
+         describe the sandbox as a single post-execution gate, to say gating
+         and capture run after every send.
+
+    2. RECOVERY INTELLIGENCE (better repair signal, no interface changes):
+       - Before sending a repair prompt, build a bounded forensic context and
+         fold it into the `reason`/failing output passed to the EXISTING
+         adapter.repair_prompt(mission_summary, reason). Do NOT change any
+         AgentAdapter signature. Within the existing ~8KB budget
+         (verification.clip_output) include:
+           * the session's current changed_files,
+           * a bounded excerpt of the latest change artifact (patch.diff for
+             git, manifest_diff.json for non-git) when present,
+           * the previous attempt's changed_files, so the agent sees the delta.
+       - Record per-attempt evidence: add `changed_files_at_attempt` (list) to
+         each entry in report['recovery_attempts']; for git projects also save a
+         per-attempt patch as verification/attempt-NN.patch in the session dir.
+
+    3. TESTS (in a NEW file tests/test_recovery_integrity.py):
+       - A recovery send() that creates a forbidden file triggers a sandbox
+         violation: status "failed", sandbox_violations populated, verification
+         skipped. Use a scripted adapter whose repair-prompt send writes the
+         forbidden file, after an initial execute that fails verification so
+         recovery actually triggers (patterns: _WritingAdapter /
+         _MultiWriterAdapter in tests/test_safety.py).
+       - The repair prompt contains a changed file name and a patch excerpt.
+       - recovery_attempts entries carry per-attempt changed files.
+       - A per-attempt patch artifact exists for a git session.
+       - All existing tests keep passing; do not weaken any test.
+
+context:
+  - Read docs/ARCHITECTURE.md and docs/SECURITY.md first; the core loop must stay adapter-agnostic.
+  - The gate (_sandbox_violations) and capture (_persist_change_artifact) are called once in
+    Orchestrator._run_locked, right after the initial execute and before the verification/recovery
+    loop; recovery sends happen inside that loop via adapter.send(repair_prompt, session).
+  - The ~8KB repair-prompt budget helper is verification.clip_output in src/tether/verification.py.
+  - Per-attempt verification results are saved by AuditTrail.save_verification under verification/.
+  - Scripted/writing adapter patterns in tests/test_safety.py show how to make the agent create
+    specific files and how to build committed git repos.
+
+context_files:
+  - docs/ARCHITECTURE.md
+  - README.md
+  - src/tether/orchestrator.py
+  - src/tether/verification.py
+  - src/tether/models.py
+  - src/tether/audit.py
+
+constraints:
+  - do not change AgentAdapter method signatures (new helpers are fine)
+  - do not weaken existing tests; all current tests must keep passing
+  - subprocess usage stays shell=False
+  - no new third-party dependencies (stdlib only)
+  - keep changes minimal, typed, and scoped to the two tasks + tests
+  - the sandbox gate and forensic refresh must run after EVERY send (initial + recovery)
+
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+    - ".venv/bin/tether adapters conformance mock"
+  artifacts:
+    - "tests/test_recovery_integrity.py"
+  timeout_seconds: 900
+
+recovery:
+  max_attempts: 3
+
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 1800
+
+allowed_paths:
+  - src/**
+  - tests/**
+  - docs/**
+  - README.md
+
+forbidden_paths:
+  - .git/**
+  - .tether/**
+  - missions/**
