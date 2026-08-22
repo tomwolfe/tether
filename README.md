@@ -93,7 +93,7 @@ CLI flags > mission file > project config (`tether.yaml|yml|json|toml`) > defaul
 
 Mission values that are **unset** (absent) fall back to the project config; only explicit mission values override it. Adapter settings are deep-merged per adapter name: mission adapter settings override project adapter settings key-by-key.
 
-Config keys: `default_adapter`, `audit_dir`, `backup_dir`, `dry_run`, `log_level`, `command_timeout_seconds`, `verification_timeout_seconds`, `max_attempts`, `allow_dirty`, `auto_rollback`, `sandbox_mode`, `retention_days` (used by `sessions clean` when `--older-than` is omitted), `secret_denylist`/`secret_allowlist` (see Audit trail), `adapters` (per-adapter settings), `verification.commands`.
+Config keys: `default_adapter`, `audit_dir`, `backup_dir`, `dry_run`, `log_level`, `command_timeout_seconds`, `verification_timeout_seconds`, `max_attempts`, `allow_dirty`, `auto_rollback`, `sandbox_mode`, `retention_days` (used by `sessions clean` when `--older-than` is omitted), `adapters` (per-adapter settings), `verification.commands`.
 
 ## Context files (mission contracts)
 
@@ -172,8 +172,6 @@ With `--auto-rollback` (or `auto_rollback: true` in config), a mission that ends
 ## Audit trail
 
 Each run creates `.tether/sessions/<timestamp>-<mission>-<short-id>/` containing: resolved config (with secrets such as adapter `env` values redacted), mission contract, prompts sent, adapter responses, verification results per attempt, recovery attempts, changed files, checkpoint info, `events.jsonl`, and a machine-readable `report.json`.
-
-Secret redaction of the resolved config can be tuned with two config keys: `secret_denylist` forces redaction of specific keys and `secret_allowlist` exempts specific keys from the built-in secret-marker heuristics (e.g. a key named `token` that holds non-sensitive data). Matching is exact and case-insensitive; the denylist wins when a key is on both lists. With both lists empty the default marker behavior is unchanged.
 
 ## Review gate
 
