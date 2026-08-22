@@ -282,6 +282,104 @@ def _reported_session_id(session_dir: Path) -> str | None:
     return sid if isinstance(sid, str) else None
 
 
+def plan_rollback(project_dir: Path, session_id: str,
+                  audit_dir: str = ".tether/sessions",
+                  backup_dir: str = ".tether/backups",
+                  clean: bool = False) -> tuple[bool, str]:
+    """Preview what ``rollback`` would do, without touching anything.
+
+    Read-only: resolves the checkpoint target (or the backup archive for
+    non-git projects) and reports the dirty state of the working tree, the
+    files that would be reset (from the session report's changed_files), the
+    additional untracked files ``--clean`` would delete, and the pre-existing
+    untracked files that would be preserved. Returns (ok, plan_text); a
+    False ok means no plan could be produced (e.g. unknown session).
+    """
+    if not is_git_repo(project_dir):
+        return _plan_backup_restore(project_dir, session_id,
+                                    audit_dir=audit_dir, backup_dir=backup_dir)
+
+    ref, err = resolve_checkpoint_ref(project_dir, session_id, audit_dir=audit_dir)
+    if ref is None:
+        return False, err
+    proc = _git(project_dir, "rev-parse", "--verify", ref, check=False)
+    target = proc.stdout.strip()
+    dirty = is_dirty(project_dir)
+    changed_files = sorted(set(_session_changed_files(project_dir, session_id,
+                                                      audit_dir)))
+    lines = [
+        "Rollback plan (dry-run; nothing has been modified)",
+        f"  project dir:  {project_dir}",
+        f"  checkpoint:   {ref}",
+        f"  target:       {target}",
+        f"  working tree: {'DIRTY' if dirty else 'clean'}",
+    ]
+    if changed_files:
+        lines.append(f"Tracked files that would be reset "
+                     f"({len(changed_files)}, per session report):")
+        lines.extend(f"  - {f}" for f in changed_files)
+    else:
+        lines.append("Tracked files that would be reset: none listed "
+                     "(no session report with changed_files found)")
+    if dirty:
+        untracked = _untracked_files(project_dir)
+        deletable = [f for f in untracked if f in set(changed_files)]
+        preserved = [f for f in untracked if f not in set(changed_files)]
+        if clean:
+            if deletable:
+                lines.append(f"Additional untracked files --clean would delete "
+                             f"({len(deletable)}):")
+                lines.extend(f"  - {f}" for f in deletable)
+            else:
+                lines.append("Additional untracked files --clean would delete: "
+                             "none attributable to this session")
+        else:
+            lines.append("Default behavior on apply: REFUSE while the tree is "
+                         "dirty and print manual steps (pass --clean for a "
+                         "scoped restore).")
+        if preserved:
+            lines.append(f"Pre-existing untracked files that would be "
+                         f"preserved ({len(preserved)}):")
+            lines.extend(f"  - {f}" for f in preserved)
+    else:
+        lines.append("Untracked files present: none")
+    lines.append("Apply with: tether rollback <session-id> [--clean]")
+    return True, "\n".join(lines)
+
+
+def _plan_backup_restore(project_dir: Path, session_id: str,
+                         audit_dir: str, backup_dir: str) -> tuple[bool, str]:
+    """Dry-run plan for non-git projects: the backup restore steps."""
+    archive = find_backup_archive(project_dir, session_id, backup_dir, audit_dir)
+    if archive is None:
+        return False, (f"No backup archive found for session {session_id!r} "
+                       f"under {project_dir / backup_dir}.")
+    checksum_ok, checksum_msg = verify_backup_checksum(archive)
+    lines = [
+        "Rollback plan (dry-run; nothing has been modified)",
+        f"  project dir:    {project_dir}",
+        "  project type:   non-git",
+        f"  backup archive: {archive}",
+        f"  checksum:       {'verified (sha256 sidecar)' if checksum_ok else 'FAILED'}",
+    ]
+    if not checksum_ok:
+        lines.append(f"    {checksum_msg}")
+    changed = sorted(set(_session_changed_files(project_dir, session_id,
+                                                audit_dir)))
+    if changed:
+        lines.append(f"Files that would be restored from the archive "
+                     f"({len(changed)}, per session report):")
+        lines.extend(f"  - {f}" for f in changed)
+    else:
+        lines.append("Files that would be restored: all entries in the "
+                     "archive (no session report with changed_files found)")
+    lines.append("Files created after the backup would be kept and reported "
+                 "for manual cleanup.")
+    lines.append(f"Apply with: tether rollback <session-id> --project-dir "
+                 f"{project_dir}")
+    return True, "\n".join(lines)
+
+
 def find_backup_archive(project_dir: Path, session_id: str,
                         backup_dir: str = ".tether/backups",
                         audit_dir: str = ".tether/sessions") -> Path | None:
@@ -310,8 +408,11 @@ def restore_from_backup(project_dir: Path, session_id: str,
                         audit_dir: str = ".tether/sessions") -> tuple[bool, str]:
     """Restore a non-git project from its session backup archive.
 
-    Restores file contents as of the backup; files created after the backup
-    are left in place (reported so the user can remove them).
+    The archive's sha256 is verified against its ``.sha256`` sidecar before
+    anything is touched; a missing or mismatching checksum refuses the
+    restore outright. Restores file contents as of the backup; files created
+    after the backup are left in place (reported so the user can remove
+    them).
     """
     import tarfile
 
@@ -319,6 +420,9 @@ def restore_from_backup(project_dir: Path, session_id: str,
     if archive is None:
         return False, (f"No backup archive found for session {session_id!r} "
                        f"under {project_dir / backup_dir}.")
+    ok, err = verify_backup_checksum(archive)
+    if not ok:
+        return False, err
     current_files = {
         str(p.relative_to(project_dir).as_posix())
         for p in project_dir.rglob("*")
@@ -369,18 +473,103 @@ def changed_files_since(project_dir: Path, base_sha: str | None) -> list[str]:
 BACKUP_EXCLUDED_DIRS = {".tether", ".git", "__pycache__", "node_modules", ".venv", ".hg", ".svn"}
 
 
+def backup_checksum_path(archive: Path) -> Path:
+    """Sidecar path holding the sha256 of a backup archive."""
+    return Path(str(archive) + ".sha256")
+
+
+def _sha256_of_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    """Hex sha256 of a file, streamed in chunks."""
+    import hashlib
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_backup_checksum(archive: Path) -> tuple[bool, str]:
+    """Verify an archive's sha256 sidecar; (ok, message).
+
+    A missing or unreadable sidecar counts as failure: an unverifiable
+    backup must never be restored onto the project.
+    """
+    import binascii
+    sidecar = backup_checksum_path(archive)
+    if not sidecar.exists():
+        return False, (
+            f"Missing checksum sidecar {sidecar}; cannot verify the "
+            f"integrity of {archive}. Refusing to restore."
+        )
+    try:
+        expected = sidecar.read_text(encoding="utf-8").strip().split()[0].lower()
+    except (OSError, IndexError, UnicodeDecodeError):
+        return False, (f"Unreadable checksum sidecar {sidecar}; "
+                       "refusing to restore.")
+    try:
+        actual = _sha256_of_file(archive).lower()
+    except OSError as e:
+        return False, f"Cannot read backup archive {archive}: {e}"
+    try:
+        binascii.unhexlify(expected)
+    except (binascii.Error, ValueError):
+        return False, (f"Malformed checksum in {sidecar}; refusing to restore.")
+    if actual != expected:
+        return False, (
+            f"Backup archive {archive} FAILED its sha256 check (expected "
+            f"{expected}, got {actual}). The archive is corrupted or was "
+            "tampered with; refusing to restore."
+        )
+    return True, ""
+
+
+def _write_text_atomically(path: Path, text: str) -> None:
+    """Write text via a temp file + atomic rename so readers never see a
+    partial file."""
+    import os
+    import tempfile
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp",
+                                    dir=path.parent)
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
 def make_file_backup(project_dir: Path, backup_root: Path, session_id: str) -> str:
     """Tar backup of a non-git project. Returns archive path.
+
+    The archive is written to a temp file and atomically renamed into place,
+    so a crashed backup never leaves a truncated archive that looks valid. A
+    ``<archive>.sha256`` sidecar records the archive checksum at creation
+    time and is verified before any restore. The archive itself and its
+    sidecar are never included in the backup contents.
 
     Raises RuntimeError on failure so callers can fail the mission clearly
     instead of proceeding without a safety net.
     """
+    import os
     import tarfile
+    import tempfile
 
     backup_root.mkdir(parents=True, exist_ok=True)
     dest = backup_root / f"{session_id}.tar.gz"
+    sidecar = backup_checksum_path(dest)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{dest.name}.", suffix=".tmp",
+                                    dir=backup_root)
+    os.close(fd)  # tarfile reopens by path
+    tmp_dest = Path(tmp_name)
+    # Never back up the archive, its sidecar, or the temp file into itself.
+    self_excluded = {str(p.resolve()) for p in (dest, sidecar, tmp_dest)}
     try:
-        with tarfile.open(dest, "w:gz") as tar:
+        with tarfile.open(tmp_dest, "w:gz") as tar:
             # Add files only (never directories) so each archive entry is unique;
             # tar recreates parent directories implicitly on extract.
             for item in sorted(project_dir.rglob("*")):
@@ -389,11 +578,19 @@ def make_file_backup(project_dir: Path, backup_root: Path, session_id: str) -> s
                 rel = item.relative_to(project_dir)
                 if any(part in BACKUP_EXCLUDED_DIRS for part in rel.parts):
                     continue
+                if str(item.resolve()) in self_excluded:
+                    continue
                 tar.add(item, arcname=rel, recursive=False)
+        checksum = _sha256_of_file(tmp_dest)
+        # Atomic publish: a crash before this point leaves no archive at all
+        # rather than a truncated one that looks valid.
+        os.replace(tmp_dest, dest)
+        _write_text_atomically(sidecar, checksum + "\n")
         return str(dest)
     except OSError as e:
-        try:
-            dest.unlink(missing_ok=True)
-        except OSError:
-            pass
+        for leftover in (tmp_dest, dest, sidecar):
+            try:
+                leftover.unlink(missing_ok=True)
+            except OSError:
+                pass
         raise RuntimeError(f"Failed to create file backup at {dest}: {e}") from e

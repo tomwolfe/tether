@@ -1,7 +1,9 @@
 """Core orchestration loop. Adapter-agnostic: depends only on AgentAdapter."""
 from __future__ import annotations
 
+import json
 import logging
+import os
 import subprocess
 import time
 from fnmatch import fnmatch
@@ -28,32 +30,146 @@ log = logging.getLogger("tether")
 WRITER_LOCK_RELPATH = Path(".tether") / "tether.lock"
 # A lock older than this is considered abandoned and may be taken over.
 WRITER_LOCK_STALE_SECONDS = 12 * 3600
+# Bounded retries when racing another contender over a stale lock takeover.
+_WRITER_LOCK_ATTEMPTS = 5
 
 
 def writer_lock_path(project_dir: Path) -> Path:
     return project_dir / WRITER_LOCK_RELPATH
 
 
+def _read_lock_payload(lock_path: Path) -> Optional[Dict[str, Any]]:
+    """Parse a lock file into a {session_id, pid, created_at} dict.
+
+    Current versions write one JSON object embedding the owner's PID and
+    creation timestamp; locks written by older versions (or by hand) contain a
+    bare session id string. Returns None when the file is absent, blank, or
+    unreadable.
+    """
+    try:
+        raw = lock_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    payload: Dict[str, Any] = {}
+    if raw.startswith("{"):
+        try:
+            loaded = json.loads(raw)
+            if isinstance(loaded, dict):
+                payload = loaded
+        except json.JSONDecodeError:
+            pass
+    session_id = payload.get("session_id")
+    pid = payload.get("pid")
+    created_at = payload.get("created_at")
+    return {
+        "session_id": (session_id if isinstance(session_id, str)
+                       and session_id else raw),
+        "pid": pid if isinstance(pid, int) and pid > 0 else None,
+        "created_at": created_at if isinstance(created_at, (int, float)) else None,
+    }
+
+
+def _pid_alive(pid: Optional[int]) -> Optional[bool]:
+    """PID liveness where it can be checked portably, else None.
+
+    On POSIX ``kill(pid, 0)`` probes without signalling. On other platforms
+    (notably Windows, where os.kill with an arbitrary signal *terminates* the
+    process) liveness is undeterminable here and callers fall back to the
+    configurable staleness timeout.
+    """
+    if pid is None or os.name != "posix":
+        return None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists but owned by another user
+    except OSError:
+        return None
+    return True
+
+
+def _lock_age_seconds(lock_path: Path, payload: Dict[str, Any]) -> float:
+    """Age of a lock in seconds, preferring its embedded creation timestamp."""
+    created_at = payload["created_at"]
+    if created_at is not None:
+        return max(0.0, time.time() - float(created_at))
+    try:
+        return max(0.0, time.time() - lock_path.stat().st_mtime)
+    except OSError:
+        return 0.0
+
+
 def fresh_lock_holder(lock_path: Path,
                       stale_seconds: int = WRITER_LOCK_STALE_SECONDS) -> Optional[str]:
     """Session id recorded in a live lock file, else None.
 
-    Returns None when the lock is absent, blank, unreadable, or older than
-    ``stale_seconds`` (i.e. safe to treat as abandoned).
+    A lock counts as live while its owning process still exists (current
+    versions embed the owner PID). Legacy locks and platforms without a
+    portable liveness check fall back to the age test: a lock older than
+    ``stale_seconds`` is considered abandoned regardless. Returns None when
+    the lock is absent, blank, unreadable, abandoned (dead PID), or stale.
     """
-    try:
-        holder = lock_path.read_text(encoding="utf-8").strip()
-    except OSError:
+    payload = _read_lock_payload(lock_path)
+    if payload is None:
         return None
-    if not holder:
+    if _pid_alive(payload["pid"]) is False:
+        # Owning process is gone: safe to take over immediately.
         return None
-    try:
-        age = time.time() - lock_path.stat().st_mtime
-    except OSError:
+    if _lock_age_seconds(lock_path, payload) > stale_seconds:
+        # Stale per configuration even if some process owns that PID now
+        # (guards against PID reuse); keeps the timeout semantics working.
         return None
-    if age > stale_seconds:
-        return None
-    return holder
+    return str(payload["session_id"])
+
+
+def acquire_writer_lock(project_dir: Path, session_id: str,
+                        stale_seconds: int = WRITER_LOCK_STALE_SECONDS
+                        ) -> tuple[bool, Optional[str]]:
+    """Atomically take the single-writer lock for this project.
+
+    Lock files are created with O_CREAT|O_EXCL so concurrent contenders can
+    never clobber each other or end up both holding the lock. A pre-existing
+    lock whose owning PID is no longer alive — or that exceeds
+    ``stale_seconds`` where liveness cannot be checked portably — is taken
+    over.
+
+    Returns (True, None) once the lock is held; on contention returns
+    (False, holder) describing the live holder without modifying its lock
+    file.
+    """
+    lock_path = writer_lock_path(project_dir)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    body = json.dumps({
+        "session_id": session_id,
+        "pid": os.getpid(),
+        "created_at": time.time(),
+    })
+    for _ in range(_WRITER_LOCK_ATTEMPTS):
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            holder = fresh_lock_holder(lock_path, stale_seconds=stale_seconds)
+            if holder is not None:
+                return False, holder
+            # Abandoned/stale lock: remove it so O_EXCL can win, then retry.
+            # Exactly one contender wins the re-create race.
+            try:
+                lock_path.unlink()
+            except OSError:
+                pass
+            continue
+        except OSError as e:
+            raise RuntimeError(f"Cannot create writer lock at {lock_path}: {e}") from e
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(body + "\n")
+        return True, None
+    # Kept losing the takeover race to another contender: treat as contention.
+    holder = fresh_lock_holder(lock_path, stale_seconds=stale_seconds)
+    return False, holder or f"unknown holder at {lock_path}"
 
 
 def _git_patch_bytes(project_dir: Path, base: str) -> Optional[bytes]:
@@ -84,6 +200,23 @@ def _git_untracked_files(project_dir: Path) -> list[str]:
         line for line in proc.stdout.splitlines()
         if line.strip() and not line.startswith(".tether/")
     )
+
+
+def _release_writer_lock(project_dir: Path, session_id: str) -> None:
+    """Release the writer lock if (and only if) this session still owns it."""
+    lock_path = writer_lock_path(project_dir)
+    payload = _read_lock_payload(lock_path)
+    owner = payload["session_id"] if payload is not None else None
+    if owner is not None and owner != session_id:
+        # The lock changed hands (e.g. taken over after we went stale); leave
+        # the new owner's file alone.
+        log.warning("Writer lock at %s is now held by %s; not released.",
+                    lock_path, owner)
+        return
+    try:
+        lock_path.unlink(missing_ok=True)
+    except OSError as e:
+        log.warning("Failed to remove writer lock %s: %s", lock_path, e)
 
 
 class Orchestrator:
@@ -235,12 +368,15 @@ class Orchestrator:
         started_at = utcnow()
 
         # Single-writer lock: refuse fast when another live session holds it;
-        # otherwise take the lock and release it on every exit path below.
-        lock_path = writer_lock_path(self.project_dir)
-        holder = fresh_lock_holder(
-            lock_path, stale_seconds=self.config.writer_lock_stale_seconds
+        # otherwise take the lock atomically and release it on every exit
+        # path below, including exceptions.
+        acquired, holder = acquire_writer_lock(
+            self.project_dir, self.session_id,
+            stale_seconds=self.config.writer_lock_stale_seconds,
         )
-        if holder is not None:
+        lock_path = writer_lock_path(self.project_dir)
+        if not acquired:
+            assert holder is not None  # contention always names the holder
             audit = AuditTrail(
                 self.project_dir, self.config.audit_dir, mission.name,
                 self.session_id, redact_prompts=self.config.redact_prompts,
@@ -278,15 +414,10 @@ class Orchestrator:
             log.error("Aborted: writer lock held by session %s.", holder)
             return report
 
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        lock_path.write_text(self.session_id + "\n", encoding="utf-8")
         try:
             return self._run_locked(mission, allow_dirty, dry_run, started_at)
         finally:
-            try:
-                lock_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+            _release_writer_lock(self.project_dir, self.session_id)
 
     def _run_locked(self, mission: Any, allow_dirty: bool, dry_run: bool,
                     started_at: str) -> Dict[str, Any]:

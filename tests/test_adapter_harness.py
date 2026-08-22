@@ -110,7 +110,10 @@ def test_user_env_overrides_tether_vars(tmp_path):
     assert "SESSION:user-wins" in state.logs
 
 
-def test_tether_mission_env_injected_when_known(tmp_path):
+def test_tether_mission_env_injected_when_known(tmp_path, monkeypatch):
+    # Hermetic under dogfooding: an outer Tether run may export TETHER_MISSION
+    # into this process; the stub must see it unset until metadata provides one.
+    monkeypatch.delenv("TETHER_MISSION", raising=False)
     stub = _stub(tmp_path, "mission-agent", """\
         import os
         print("MISSION:" + os.environ.get("TETHER_MISSION", "<unset>"))

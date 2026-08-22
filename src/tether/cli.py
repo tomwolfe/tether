@@ -255,6 +255,10 @@ def rollback(
         help="Git projects: also remove untracked files created by the session "
              "(never pre-existing untracked files). Non-git projects: restore "
              "from the session's file backup."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Print the rollback plan (checkpoint/backup target, dirty state, "
+             "files that would be reset or deleted) without touching anything."),
 ) -> None:
     """Roll the target project back to a session's checkpoint."""
     pd = _project_dir(project_dir)
@@ -264,7 +268,11 @@ def rollback(
     except Exception:
         config, audit_dir = TetherConfig(), ".tether/sessions"
     from tether.git_safety import is_git_repo, restore_from_backup
-    if not is_git_repo(pd):
+    if dry_run:
+        from tether.git_safety import plan_rollback
+        ok, message = plan_rollback(pd, session_id, audit_dir=audit_dir,
+                                    backup_dir=config.backup_dir, clean=clean)
+    elif not is_git_repo(pd):
         ok, message = restore_from_backup(
             pd, session_id, backup_dir=config.backup_dir, audit_dir=audit_dir)
     else:
@@ -272,6 +280,156 @@ def rollback(
     typer.echo(message)
     if not ok:
         raise typer.Exit(code=1)
+
+
+@app.command()
+def doctor(
+    project_dir: Optional[Path] = typer.Option(None, "--project-dir",
+                                               help="Target project directory."),
+) -> None:
+    """Diagnose the environment and target project; print a per-check report.
+
+    Exits nonzero only when a *critical* check fails (git missing, audit or
+    backup directories not writable). Advisory findings (dirty tree, stale
+    locks, unavailable adapters) are reported but do not fail the command.
+    """
+    import shutil as _shutil
+    import subprocess as _subprocess
+    import sys
+
+    from tether.config import find_project_config, load_project_config
+    from tether.git_safety import is_dirty, is_git_repo
+    from tether.orchestrator import fresh_lock_holder, writer_lock_path
+
+    pd = _project_dir(project_dir)
+    critical_failures = 0
+    advisory_warnings = 0
+
+    def ok(detail: str) -> None:
+        typer.echo(f"[PASS] {detail}")
+
+    def warn(detail: str) -> None:
+        nonlocal advisory_warnings
+        advisory_warnings += 1
+        typer.echo(f"[WARN] {detail}")
+
+    def fail(detail: str) -> None:
+        nonlocal critical_failures
+        critical_failures += 1
+        typer.echo(f"[FAIL] {detail}")
+
+    typer.echo(f"Tether doctor — {pd}")
+
+    # Python version (advisory: the interpreter already runs this command).
+    minimum = (3, 11)
+    if sys.version_info[:2] >= minimum:
+        ok(f"python {sys.version.split()[0]} "
+           f"(minimum required: {minimum[0]}.{minimum[1]})")
+    else:
+        warn(f"python {sys.version.split()[0]} is below the minimum required "
+             f"{minimum[0]}.{minimum[1]}; Tether requires "
+             f"{minimum[0]}.{minimum[1]}+")
+
+    # git availability (critical).
+    if _shutil.which("git") is None:
+        fail("git not found on PATH; checkpoints and rollback are unavailable")
+    else:
+        try:
+            proc = _subprocess.run(["git", "--version"], capture_output=True,
+                                   text=True, check=False)
+            version = proc.stdout.strip() or "git"
+        except OSError:
+            version = "git"
+        ok(f"git available: {version}")
+
+    # Project tether.yaml validity, if present (advisory).
+    config_file = find_project_config(pd)
+    cfg = TetherConfig()
+    if config_file is None:
+        ok("no tether config file found (defaults apply)")
+    else:
+        try:
+            load_project_config(pd)
+            cfg = resolve_config(pd)
+            ok(f"tether config {config_file.name} valid")
+        except Exception as e:
+            warn(f"tether config {config_file.name} INVALID: {e}")
+
+    # Adapter availability for every registered adapter (advisory: optional
+    # binaries such as opencode/pi may legitimately be absent).
+    for name in registry.adapter_names():
+        try:
+            adapter_instance = registry.resolve_adapter(
+                name, cfg.adapters,
+                default_timeout=cfg.command_timeout_seconds,
+            )
+            available, reason = adapter_instance.is_available()
+            if available:
+                ok(f"adapter '{name}' available")
+            else:
+                warn(f"adapter '{name}' unavailable ({reason})")
+        except Exception as e:
+            warn(f"adapter '{name}' error: {e}")
+
+    def probe_writable(path: Path) -> Optional[str]:
+        """None when the directory can be created and written, else why not."""
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            return f"cannot create ({e})"
+        probe = path / ".tether-doctor-probe"
+        try:
+            probe.write_text("probe\n", encoding="utf-8")
+        except OSError as e:
+            return f"not writable ({e})"
+        try:
+            probe.unlink()
+        except OSError:
+            pass
+        return None
+
+    # Audit + backup directory writability (critical).
+    for label, relpath in (("audit dir", cfg.audit_dir),
+                           ("backup dir", cfg.backup_dir)):
+        error = probe_writable(pd / relpath)
+        if error is None:
+            ok(f"{label} {pd / relpath} writable")
+        else:
+            fail(f"{label} {pd / relpath}: {error}")
+
+    # Writer lock leftovers (advisory).
+    lock_path = writer_lock_path(pd)
+    holder = fresh_lock_holder(lock_path,
+                               stale_seconds=cfg.writer_lock_stale_seconds)
+    if holder is not None:
+        warn(f"writer lock at {lock_path} held by session {holder!r}; another "
+             "Tether run may be active")
+    elif lock_path.exists():
+        warn(f"stale writer lock at {lock_path} (owning process is gone); "
+             "it is safe to remove")
+    else:
+        ok("no writer lock present")
+
+    # Dirty-tree status of the target project (advisory).
+    if is_git_repo(pd):
+        if is_dirty(pd):
+            warn("working tree is DIRTY; missions refuse to run without "
+                 "--allow-dirty")
+        else:
+            ok("working tree clean")
+    else:
+        warn("target project is not a git repository; rollback falls back "
+             "to tar backups")
+
+    typer.echo("")
+    if critical_failures:
+        typer.echo(f"Verdict: FAILED ({critical_failures} critical problem"
+                   f"{'s' if critical_failures != 1 else ''}, "
+                   f"{advisory_warnings} warning(s))")
+        raise typer.Exit(code=1)
+    verdict = "OK" if advisory_warnings == 0 else \
+        f"OK ({advisory_warnings} advisory warning(s))"
+    typer.echo(f"Verdict: {verdict}")
 
 
 @app.command()

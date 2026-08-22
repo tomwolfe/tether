@@ -575,6 +575,167 @@ def test_rollback_clean_without_report_leaves_untracked_alone(tmp_path):
     assert "agent-added.txt" in msg  # surfaced for manual cleanup
 
 
+# --------------------------------------------- dogfood-08: tether doctor
+
+
+def test_doctor_clean_project_passes_and_creates_dirs(tmp_path):
+    r = runner.invoke(app, ["doctor", "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    out = r.output
+    assert "minimum required: 3.11" in out
+    assert "[PASS]" in out
+    # audit/backup dir probes create the directories
+    assert (tmp_path / ".tether/sessions").is_dir()
+    assert (tmp_path / ".tether/backups").is_dir()
+    assert not (tmp_path / ".tether" / "tether.lock").exists()
+    assert "Verdict: OK" in out
+    assert "[FAIL]" not in out
+
+
+def test_doctor_dirty_tree_is_advisory_only(tmp_path):
+    _git_repo(tmp_path)
+    (tmp_path / "f.txt").write_text("dirty\n")
+    r = runner.invoke(app, ["doctor", "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output  # advisory findings never fail doctor
+    assert "DIRTY" in r.output or "dirty" in r.output
+    assert "allow-dirty" in r.output
+    assert "Verdict: OK" in r.output
+
+
+def test_doctor_reports_invalid_config_and_stale_lock_as_warnings(tmp_path):
+    import json
+    import os
+    import time as _time
+    (tmp_path / "tether.yaml").write_text("max_attempts: [broken\n")
+    lock = tmp_path / ".tether" / "tether.lock"
+    lock.parent.mkdir(exist_ok=True)
+    lock.write_text(json.dumps({
+        "session_id": "deadsess0001",
+        "pid": 2 ** 22,  # nobody owns this PID
+        "created_at": _time.time(),
+    }) + "\n", encoding="utf-8")
+    old = _time.time() - 13 * 3600
+    os.utime(lock, (old, old))
+    r = runner.invoke(app, ["doctor", "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    assert "INVALID" in r.output
+    assert "stale writer lock" in r.output.lower()
+    assert "safe to remove" in r.output.lower()
+    assert "Verdict: OK" in r.output  # both findings are advisory
+
+
+def test_doctor_live_lock_reported_but_not_fatal(tmp_path):
+    import os
+    lock = tmp_path / ".tether" / "tether.lock"
+    lock.parent.mkdir(exist_ok=True)
+    lock.write_text(f"{os.getpid()}\n", encoding="utf-8")  # legacy live-ish
+    r = runner.invoke(app, ["doctor", "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    assert "held by session" in r.output
+
+
+def test_doctor_fails_when_git_missing(tmp_path, monkeypatch):
+    import shutil as _shutil
+    real_which = _shutil.which
+    monkeypatch.setattr(_shutil, "which",
+                        lambda name, *a, **k: None if name == "git"
+                        else real_which(name, *a, **k))
+    r = runner.invoke(app, ["doctor", "--project-dir", str(tmp_path)])
+    assert r.exit_code != 0
+    assert "[FAIL] git" in r.output
+    assert "Verdict: FAILED" in r.output
+
+
+def test_doctor_fails_when_directories_not_writable(tmp_path):
+    # A regular file where .tether must be created makes both directory
+    # probes fail -> critical.
+    (tmp_path / ".tether").write_text("not a directory\n")
+    r = runner.invoke(app, ["doctor", "--project-dir", str(tmp_path)])
+    assert r.exit_code != 0
+    assert "[FAIL]" in r.output
+    assert "audit dir" in r.output
+    assert "Verdict: FAILED" in r.output
+
+
+# ------------------------------------- dogfood-08: rollback --dry-run preview
+
+
+def test_cli_rollback_dry_run_prints_plan_without_touching_anything(tmp_path):
+    audit = _git_repo_with_session(tmp_path)  # session aaaa1111aaaa
+    base = head_sha(tmp_path)
+    create_checkpoint(tmp_path, "aaaa1111aaaa")
+    (tmp_path / "f.txt").write_text("modified by agent\n")   # tracked change
+    (tmp_path / "agent-added.txt").write_text("session\n")   # would be deleted
+    (tmp_path / "user-notes.txt").write_text("precious\n")   # preserved
+    audit.write_report({"session_id": "aaaa1111aaaa",
+                        "changed_files": ["f.txt", "agent-added.txt",
+                                          "user-notes.txt"]})
+    r = runner.invoke(app, ["rollback", "aaaa", "--dry-run", "--clean",
+                            "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    out = r.output
+    assert "dry-run" in out.lower()
+    assert "refs/tether/checkpoint/aaaa1111aaaa" in out
+    assert base in out                       # target sha is shown
+    assert "DIRTY" in out
+    assert "- f.txt" in out                  # would be reset
+    assert "- agent-added.txt" in out        # --clean would delete
+    assert "- user-notes.txt" in out         # pre-existing, preserved
+    # nothing was actually touched:
+    assert head_sha(tmp_path) == base
+    assert list_checkpoint_refs(tmp_path) != []  # checkpoint still there
+    assert (tmp_path / "f.txt").read_text() == "modified by agent\n"
+    assert (tmp_path / "agent-added.txt").exists()
+    assert (tmp_path / "user-notes.txt").read_text() == "precious\n"
+
+
+def test_cli_rollback_dry_run_default_refusal_noted(tmp_path):
+    _git_repo_with_session(tmp_path)
+    create_checkpoint(tmp_path, "aaaa1111aaaa")
+    (tmp_path / "agent-added.txt").write_text("new\n")
+    r = runner.invoke(app, ["rollback", "aaaa1111aaaa", "--dry-run",
+                            "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    assert "REFUSE" in r.output  # default behavior on apply is documented
+    assert "--clean" in r.output
+    assert (tmp_path / "agent-added.txt").exists()  # untouched
+
+
+def test_cli_rollback_dry_run_clean_tree(tmp_path):
+    _git_repo_with_session(tmp_path)
+    base = head_sha(tmp_path)
+    create_checkpoint(tmp_path, "aaaa1111aaaa")
+    r = runner.invoke(app, ["rollback", "aaaa1111aaaa", "--dry-run",
+                            "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    assert "clean" in r.output
+    assert head_sha(tmp_path) == base
+
+
+def test_cli_rollback_dry_run_non_git_backup_plan(tmp_path):
+    from tether.audit import AuditTrail
+    (tmp_path / "data.txt").write_text("v1")
+    audit = AuditTrail(tmp_path, ".tether/sessions", "sess", "cccc9999cccc")
+    audit.write_report({"session_id": "cccc9999cccc",
+                        "changed_files": ["data.txt"]})
+    make_file_backup(tmp_path, tmp_path / ".tether/backups", "cccc9999cccc")
+    r = runner.invoke(app, ["rollback", "cccc9", "--dry-run",
+                            "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    out = r.output
+    assert ".tether/backups/cccc9999cccc.tar.gz" in out
+    assert "verified" in out                 # checksum sidecar status shown
+    assert "- data.txt" in out               # restore plan lists the file
+    assert (tmp_path / "data.txt").read_text() == "v1"  # untouched
+
+
+def test_cli_rollback_dry_run_unknown_session_fails(tmp_path):
+    _git_repo(tmp_path)
+    r = runner.invoke(app, ["rollback", "no-such-session", "--dry-run",
+                            "--project-dir", str(tmp_path)])
+    assert r.exit_code != 0
+
+
 # --------------------------------------------- non-git backup restore (B4)
 
 
@@ -621,6 +782,107 @@ def test_restore_from_backup_accepts_short_prefix(tmp_path):
     ok, msg = restore_from_backup(tmp_path, "dddd")  # short prefix
     assert ok, msg
     assert (tmp_path / "data.txt").read_text() == "v1"
+
+
+# ------------------------------ dogfood-08: backup checksum verification
+
+
+def test_backup_writes_sha256_sidecar_and_restores(tmp_path):
+    from tether.audit import AuditTrail
+    from tether.git_safety import backup_checksum_path, verify_backup_checksum
+    (tmp_path / "data.txt").write_text("v1")
+    AuditTrail(tmp_path, ".tether/sessions", "sess", "ffff6666ffff")
+    dest = Path(make_file_backup(tmp_path, tmp_path / ".tether/backups",
+                                 "ffff6666ffff"))
+    sidecar = backup_checksum_path(dest)
+    assert sidecar.exists()
+    import hashlib
+    expected = hashlib.sha256(dest.read_bytes()).hexdigest()
+    assert sidecar.read_text().strip().split()[0] == expected
+    ok, msg = verify_backup_checksum(dest)
+    assert ok, msg
+    # end-to-end: verification runs inside restore and succeeds
+    (tmp_path / "data.txt").write_text("clobbered")
+    from tether.git_safety import restore_from_backup
+    ok, msg = restore_from_backup(tmp_path, "ffff6666ffff")
+    assert ok, msg
+    assert (tmp_path / "data.txt").read_text() == "v1"
+
+
+def test_corrupted_archive_is_detected_and_restore_refused(tmp_path):
+    from tether.audit import AuditTrail
+    from tether.git_safety import restore_from_backup
+    (tmp_path / "data.txt").write_text("v1")
+    AuditTrail(tmp_path, ".tether/sessions", "sess", "aaaa7777aaaa")
+    dest = Path(make_file_backup(tmp_path, tmp_path / ".tether/backups",
+                                 "aaaa7777aaaa"))
+    (tmp_path / "data.txt").write_text("clobbered by agent")
+    raw = bytearray(dest.read_bytes())
+    raw[-10] ^= 0xFF  # flip bits near the end of the gzip stream
+    dest.write_bytes(bytes(raw))
+    ok, msg = restore_from_backup(tmp_path, "aaaa7777aaaa")
+    assert not ok
+    assert "sha256" in msg.lower() or "checksum" in msg.lower()
+    assert "refus" in msg.lower()
+    # nothing was restored
+    assert (tmp_path / "data.txt").read_text() == "clobbered by agent"
+
+
+def test_missing_sidecar_refuses_restore(tmp_path):
+    from tether.audit import AuditTrail
+    from tether.git_safety import backup_checksum_path, restore_from_backup
+    (tmp_path / "data.txt").write_text("v1")
+    AuditTrail(tmp_path, ".tether/sessions", "sess", "bbbb8888bbbb")
+    dest = Path(make_file_backup(tmp_path, tmp_path / ".tether/backups",
+                                 "bbbb8888bbbb"))
+    backup_checksum_path(dest).unlink()
+    (tmp_path / "data.txt").write_text("clobbered by agent")
+    ok, msg = restore_from_backup(tmp_path, "bbbb8888bbbb")
+    assert not ok
+    assert "sidecar" in msg.lower()
+    assert (tmp_path / "data.txt").read_text() == "clobbered by agent"
+
+
+def test_archive_and_sidecar_excluded_from_own_backup(tmp_path):
+    # A custom backup dir inside the project is NOT covered by the default
+    # .tether exclusion; the archive/sidecar/temp must still never appear in
+    # the backup contents themselves.
+    (tmp_path / "backups").mkdir()
+    payload = b"x" * (256 * 1024)  # big enough that self-inclusion would show
+    for i in range(4):
+        (tmp_path / f"blob-{i}.bin").write_bytes(payload)
+    dest = Path(make_file_backup(tmp_path, tmp_path / "backups", "selfexcl01"))
+    with tarfile.open(dest) as tar:
+        names = tar.getnames()
+    assert dest.name not in names
+    assert (dest.name + ".sha256") not in names
+    assert not any(n.startswith(f".{dest.name}.") for n in names)  # temp files
+    assert sorted(n for n in names if n.startswith("blob-")) == \
+        [f"blob-{i}.bin" for i in range(4)]
+    # sidecar exists next to the archive but is not an archive member
+    assert Path(str(dest) + ".sha256").exists()
+
+
+def test_crashed_backup_leaves_no_partial_archive(tmp_path):
+    # A failure while writing the temp file must leave neither a truncated
+    # archive at the destination nor stray temp files behind.
+    import os as _os
+    from unittest import mock
+
+    import tether.git_safety as gs
+
+    def boom(*a, **k):
+        raise OSError("simulated crash before publish")
+
+    (tmp_path / "data.txt").write_text("v1")
+    backup_root = tmp_path / ".tether/backups"
+    with mock.patch.object(_os, "replace", boom), \
+            pytest.raises(RuntimeError, match="Failed to create file backup"):
+        gs.make_file_backup(tmp_path, backup_root, "crashy000001")
+    dest = backup_root / "crashy000001.tar.gz"
+    assert not dest.exists()
+    assert not gs.backup_checksum_path(dest).exists()
+    assert list(backup_root.iterdir()) == []  # no truncated archives/temp files
 
 
 def test_cli_rollback_non_git_restores_backup_from_prefix(tmp_path):

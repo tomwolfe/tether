@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "pytest-cov", "ruff", "mypy", "types-PyYAML"]
 
 [project.scripts]
 tether = "tether.cli:app"
@@ -26,3 +26,8 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff.lint]
+# Keep the lint gate stable across ruff versions: pycodestyle errors and
+# pyflakes (ruff's historical default rule set).
+select = ["E4", "E7", "E9", "F"]

@@ -455,6 +455,123 @@ def test_lock_released_after_cancelled_run(tmp_path):
     assert not (tmp_path / ".tether" / "tether.lock").exists()
 
 
+# ------------------------------- dogfood-08: atomic writer lock hardening
+
+
+def _write_json_lock(tmp_path, session_id, pid, created_at=None):
+    import json
+    import time as _time
+    lock = tmp_path / ".tether" / "tether.lock"
+    lock.parent.mkdir(exist_ok=True)
+    payload = {"session_id": session_id, "pid": pid,
+               "created_at": created_at if created_at is not None else _time.time()}
+    lock.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    return lock
+
+
+def test_atomic_lock_contention_fails_second_writer(tmp_path):
+    # A live holder (this test process owns the PID) blocks the second writer
+    # even with an aggressively short staleness timeout, and its lock file is
+    # left byte-for-byte intact.
+    import json
+    import os
+    lock = _write_json_lock(tmp_path, "livesess1111", os.getpid())
+    adapter = _RecordingAdapter(["completed"])
+    cfg = TetherConfig(audit_dir=".tether/sessions", writer_lock_stale_seconds=1)
+    report = Orchestrator(adapter, cfg, tmp_path).run(
+        _write_mission(tmp_path, f"mission:\n  name: m\n  goal: g\n"
+                                 f"verification:\n  commands:\n    - {PASS_CMD}\n"
+                                 f"adapter: mock\n"))
+    assert report["status"] == "failed"
+    assert adapter.calls == []  # fails fast before any adapter interaction
+    data = json.loads(lock.read_text())
+    assert data["session_id"] == "livesess1111"  # not clobbered or rewritten
+
+
+def test_dead_pid_lock_is_taken_over(tmp_path):
+    # Lock whose owning process no longer exists is acquired immediately,
+    # regardless of how fresh it is or how long the stale timeout is.
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()  # ensure it is really gone
+    lock = _write_json_lock(tmp_path, "deadsess2222", proc.pid)
+    adapter = _RecordingAdapter(["completed"])
+    report = _run_scripted(tmp_path, adapter)
+    assert report["status"] == "success"
+    assert "start_session" in adapter.calls
+    assert not lock.exists()  # taken over, then released after the run
+
+
+def test_lock_released_on_exception(tmp_path):
+    # Whatever escapes _run_locked must propagate AND leave no lock behind.
+    adapter = _RecordingAdapter(["completed"])
+    mp = tmp_path / "m.yaml"
+    mp.write_text(f"mission:\n  name: m\n  goal: g\nverification:\n"
+                  f"  commands:\n    - {PASS_CMD}\nadapter: mock\n")
+    orch = Orchestrator(adapter, TetherConfig(audit_dir=".tether/sessions"), tmp_path)
+    original = Orchestrator._run_locked
+
+    def boom(self, mission, allow_dirty, dry_run, started_at):
+        raise RuntimeError("exploded inside the locked section")
+
+    Orchestrator._run_locked = boom
+    try:
+        with pytest.raises(RuntimeError, match="exploded"):
+            orch.run(load_mission(mp))
+    finally:
+        Orchestrator._run_locked = original
+    assert not (tmp_path / ".tether" / "tether.lock").exists()
+
+
+def test_release_never_removes_another_holders_lock(tmp_path):
+    import json
+    import time as _time
+
+    def boom(self, mission, allow_dirty, dry_run, started_at):
+        raise RuntimeError("still exploded")
+
+    mp = tmp_path / "m.yaml"
+    mp.write_text(f"mission:\n  name: m\n  goal: g\nverification:\n"
+                  f"  commands:\n    - {PASS_CMD}\nadapter: mock\n")
+    orch = Orchestrator(_RecordingAdapter(["completed"]),
+                        TetherConfig(audit_dir=".tether/sessions"), tmp_path)
+    original = Orchestrator._run_locked
+
+    def steal_then_boom(self, *args):
+        # Simulate our lock expiring and another session taking it over
+        # while we were still inside the locked section.
+        lock = tmp_path / ".tether" / "tether.lock"
+        lock.write_text(json.dumps({
+            "session_id": "newowner9999", "pid": 999999999,
+            "created_at": _time.time(),
+        }) + "\n", encoding="utf-8")
+        raise RuntimeError("boom")
+
+    Orchestrator._run_locked = steal_then_boom
+    try:
+        with pytest.raises(RuntimeError, match="boom"):
+            orch.run(load_mission(mp))
+    finally:
+        Orchestrator._run_locked = original
+    # the new owner's lock file survives our release path
+    data = json.loads((tmp_path / ".tether" / "tether.lock").read_text())
+    assert data["session_id"] == "newowner9999"
+
+
+def test_legacy_plain_text_lock_still_recognized(tmp_path):
+    # Locks written by older versions contain a bare session id; they must
+    # still be honored as live when fresh and taken over when stale.
+    lock = _write_lock(tmp_path, "legacysess01")
+    report = _run_scripted(tmp_path, _RecordingAdapter(["completed"]))
+    assert report["status"] == "failed"
+    assert any("legacysess01" in s for s in report["next_steps"])
+    import os
+    import time as _time
+    old = _time.time() - 13 * 3600
+    os.utime(lock, (old, old))  # beyond the default 12h staleness timeout
+    report2 = _run_scripted(tmp_path, _RecordingAdapter(["completed"]))
+    assert report2["status"] == "success"
+
+
 # --------------------------------------------- plan feeds execution (B5)
 
 

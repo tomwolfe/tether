@@ -138,11 +138,16 @@ With `--auto-rollback` (or `auto_rollback: true` in config), a mission that ends
 
 Each run creates `.tether/sessions/<timestamp>-<mission>-<short-id>/` containing: resolved config (with secrets such as adapter `env` values redacted), mission contract, prompts sent, adapter responses, verification results per attempt, recovery attempts, changed files, checkpoint info, `events.jsonl`, and a machine-readable `report.json`.
 
-## Tests
+## Development & tests
+
+The `dev` extra installs everything needed to run the test suite and the
+lint/type gates:
 
 ```bash
-.venv/bin/pip install -e ".[dev]"
-.venv/bin/python -m pytest -q
+.venv/bin/pip install -e ".[dev]"   # pytest>=8, pytest-cov, ruff, mypy, types-PyYAML
+.venv/bin/python -m pytest -q       # tests
+.venv/bin/python -m ruff check src tests
+.venv/bin/python -m mypy src/tether
 ```
 
 Tests use only temp directories, git temp repos with local identity, and the MockAdapter. No network, no opencode/pi required.
