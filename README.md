@@ -173,6 +173,10 @@ With `--auto-rollback` (or `auto_rollback: true` in config), a mission that ends
 
 Each run creates `.tether/sessions/<timestamp>-<mission>-<short-id>/` containing: resolved config (with secrets such as adapter `env` values redacted), mission contract, prompts sent, adapter responses, verification results per attempt, recovery attempts, changed files, checkpoint info, `events.jsonl`, and a machine-readable `report.json`.
 
+### Secret allow/denylists (config)
+
+Resolved-config redaction can be tuned with two config keys: `secret_denylist` (keys whose values are **always** redacted) and `secret_allowlist` (keys **never** redacted even when they contain a secret marker like `token` or `password`). Matching is exact and case-insensitive; the denylist wins over the allowlist; adapter `env` values are always redacted regardless. With both lists empty (the default), the built-in marker heuristics apply unchanged.
+
 ## Review gate
 
 Verification passing is not the same as the change being correct. Missions can opt into a **review gate** (`review: {enabled: true}` in the contract): after every verification command AND artifact assertion passes, Tether opens a fresh session on the mission's adapter and asks it to act as an adversarial reviewer over a bounded excerpt of the captured change (`patch.diff` for git projects, `manifest_diff.json` otherwise), judging the diff against the mission goal. The reviewer must answer with exactly one verdict line (`REVIEW: APPROVE` or `REVIEW: REQUEST_CHANGES`); the verdict is decided by the last such marker in the reviewer's output (command adapters echo the prompt — which mentions both tokens — ahead of the verdict line), and output with no marker fails safe as a rejection. When `required: true` (the default) a rejection fails the mission with the review reason in `next_steps`; there is no automatic re-execution. The verdict, reason, prompt, and response are recorded in `report["review"]`, an audit event, and the session directory.

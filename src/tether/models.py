@@ -80,12 +80,6 @@ class TetherConfig(BaseModel):
     # successful runs or dry-runs.
     auto_rollback: bool = False
     redact_prompts: bool = False
-    # Explicit allow/denylists for secret redaction (exact, case-insensitive
-    # key match): secret_denylist keys are ALWAYS redacted, secret_allowlist
-    # keys are NEVER redacted even when they contain a secret marker; the
-    # denylist wins. Empty lists keep the built-in marker behavior.
-    secret_denylist: List[str] = []
-    secret_allowlist: List[str] = []
     # Write-sandbox posture: "warn" (default) detects violations after
     # execution and fails the mission; "enforce" additionally snapshots the
     # project tree and unions filesystem-metadata diffs into the sandbox
