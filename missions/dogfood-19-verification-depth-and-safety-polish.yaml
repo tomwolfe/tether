@@ -1,0 +1,137 @@
+mission:
+  name: dogfood-19-verification-depth-and-safety-polish
+  goal: "Close Tether's four highest-impact remaining gaps: verification is too\nshallow (existence-only\
+    \ artifacts), there is no post-session secret\nscrubbing, sandbox mode warnings are missing when allowed_paths\
+    \ is set,\nand there is no per-mission baseline comparison in sessions stats.\nEach task proven by\
+    \ tests that fail before and pass after. All existing\ntests keep passing. Change NOTHING outside\
+    \ this scope.\n\nTasks (implement in order; keep every change minimal, typed, scoped):\n\n1. STRUCTURAL\
+    \ VERIFICATION ASSERTIONS:\n   - In src/tether/models.py, add an optional field to VerificationSpec:\n\
+    \       assertions: Optional[List[AssertionSpec]] = None\n     where AssertionSpec is a new model:\n\
+    \       path: str                    # fnmatch glob relative to project dir\n       contains: Optional[str]\
+    \      # literal substring to find\n       matches: Optional[str]       # regex pattern to search\n\
+    \       min_occurrences: int = 1     # how many files must match\n   - In src/tether/mission.py, structurally\
+    \ validate `assertions`\n     (list of mappings; path required string; contains/matches\n     optional\
+    \ strings; min_occurrences positive int). Raise\n     MissionError otherwise.\n   - In src/tether/verification.py,\
+    \ add:\n       def check_assertions(\n           assertions: list[AssertionSpec],\n           project_dir:\
+    \ Path,\n       ) -> list[AssertionResult]\n     For each assertion: glob-match `path` against existing\
+    \ files\n     (excluding .tether/), then filter by `contains` (literal\n     substring) or `matches`\
+    \ (re.search) on file content (UTF-8,\n     errors='replace'). An assertion passes when at least\n\
+    \     `min_occurrences` files satisfy all conditions. Return\n     per-assertion results with matched\
+    \ files and detail.\n   - In src/tether/orchestrator.py, after artifact checks pass on\n     an attempt,\
+    \ run assertion checks. A failing assertion fails\n     the attempt (recovery proceeds normally).\
+    \ Record results in\n     report[\"verification_results\"] alongside commands and\n     artifacts.\n\
+    \   - Tests: assertion with `contains` passes/fails correctly;\n     `matches` regex works; `min_occurrences`\
+    \ enforced; glob +\n     assertion combo; missing file fails; structural validation\n     errors;\
+    \ report includes assertion entries; .tether/ excluded.\n\n2. POST-SESSION SECRET SCRUB (opt-in):\n\
+    \   - Add `tether sessions scrub <session-id-or-prefix> [--confirm]`\n     in src/tether/cli.py that:\n\
+    \     * Locates the session directory via find_session_dir.\n     * Scans all .txt and .json files\
+    \ under prompts/, responses/,\n       and verification/ subdirectories for high-confidence secret\n\
+    \       patterns (reuse or extend the existing SECRET_KEY_MARKERS\n       heuristics from audit.py;\
+    \ do not invent a huge new engine).\n     * Without --confirm: prints a plan listing each file path\
+    \ and\n       the number of matches found. Exits 0.\n     * With --confirm: rewrites matching files\
+    \ in place, replacing\n       matched substrings with redact_body()-style markers, and\n       appends\
+    \ a \"scrub\" event to events.jsonl recording the\n       timestamp and file count.\n     * Never\
+    \ touches files outside the session directory.\n   - Tests: create a temp session dir with a fake\
+    \ API key string in\n     a prompt file; scrub without --confirm shows the plan and\n     leaves files\
+    \ unchanged; scrub with --confirm redacts the key\n     and appends the event; files outside session\
+    \ dir untouched.\n\n3. SANDBOX MODE WARNING:\n   - In src/tether/orchestrator.py, at the start of\
+    \ _run_locked,\n     after the checkpoint phase: if the mission has non-empty\n     allowed_paths\
+    \ AND config.sandbox_mode == \"warn\", log a single\n     WARNING:\n       \"allowed_paths is set\
+    \ but sandbox_mode is 'warn'; consider\n        sandbox_mode: enforce for stronger detection\"\n \
+    \    Also record a \"sandbox_mode_advisory\" audit event.\n   - Do NOT change the default value of\
+    \ sandbox_mode (stay \"warn\").\n   - Document the recommendation in README.md under Sandbox modes\n\
+    \     and in docs/SECURITY.md.\n   - Tests: warning appears exactly when allowed_paths is set and\n\
+    \     mode is warn; no warning when mode is enforce; no warning when\n     allowed_paths is absent.\n\
+    \n4. PER-MISSION BASELINE COMPARISON:\n   - In src/tether/cli.py, extend sessions_stats to group sessions\n\
+    \     by mission_name. For each mission with >= 2 sessions, compute:\n     * success rate (count,\
+    \ pct)\n     * median and max verification attempts\n     * trend: compare the latest session's attempt\
+    \ count to the\n       trailing median of prior sessions. If latest > trailing\n       median + 1,\
+    \ flag \"regression\"; if latest < trailing\n       median - 1, flag \"improvement\"; else \"stable\"\
+    .\n   - Human output: print a \"Per-mission:\" section after the\n     per-adapter section, one line\
+    \ per mission:\n       \"mission-name: N sessions, success X%, median attempts Y,\n        latest:\
+    \ Z attempts (stable|regression|improvement)\"\n   - --json output: add a \"missions\" key with the\
+    \ same data.\n   - When no mission has >= 2 sessions, print nothing extra\n     (keep existing output\
+    \ byte-identical).\n   - Tests: fixture reports with 3 sessions of mission \"alpha\"\n     (attempts\
+    \ 1, 2, 4 -> regression on latest) and 2 sessions of\n     mission \"beta\" (attempts 3, 1 -> improvement);\
+    \ assert human\n     output and --json contain correct trend labels; single-session\n     mission\
+    \ produces no trend line.\n\n5. DOCUMENTATION TRUTH:\n   - README.md: extend the Verification section\
+    \ to document\n     assertions. Add a short \"Secret scrubbing\" note under the\n     audit trail\
+    \ section. Extend the sessions stats description\n     with one sentence about per-mission baselines.\n\
+    \   - docs/SECURITY.md: add a note that scrub is best-effort pattern\n     redaction, not cryptographic\
+    \ erasure.\n   - Tests: assert README.md mentions \"assertions\" and \"scrub\".\n     Assert SECURITY.md\
+    \ mentions \"best-effort\".\n"
+context:
+- Read docs/ARCHITECTURE.md, docs/ADAPTERS.md, docs/SECURITY.md, README.md, src/tether/orchestrator.py,
+  src/tether/verification.py, src/tether/models.py, src/tether/mission.py, src/tether/cli.py, src/tether/audit.py,
+  and tests/test_review_gate.py + tests/test_safety.py + tests/test_core.py first.
+- dogfood-11 added artifact assertions (existence globs); dogfood-14 added classify_failure and FAILURE_CLASS_GUIDANCE;
+  dogfood-15 added the review gate; dogfood-16 added redaction allow/denylists; dogfood-18 added review-gate
+  telemetry. Build on all of them; do not regress.
+- The core loop must stay adapter-agnostic (AgentAdapter interface only). No AgentAdapter signature changes.
+- subprocess stays shell=False everywhere; stdlib only.
+context_files:
+- docs/ARCHITECTURE.md
+- docs/SECURITY.md
+- README.md
+- src/tether/orchestrator.py
+- src/tether/verification.py
+- src/tether/models.py
+- src/tether/mission.py
+- src/tether/cli.py
+- src/tether/audit.py
+constraints:
+- do not change AgentAdapter method signatures
+- do not weaken existing tests; all current tests must keep passing
+- subprocess usage stays shell=False
+- no new third-party dependencies (stdlib only)
+- keep changes minimal, typed, and scoped to the five tasks
+- assertions must default to None so existing missions work unchanged
+- scrub must never touch files outside the session directory
+- scrub without --confirm must never modify anything
+- sandbox_mode default must remain "warn"
+- per-mission stats must not appear when no mission has >= 2 sessions
+verification:
+  commands:
+  - python -m pytest -q
+  - ruff check src tests
+  - mypy src/tether
+  - .venv/bin/tether adapters conformance mock
+  artifacts:
+  - README.md
+  - docs/SECURITY.md
+  assertions:
+  - path: src/tether/verification.py
+    contains: check_assertions
+  - path: src/tether/cli.py
+    contains: sessions scrub
+  - path: src/tether/orchestrator.py
+    contains: sandbox_mode_advisory
+  - path: README.md
+    contains: assertions
+  timeout_seconds: 900
+recovery:
+  max_attempts: 4
+review:
+  enabled: true
+  required: true
+  adapter: opencode
+  retry_on_rejection: true
+adapter: opencode
+adapters:
+  opencode:
+    command:
+    - opencode
+    - run
+    - -m
+    - opencode/x-preview-f-free
+    - '{prompt}'
+    timeout_seconds: 1800
+allowed_paths:
+- src/**
+- tests/**
+- docs/**
+- README.md
+forbidden_paths:
+- .git/**
+- .tether/**
+- missions/**
