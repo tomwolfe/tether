@@ -1,0 +1,117 @@
+mission:
+  name: dogfood-10-safe-expressiveness
+  goal: |
+    Phase 2: safe expressiveness — bounded context_files for mission contracts
+    and an optional enforced sandbox, built strictly on top of the safety core.
+
+    Tasks:
+
+    1. CONTEXT_FILES:
+       - Extend the mission contract so a mission may declare:
+             context_files:
+               - docs/ARCHITECTURE.md
+               - src/tether/models.py
+         (top-level key, list of relative paths).
+       - At mission start (before planning), read each file and append its
+         content to the prompt context delivered to the adapter, clearly
+         delimited with headers naming each file.
+       - Enforce hard limits (constants in one place, documented):
+           * max 32 files,
+           * max 256 KiB per file,
+           * max 512 KiB total context,
+       - Refuse binary content: if a file contains NUL bytes in its first
+         8 KiB, fail the mission before execution with a clear error.
+       - Path validation: paths must be relative, must not escape the project
+         directory (no absolute paths, no '..' components after
+         normalization), and must exist; violations fail the mission before
+         execution with explicit reasons. Missing files are an error, not a
+         warning.
+       - Redaction awareness: run context file contents through the existing
+         redaction helper used for prompts when redaction is enabled, and
+         note in README that context files are sent verbatim (modulo
+         redaction) to the agent and appear in audit prompts.
+       - Log an audit event listing which context files were included and
+         their byte sizes.
+       - Validation-time checks: validate-mission should catch structural
+         problems (not a list, non-string entries) but existence/size/binary
+         checks happen at run time against the target project.
+
+    2. SANDBOX ENFORCEMENT MODE:
+       - Add `sandbox_mode` config field to TetherConfig accepting "warn"
+         (current default behavior: detect violations post-execution and fail
+         the mission — keep exactly as today) and "enforce".
+       - In enforce mode, Tether additionally performs best-effort pre- and
+         mid-execution detection:
+           * snapshot the project tree before execution (reuse the manifest),
+           * after execution, in addition to the changed-file glob check, use
+             filesystem metadata where cheaply available to flag writes to
+             paths outside allowed globs even when content-based change
+             detection might miss them (e.g. new untracked files in git repos
+             must still be checked against forbidden/allowed globs — verify
+             this already happens and fix it if not).
+       - Be honest in docs: enforce mode narrows but does not eliminate risk;
+         it is not OS-level containment. Document this in README and
+         docs/ARCHITECTURE.md under a short 'Sandbox modes' section.
+       - Unknown sandbox_mode values must fail config validation.
+
+    3. TESTS:
+       - context_files: happy path (contents reach the execute prompt),
+         limit enforcement (too many files, oversized file, oversized total),
+         binary refusal, path escape refusal ('..', absolute), missing file
+         error, redaction interaction, audit event recorded.
+       - sandbox enforce: unknown mode rejected; enforce mode flags a
+         forbidden-path write via untracked-file checking; warn default
+         unchanged.
+       - All existing tests keep passing; do not weaken any test.
+
+    Change NOTHING outside this scope.
+
+  context:
+    - Read src/tether/orchestrator.py (prompt construction and execution flow),
+      src/tether/mission.py (mission parsing), src/tether/models.py
+      (TetherConfig), src/tether/audit.py, and tests/test_core.py +
+      tests/test_safety.py first.
+    - Prompt redaction exists already; find how prompts are redacted and reuse
+      that path for context files.
+    - The manifest snapshot/diff helpers live in src/tether/manifest.py and are
+      used for non-git change detection; reuse them for enforce-mode checks.
+    - The post-execution sandbox gate is _sandbox_violations in
+      orchestrator.py operating over detected changed files.
+    - dogfood sessions 07-09 added patch capture, auto_rollback, atomic lock,
+      conformance harness; do not regress them.
+
+  constraints:
+    - do not change AgentAdapter method signatures
+    - do not weaken existing tests; all current tests must keep passing
+    - subprocess usage stays shell=False
+    - no new third-party dependencies
+    - keep changes minimal, typed, and scoped
+
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+    - ".venv/bin/tether adapters conformance mock"
+  timeout_seconds: 900
+
+recovery:
+  max_attempts: 3
+
+adapter: opencode
+
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 1800
+
+allowed_paths:
+  - src/**
+  - tests/**
+  - docs/**
+  - README.md
+
+forbidden_paths:
+  - .git/**
+  - .tether/**
+  - missions/**
