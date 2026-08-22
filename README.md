@@ -25,7 +25,8 @@ python3 -m venv .venv && .venv/bin/pip install -e .
 tether init                                        # write a starter tether.yaml
 tether validate-config                             # validate project config
 tether validate-mission examples/hello-success.yaml
-tether adapters list                               # availability + verified/experimental status
+tether adapters list                               # availability, capabilities + verified/experimental status
+tether adapters conformance mock                    # behavioral conformance battery (PASS/FAIL)
 tether run examples/hello-success.yaml --adapter mock --project-dir /some/project
 tether report <session-id>                         # print report.json of a past session
 tether sessions list                               # list past sessions
@@ -80,6 +81,8 @@ tether adapters smoke opencode --prompt "Say hi"
 `smoke` builds the named adapter from project config, reports whether it is available, then sends a trivial prompt (default: `Reply with the single word OK`) **inside a temporary directory** — your git tree and files are never touched and no audit sessions are created. It prints availability, status, exit code, an output excerpt, and elapsed time; the exit code is 0 only if the adapter was available and its run completed successfully.
 
 `opencode` and `pi` presets exist but are **experimental/unverified** — see docs/ADAPTERS.md.
+
+For a deeper probe, `tether adapters conformance <name>` runs a behavioral battery (availability reporting, success/failure/timeout state mapping, cancellation, stdout+stderr log capture, project-directory containment, spawn failure) and prints per-check results with a PASS/FAIL verdict; the exit code is nonzero on FAIL. `mock` passes out of the box and command-family adapters are exercised against deterministic stub executables. An adapter earns `verified` only by passing conformance plus a demonstrated real-CLI run — promotion criteria in docs/ADAPTERS.md.
 
 ## Configuration precedence
 

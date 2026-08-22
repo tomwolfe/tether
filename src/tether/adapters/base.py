@@ -25,6 +25,16 @@ class AgentAdapter(abc.ABC):
     name: str = "base"
     verified: bool = False
 
+    # Capability metadata (dogfood-09): honest, static claims about what an
+    # adapter supports. Defaults are the safe minimal assumptions; concrete
+    # adapters override only what they truly provide. Surfaced in
+    # `tether adapters list` and honored by the conformance harness.
+    supports_cancel: bool = False
+    supports_process_tree_kill: bool = False
+    supports_usage: bool = False
+    supports_streaming: bool = False
+    one_shot: bool = True
+
     def __init__(self, settings: Optional[Dict[str, Any]] = None) -> None:
         self.settings = settings or {}
 

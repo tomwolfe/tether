@@ -10,7 +10,7 @@ import typer
 
 import tether.adapters as registry
 from tether import __version__
-from tether import smoke
+from tether import conformance, smoke
 from tether.audit import find_session_dir, new_session_id
 from tether.config import load_project_config, resolve_config
 from tether.git_safety import rollback as git_rollback
@@ -106,7 +106,7 @@ def validate_mission(mission_file: Path) -> None:
 
 @adapters_app.command("list")
 def adapters_list() -> None:
-    """List known adapters with availability and verification status."""
+    """List known adapters with availability, capabilities and maturity."""
     cfg = TetherConfig()
     rows = []
     for name in registry.adapter_names():
@@ -115,13 +115,14 @@ def adapters_list() -> None:
             ok, reason = adapter.is_available()
             status = "available" if ok else "unavailable"
             tag = "verified" if adapter.verified else "experimental"
+            caps = conformance.capability_flags(adapter)
             issue = reason or "-"
         except Exception as e:
-            status, tag, issue = "error", "unknown", str(e)
-        rows.append((name, status, tag, issue))
-    typer.echo(f"{'NAME':<12} {'STATUS':<12} {'MATURITY':<13} ISSUE")
-    for name, status, tag, issue in rows:
-        typer.echo(f"{name:<12} {status:<12} {tag:<13} {issue}")
+            status, tag, caps, issue = "error", "unknown", "-", str(e)
+        rows.append((name, status, tag, caps, issue))
+    typer.echo(f"{'NAME':<12} {'STATUS':<12} {'MATURITY':<13} {'CAPABILITIES':<28} ISSUE")
+    for name, status, tag, caps, issue in rows:
+        typer.echo(f"{name:<12} {status:<12} {tag:<13} {caps:<28} {issue}")
 
 
 @adapters_app.command("smoke")
@@ -156,6 +157,26 @@ def adapters_smoke(
         typer.echo(f"Smoke FAILED: {detail}", err=True)
         raise typer.Exit(code=1)
     typer.echo("Smoke PASSED")
+
+
+@adapters_app.command("conformance")
+def adapters_conformance(
+    name: str = typer.Argument(..., help="Adapter name (see `tether adapters list`)."),
+    project_dir: Optional[Path] = typer.Option(
+        None, "--project-dir",
+        help="Project whose tether.yaml configures the adapter."),
+) -> None:
+    """Run the behavioral conformance battery; exit nonzero on FAIL."""
+    pd = _project_dir(project_dir)
+    try:
+        adapter_instance = smoke.build_smoke_adapter(name, pd)
+        report = conformance.run_conformance(adapter_instance)
+    except Exception as e:
+        typer.echo(f"Conformance ERROR: {e}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(report.summary())
+    if not report.ok:
+        raise typer.Exit(code=1)
 
 
 @app.command()

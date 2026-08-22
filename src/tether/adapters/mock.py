@@ -13,6 +13,14 @@ class MockAdapter(AgentAdapter):
     name = "mock"
     verified = True
     known_settings: frozenset[str] = frozenset({"scenario"})
+    # Minimal honest capabilities (dogfood-09): sends are synchronous and
+    # backed by no process, so there is nothing to terminate, meter, or
+    # stream; cancel() only latches a flag consulted by later sends.
+    supports_cancel = False
+    supports_process_tree_kill = False
+    supports_usage = False
+    supports_streaming = False
+    one_shot = True
 
     def __init__(self, settings: Optional[Dict[str, Any]] = None) -> None:
         super().__init__(settings)

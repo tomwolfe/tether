@@ -62,6 +62,12 @@ class CommandAdapter(AgentAdapter):
     known_settings: frozenset[str] = frozenset(
         {"command", "timeout_seconds", "prompt_via_stdin", "env"}
     )
+    # Capabilities (dogfood-09): cancel() terminates the whole process tree;
+    # each send is a full one-shot prompt→result round trip; usage is not
+    # parsed from output and nothing streams. The safe defaults for
+    # supports_usage/supports_streaming stay inherited.
+    supports_cancel = True
+    supports_process_tree_kill = True
 
     def __init__(self, settings: Optional[Dict[str, Any]] = None,
                  default_timeout: int = 1800) -> None:
