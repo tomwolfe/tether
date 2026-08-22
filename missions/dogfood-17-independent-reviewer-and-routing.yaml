@@ -1,0 +1,131 @@
+mission:
+  name: dogfood-17-independent-reviewer-and-routing
+  goal: |
+    Two follow-ups to the review gate, both proven by tests that fail before
+    and pass after. All existing tests keep passing. Change NOTHING outside
+    this scope.
+
+    1. INDEPENDENT REVIEWER ADAPTER:
+       - In src/tether/models.py extend ReviewSpec with an optional field:
+             adapter: Optional[str] = None   # defaults to the mission adapter
+       - In src/tether/orchestrator.py: Orchestrator.__init__ accepts an
+         optional ``reviewer`` AgentAdapter argument (default None => use the
+         mission adapter). _run_review_gate opens the reviewer session on
+         self.reviewer (NOT necessarily self.adapter); report["review"]
+         ["adapter"] records the ACTUAL reviewer adapter name.
+       - In src/tether/cli.py: when the contract enables review AND sets
+         review.adapter, resolve it via the registry (same adapters config)
+         and check availability up front; unavailable reviewer aborts before
+         any agent runs. Do not change behavior when review is disabled or
+         review.adapter is unset.
+       - Structurally validate review.adapter in src/tether/mission.py (must
+         be a string when present). Registry resolution errors are runtime,
+         not validation-time.
+       - Tests: independent reviewer receives the review send (worker does
+         not); unavailable named reviewer aborts pre-run; report records the
+         reviewer's own name; unset reviewer keeps today's self-review path.
+
+    2. REVIEW-TRIGGERED RECOVERY ROUTING (optional, bounded):
+       - Extend ReviewSpec with:
+             retry_on_rejection: bool = False
+       - When a required review rejects AND retry_on_rejection is true:
+         route back into the EXISTING recovery machinery instead of failing
+         immediately — build a repair prompt containing the goal, the review
+         reason, and the captured change excerpt, execute one more attempt
+         through the normal loop, re-run verification, and re-run the review
+         gate. The total number of extra attempts stays bounded by the
+         remaining recovery.max_attempts budget; when exhausted, fail with
+         the last review reason in next_steps exactly as today.
+       - Default false: a rejection fails the mission immediately (current
+         behavior unchanged).
+       - Tests: rejection with retry routes one more execution then succeeds
+         on re-approval; retry never exceeds the attempts budget; default-off
+         rejection still fails immediately.
+
+    3. DOCUMENTATION TRUTH:
+       - README.md "Review gate" section: document both options; soften the
+         "self-review today" caveat now that an independent reviewer adapter
+         can be configured.
+       - docs/ARCHITECTURE.md core-loop step 12: mention the optional
+         independent reviewer and the bounded retry routing.
+       - docs/ADAPTERS.md: keep the "reviewer may be a different adapter"
+         note accurate (it now can be); do NOT change verified statuses or
+         promotion records.
+       - A test asserts README.md mentions "review.adapter" and
+         "retry_on_rejection".
+
+    Keep changes minimal, typed, scoped. subprocess stays shell=False; no new
+    third-party dependencies.
+
+context:
+  - >-
+    Read docs/ARCHITECTURE.md, docs/ADAPTERS.md, README.md (Review gate
+    section), src/tether/orchestrator.py (_run_review_gate and the recovery
+    loop), src/tether/models.py, src/tether/mission.py, src/tether/cli.py,
+    src/tether/adapters/__init__.py (resolve_adapter), and
+    tests/test_review_gate.py first.
+  - >-
+    dogfood-15 added the gate; dogfood-16 fixed verdict parsing (LAST marker
+    decides) and validated the gate live on opencode. Do not regress the
+    last-marker semantics or its regression tests.
+  - >-
+    The reviewer is just another start_session/send; never change AgentAdapter
+    method signatures. Recovery already bounds attempts via
+    recovery.max_attempts; reuse it rather than inventing a second budget.
+  - >-
+    opencode is verified (docs/ADAPTERS.md promotion record); do not regress.
+    subprocess stays shell=False; stdlib only.
+
+context_files:
+  - docs/ARCHITECTURE.md
+  - docs/ADAPTERS.md
+  - README.md
+  - src/tether/orchestrator.py
+  - src/tether/models.py
+  - src/tether/mission.py
+  - src/tether/cli.py
+  - src/tether/adapters/__init__.py
+  - tests/test_review_gate.py
+
+constraints:
+  - do not change AgentAdapter method signatures
+  - do not weaken existing tests; all current tests must keep passing
+  - review.adapter unset and retry_on_rejection false must preserve current
+    behavior exactly
+  - retry attempts draw from the existing recovery.max_attempts budget only
+  - subprocess usage stays shell=False
+  - no new third-party dependencies (stdlib only)
+
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+  artifacts:
+    - "tests/test_review_gate.py"
+    - "README.md"
+    - "docs/ARCHITECTURE.md"
+  timeout_seconds: 900
+
+recovery:
+  max_attempts: 4
+
+review:
+  enabled: true
+
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 1800
+
+allowed_paths:
+  - src/**
+  - tests/**
+  - docs/**
+  - README.md
+
+forbidden_paths:
+  - .git/**
+  - .tether/**
+  - missions/**
