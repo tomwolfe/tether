@@ -36,6 +36,7 @@ from tether.models import (
 from tether.verification import (
     REPAIR_OUTPUT_BUDGET,
     check_artifacts,
+    classify_failure,
     clip_output,
     run_verification,
     summarize,
@@ -47,6 +48,16 @@ log = logging.getLogger("tether")
 # Sub-budget for the change-artifact excerpt embedded in repair prompts; the
 # whole forensic context still goes through clip_output at the ~8KB budget.
 FORENSIC_EXCERPT_BUDGET = REPAIR_OUTPUT_BUDGET // 2
+
+# Tailored recovery guidance per verification failure class (dogfood-14);
+# emitted as the header of every repair prompt after a failed attempt.
+FAILURE_CLASS_GUIDANCE: Dict[str, str] = {
+    "compile_error": "Fix syntax/import/type errors first.",
+    "test_failure": "Fix the failing assertions or the code they test.",
+    "timeout": "The command timed out; simplify or optimize.",
+    "missing_binary": "A required binary is missing; check the command.",
+    "unknown": "Diagnose the failure from the output below.",
+}
 
 
 class _SandboxViolationError(RuntimeError):
@@ -253,6 +264,38 @@ def _release_writer_lock(project_dir: Path, session_id: str) -> None:
         lock_path.unlink(missing_ok=True)
     except OSError as e:
         log.warning("Failed to remove writer lock %s: %s", lock_path, e)
+
+
+def find_incomplete_sessions(project_dir: Path, audit_dir: str,
+                             exclude_session_id: str = "") -> list[str]:
+    """Names of prior session directories that never reached ``session_end``.
+
+    A session counts as incomplete when its events.jsonl is missing,
+    unreadable, empty, unparseable, or its last event kind is not
+    ``session_end`` — i.e. the run crashed or was interrupted mid-flight.
+    Purely read-only detection for crash recovery: callers must warn, never
+    auto-delete or auto-modify the flagged directories. The current session
+    (identified by its short id suffix in the directory name) is excluded.
+    """
+    root = project_dir / audit_dir
+    if not root.exists():
+        return []
+    suffix = f"-{exclude_session_id[:8]}" if exclude_session_id else ""
+    incomplete: list[str] = []
+    for d in sorted(root.iterdir()):
+        if not d.is_dir() or (suffix and d.name.endswith(suffix)):
+            continue
+        last_kind = ""
+        try:
+            lines = [ln for ln in (d / "events.jsonl")
+                     .read_text(encoding="utf-8").splitlines() if ln.strip()]
+            if lines:
+                last_kind = str(json.loads(lines[-1]).get("kind", ""))
+        except (OSError, json.JSONDecodeError):
+            pass  # missing/unreadable/unparseable log counts as incomplete
+        if last_kind != "session_end":
+            incomplete.append(d.name)
+    return incomplete
 
 
 class Orchestrator:
@@ -629,6 +672,27 @@ class Orchestrator:
         manifest_before: dict[str, tuple[int, str | int]] | None = None
         sandbox_violations: list[Dict[str, str]] = []
 
+        # Crash-recovery detection (advisory): prior session directories
+        # whose event log never reached session_end were interrupted
+        # mid-flight. Flag them for manual inspection or cleanup — never
+        # auto-delete or auto-modify them.
+        incomplete = find_incomplete_sessions(
+            self.project_dir, self.config.audit_dir,
+            exclude_session_id=self.session_id)
+        if incomplete:
+            log.warning(
+                "%d incomplete previous session(s) detected "
+                "(last event is not session_end): %s",
+                len(incomplete), ", ".join(incomplete))
+            audit.log_event("incomplete_sessions_detected",
+                            {"sessions": incomplete})
+            next_steps.append(
+                "Incomplete previous session(s) detected (no session_end "
+                "event): " + ", ".join(incomplete)
+                + "; inspect manually or prune old sessions with "
+                  "`tether sessions clean --older-than <duration> --confirm`."
+            )
+
         # Checkpoint / safety phase. Dry-run must not mutate the target project.
         checkpoint = create_checkpoint(
             self.project_dir, self.session_id,
@@ -890,21 +954,32 @@ class Orchestrator:
                         f"--project-dir {self.project_dir}"
                     )
                     break
-                # Recovery attempt
+                # Recovery attempt. classify_failure() is a pure helper over
+                # the verification results; the class drives the tailored
+                # guidance embedded in the repair prompt header below and is
+                # recorded in the recovery_attempts audit entry.
+                failure_class = classify_failure(verification_results)
+                guidance = FAILURE_CLASS_GUIDANCE.get(
+                    failure_class, FAILURE_CLASS_GUIDANCE["unknown"])
                 reason = failing_output or missing_output or (
                     state.error or "agent reported failure")
                 recovery_attempt: Dict[str, Any] = {
                     "attempt": attempt,
+                    "failure_class": failure_class,
                     "failing_output": reason[:4000],
                     "changed_files_at_attempt": list(changed),
                 }
                 recovery_attempts.append(recovery_attempt)
-                # Recovery intelligence: fold a bounded forensic context
-                # (current changed files, latest change-artifact excerpt,
-                # previous attempt's changed files) into the failing output
-                # passed to the existing repair-prompt builder.
-                reason = clip_output(reason + "\n\n" + self._forensic_context(
-                    audit, checkpoint, changed, prev_changed))
+                # Recovery intelligence: classification header + tailored
+                # guidance, then fold a bounded forensic context (current
+                # changed files, latest change-artifact excerpt, previous
+                # attempt's changed files) into the failing output passed to
+                # the existing repair-prompt builder (signature unchanged).
+                reason = clip_output(
+                    f"--- Failure class: {failure_class} ---\n"
+                    f"{guidance}\n\n"
+                    + reason + "\n\n" + self._forensic_context(
+                        audit, checkpoint, changed, prev_changed))
                 repair_prompt = self.adapter.repair_prompt(
                     self.mission_summary(mission), reason
                 )

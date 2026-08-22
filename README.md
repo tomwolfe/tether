@@ -31,6 +31,9 @@ tether run examples/hello-success.yaml --adapter mock --project-dir /some/projec
 tether report <session-id>                         # print report.json of a past session
 tether sessions list                               # list past sessions
 tether sessions show <session-id-or-prefix>        # human-readable session summary
+tether sessions stats                              # cross-session analytics (--json for machines)
+tether sessions clean --older-than 30d             # preview old-session cleanup (nothing deleted)
+tether sessions clean --older-than 30d --confirm   # delete session dirs older than 30 days
 tether diff <session-id>                           # files changed during a session
 tether diff <session-id> --patch                   # saved patch.diff / manifest_diff.json
 tether logs <session-id>                           # event log of a session
@@ -90,7 +93,7 @@ CLI flags > mission file > project config (`tether.yaml|yml|json|toml`) > defaul
 
 Mission values that are **unset** (absent) fall back to the project config; only explicit mission values override it. Adapter settings are deep-merged per adapter name: mission adapter settings override project adapter settings key-by-key.
 
-Config keys: `default_adapter`, `audit_dir`, `backup_dir`, `dry_run`, `log_level`, `command_timeout_seconds`, `verification_timeout_seconds`, `max_attempts`, `allow_dirty`, `auto_rollback`, `sandbox_mode`, `adapters` (per-adapter settings), `verification.commands`.
+Config keys: `default_adapter`, `audit_dir`, `backup_dir`, `dry_run`, `log_level`, `command_timeout_seconds`, `verification_timeout_seconds`, `max_attempts`, `allow_dirty`, `auto_rollback`, `sandbox_mode`, `retention_days` (used by `sessions clean` when `--older-than` is omitted), `adapters` (per-adapter settings), `verification.commands`.
 
 ## Context files (mission contracts)
 

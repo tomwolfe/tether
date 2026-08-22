@@ -3,8 +3,13 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import shutil
+import statistics
+import time
+from collections import Counter
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import typer
 
@@ -548,7 +553,7 @@ def report(
     typer.echo(path.read_text(encoding="utf-8"))
 
 
-sessions_app = typer.Typer(help="Inspect past sessions.")
+sessions_app = typer.Typer(help="Inspect and manage past sessions.")
 app.add_typer(sessions_app, name="sessions")
 
 
@@ -621,6 +626,186 @@ def sessions_show(
     for step in data.get("next_steps") or []:
         typer.echo(f"Next: {step}")
     typer.echo(f"Audit dir: {data.get('audit_dir')}")
+
+
+def _iter_session_reports(pd: Path, audit_dir: str) -> list[tuple[Path, dict]]:
+    """(session_dir, report_dict) for every session with a readable report."""
+    root = pd / audit_dir
+    entries: list[tuple[Path, dict]] = []
+    if not root.exists():
+        return entries
+    for d in sorted(root.iterdir()):
+        if not d.is_dir():
+            continue
+        path = d / "report.json"
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict):
+            entries.append((d, data))
+    return entries
+
+
+@sessions_app.command("stats")
+def sessions_stats(
+    project_dir: Optional[Path] = typer.Option(None, "--project-dir"),
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit a single JSON object to stdout."),
+) -> None:
+    """Cross-session analytics: statuses, attempts, recovery, failures."""
+    pd = _project_dir(project_dir)
+    config = resolve_config(pd)
+    entries = _iter_session_reports(pd, config.audit_dir)
+    total = len(entries)
+    canonical = ("success", "failed", "cancelled")
+
+    def pct(part: int) -> float:
+        return round(100.0 * part / total, 1) if total else 0.0
+
+    status_counts: Dict[str, int] = {s: 0 for s in canonical}
+    adapter_counts: Dict[str, int] = {}
+    adapter_successes: Dict[str, int] = {}
+    attempt_counts: list[int] = []
+    recovery_sessions = recovery_successes = 0
+    failing_commands: Counter[str] = Counter()
+    for d, data in entries:
+        status = str(data.get("status", "?"))
+        status_counts[status] = status_counts.get(status, 0) + 1
+        adapter = str(data.get("adapter", "?"))
+        adapter_counts[adapter] = adapter_counts.get(adapter, 0) + 1
+        if status == "success":
+            adapter_successes[adapter] = adapter_successes.get(adapter, 0) + 1
+        attempt_counts.append(
+            len(list((d / "verification").glob("attempt-*.json"))))
+        if len(data.get("recovery_attempts") or []) > 0:
+            recovery_sessions += 1
+            if status == "success":
+                recovery_successes += 1
+        for r in data.get("verification_results") or []:
+            if (isinstance(r, dict) and r.get("passed") is False
+                    and r.get("command")):
+                failing_commands[str(r["command"])] += 1
+
+    top_failing = [{"command": cmd, "count": n} for cmd, n in
+                   sorted(failing_commands.items(),
+                          key=lambda kv: (-kv[1], kv[0]))[:5]]
+
+    def pct_round(part: int, whole: int) -> float:
+        return round(100.0 * part / whole, 1) if whole else 0.0
+
+    adapters_stats = {
+        name: {
+            "count": adapter_counts[name],
+            "success_rate_pct": pct_round(adapter_successes.get(name, 0),
+                                          adapter_counts[name]),
+        }
+        for name in sorted(adapter_counts)
+    }
+
+    stats: Dict[str, Any] = {
+        "total_sessions": total,
+        "statuses": {s: {"count": c, "pct": pct(c)}
+                     for s, c in sorted(status_counts.items())},
+        "attempts": {
+            "median": round(float(statistics.median(attempt_counts)), 2)
+            if attempt_counts else 0.0,
+            "max": max(attempt_counts) if attempt_counts else 0,
+        },
+        "recovery": {
+            "sessions_with_recovery_attempts": recovery_sessions,
+            "recoveries_ending_in_success": recovery_successes,
+            "success_rate_pct": pct_round(recovery_successes, recovery_sessions),
+        },
+        "top_failing_commands": top_failing,
+        "adapters": adapters_stats,
+    }
+
+    if json_output:
+        typer.echo(json.dumps(stats, indent=2))
+        return
+    if total == 0:
+        typer.echo("No sessions found.")
+        return
+    typer.echo(f"Sessions: {total} total under {pd / config.audit_dir}")
+    for s in canonical:
+        c = status_counts[s]
+        typer.echo(f"  {s}: {c} ({pct(c)}%)")
+    other = total - sum(status_counts[s] for s in canonical)
+    if other:
+        typer.echo(f"  other: {other} ({pct(other)}%)")
+    typer.echo(f"Verification attempts: median "
+               f"{stats['attempts']['median']}, max {stats['attempts']['max']}")
+    typer.echo(f"Recovery success rate: {stats['recovery']['success_rate_pct']}% "
+               f"({recovery_successes}/{recovery_sessions} with recovery attempts)")
+    if top_failing:
+        typer.echo("Most common failing verification commands:")
+        for item in top_failing:
+            typer.echo(f"  {item['count']}x {item['command']}")
+    typer.echo("Per-adapter:")
+    for name, info in adapters_stats.items():
+        typer.echo(f"  {name}: {info['count']} session(s), "
+                   f"success rate {info['success_rate_pct']}%")
+
+
+_DURATION_RE = re.compile(r"^(\d+)([mhd])$")
+_DURATION_UNIT_SECONDS = {"m": 60, "h": 3600, "d": 86400}
+
+
+def _parse_older_than(value: str) -> float:
+    """Parse '<N>m'/'<N>h'/'<N>d' into seconds; reject anything else."""
+    m = _DURATION_RE.match(value.strip())
+    if not m:
+        raise ValueError(
+            f"invalid duration {value!r}; use e.g. '30m', '24h', '30d'")
+    return int(m.group(1)) * _DURATION_UNIT_SECONDS[m.group(2)]
+
+
+@sessions_app.command("clean")
+def sessions_clean(
+    older_than: Optional[str] = typer.Option(
+        None, "--older-than",
+        help="Delete session directories older than this (e.g. 30m, 24h, 30d). "
+             "Falls back to the configured retention_days when omitted."),
+    confirm: bool = typer.Option(
+        False, "--confirm",
+        help="Actually delete. Without this flag nothing is removed."),
+    project_dir: Optional[Path] = typer.Option(None, "--project-dir"),
+) -> None:
+    """Delete old session directories (dry-run unless --confirm)."""
+    pd = _project_dir(project_dir)
+    config = resolve_config(pd)
+    try:
+        if older_than is not None:
+            threshold_seconds = _parse_older_than(older_than)
+        elif config.retention_days is not None:
+            threshold_seconds = config.retention_days * 86400
+        else:
+            raise ValueError(
+                "no --older-than given and retention_days is not configured")
+    except ValueError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(code=1)
+    root = pd / config.audit_dir
+    cutoff = time.time() - threshold_seconds
+    candidates = [d for d in sorted(root.iterdir())
+                  if d.is_dir() and d.stat().st_mtime < cutoff] \
+        if root.exists() else []
+    if not candidates:
+        typer.echo("No session directories older than the threshold.")
+        return
+    verb = "Deleting" if confirm else "Would delete"
+    for d in candidates:
+        typer.echo(f"{verb}: {d}")
+    if not confirm:
+        typer.echo("Dry run: nothing deleted (pass --confirm to delete).")
+        return
+    for d in candidates:
+        shutil.rmtree(d, ignore_errors=True)
+    typer.echo(f"Deleted {len(candidates)} session "
+               f"{'directory' if len(candidates) == 1 else 'directories'}")
 
 
 @app.command()

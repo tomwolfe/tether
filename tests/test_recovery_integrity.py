@@ -196,3 +196,102 @@ def test_non_git_repair_prompt_includes_manifest_excerpt(tmp_path):
     assert "seed.txt" in prompt
     entry = report["recovery_attempts"][0]
     assert "created-by-repair.txt" in entry["changed_files_at_attempt"]
+
+
+# --------------------- failure classification in recovery (dogfood-14 task 1)
+
+
+def test_repair_prompt_opens_with_failure_class_and_guidance(tmp_path):
+    fail_cmd = (f"{sys.executable} -c "
+                "'import sys; print(\"FAILED tests/test_m.py\"); sys.exit(1)'")
+    mp = _mission(tmp_path, body=(
+        "mission:\n  name: rec-class\n  goal: g\n"
+        f"verification:\n  commands:\n    - {fail_cmd}\nadapter: mock\n"
+    ))
+    adapter = _RepairingAdapter(execute_files={}, repair_files={})
+    cfg = TetherConfig(audit_dir=".tether/sessions", max_attempts=3)
+    report = Orchestrator(adapter, cfg, tmp_path).run(load_mission(mp))
+    assert report["status"] == "failed"
+    assert len(adapter.repair_prompts) >= 1
+    prompt = adapter.repair_prompts[0]
+    assert "--- Failure class: test_failure ---" in prompt
+    assert "Fix the failing assertions or the code they test." in prompt
+    # the original failing output still follows the classification header
+    assert "FAILED tests/test_m.py" in prompt
+    entry = report["recovery_attempts"][0]
+    assert entry["failure_class"] == "test_failure"
+    saved = json.loads((_session_dir(tmp_path, report) /
+                        "report.json").read_text(encoding="utf-8"))
+    assert saved["recovery_attempts"][0]["failure_class"] == "test_failure"
+
+
+def test_guidance_map_covers_every_failure_class():
+    from tether.orchestrator import FAILURE_CLASS_GUIDANCE
+    assert FAILURE_CLASS_GUIDANCE == {
+        "compile_error": "Fix syntax/import/type errors first.",
+        "test_failure": "Fix the failing assertions or the code they test.",
+        "timeout": "The command timed out; simplify or optimize.",
+        "missing_binary": "A required binary is missing; check the command.",
+        "unknown": "Diagnose the failure from the output below.",
+    }
+
+
+# --------------------- crash-recovery detection (dogfood-14 task 4)
+
+
+def test_find_incomplete_sessions_flags_crashed_and_logless_dirs(tmp_path):
+    from tether.orchestrator import find_incomplete_sessions
+    root = tmp_path / ".tether" / "sessions"
+    done = root / "20260101-000000-done-aaaa1111"
+    crashed = root / "20260101-000002-crashed-bbbb2222"
+    logless = root / "20260101-000003-logless-cccc3333"
+    for d in (done, crashed, logless):
+        d.mkdir(parents=True)
+    (done / "events.jsonl").write_text(
+        '{"kind": "session_start", "prev": ""}\n'
+        '{"kind": "session_end", "prev": "x"}\n', encoding="utf-8")
+    (crashed / "events.jsonl").write_text(
+        '{"kind": "session_start", "prev": ""}\n', encoding="utf-8")
+    assert find_incomplete_sessions(tmp_path, ".tether/sessions") == [
+        "20260101-000002-crashed-bbbb2222",
+        "20260101-000003-logless-cccc3333",
+    ]
+    # the current session is excluded via its short-id directory suffix
+    assert find_incomplete_sessions(
+        tmp_path, ".tether/sessions",
+        exclude_session_id="bbbb2222ffff") == [
+            "20260101-000003-logless-cccc3333"]
+
+
+def test_crashed_prior_session_flagged_in_next_steps_but_never_touched(tmp_path):
+    crashed = tmp_path / ".tether" / "sessions" / \
+        "20260101-000000-old-mission-deadbeef"
+    crashed.mkdir(parents=True)
+    original_events = (json.dumps({
+        "ts": "2026-01-01T00:00:00+00:00", "kind": "session_start",
+        "session_id": "deadbeefcafe01", "prev": "",
+    }) + "\n")
+    (crashed / "events.jsonl").write_text(original_events, encoding="utf-8")
+
+    adapter = _RepairingAdapter(execute_files={}, repair_files={})
+    cfg = TetherConfig(audit_dir=".tether/sessions")
+    report = Orchestrator(adapter, cfg, tmp_path).run(
+        load_mission(_mission(tmp_path)))
+    assert report["status"] == "success"
+    hits = [s for s in report["next_steps"] if "deadbeef" in s]
+    assert len(hits) == 1
+    assert "sessions clean" in hits[0]
+    assert "session_end" in hits[0]
+    # advisory only: the incomplete session was neither deleted nor modified
+    assert (crashed / "events.jsonl").read_text(encoding="utf-8") == \
+        original_events
+
+
+def test_clean_prior_sessions_do_not_trigger_the_warning(tmp_path):
+    adapter = _RepairingAdapter(execute_files={}, repair_files={})
+    cfg = TetherConfig(audit_dir=".tether/sessions")
+    report = Orchestrator(adapter, cfg, tmp_path).run(
+        load_mission(_mission(tmp_path)))
+    assert report["status"] == "success"
+    assert not any("Incomplete previous session(s)" in s
+                   for s in report["next_steps"])

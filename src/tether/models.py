@@ -76,6 +76,10 @@ class TetherConfig(BaseModel):
     # check. Best-effort either way — not OS-level containment.
     sandbox_mode: Literal["warn", "enforce"] = "warn"
     writer_lock_stale_seconds: int = 43200  # 12 hours
+    # Optional retention policy for audit sessions (days). Null disables
+    # automatic pruning; `tether sessions clean` uses it when --older-than is
+    # not given.
+    retention_days: Optional[int] = Field(default=None, ge=0)
     adapters: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     verification: VerificationSpec = Field(default_factory=VerificationSpec)
 

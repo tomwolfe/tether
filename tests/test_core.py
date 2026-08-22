@@ -15,10 +15,10 @@ from tether.git_safety import (
     rollback,
 )
 from tether.mission import MissionError, load_mission
-from tether.models import TetherConfig
+from tether.models import TetherConfig, VerificationResult
 from tether.orchestrator import Orchestrator
 from tether.adapters import resolve_adapter
-from tether.verification import run_verification, summarize
+from tether.verification import classify_failure, run_verification, summarize
 
 
 def py_cmd(code: str) -> str:
@@ -1033,3 +1033,229 @@ def test_check_artifacts_matches_files_and_skips_tether_dir(tmp_path):
     ok, message = summarize_artifacts(results)
     assert not ok
     assert "*.json" in message and "nope.bin" in message
+
+
+# -------------------------------- failure classification (dogfood-14 task 1)
+
+
+def _res(**kwargs):
+    defaults = dict(command="cmd", exit_code=1, stdout="", stderr="",
+                    timed_out=False)
+    defaults.update(kwargs)
+    return VerificationResult(**defaults)
+
+
+@pytest.mark.parametrize("results,expected", [
+    # timeout wins over every other signal
+    ([_res(timed_out=True)], "timeout"),
+    ([_res(stderr="error: bad"), _res(timed_out=True)], "timeout"),
+    # missing binary: "not found" in stderr (exit code may be None)
+    ([_res(exit_code=None, stderr="ruff: command not found")],
+     "missing_binary"),
+    ([_res(stderr="binary not found: nope")], "missing_binary"),
+    # compile errors on stderr
+    ([_res(stderr="src/x.py:1: error: bad indent")], "compile_error"),
+    ([_res(stderr="SyntaxError: invalid syntax")], "compile_error"),
+    ([_res(stderr="TypeError: 'int' object is not callable")],
+     "compile_error"),
+    ([_res(stderr="ImportError: cannot import name x")], "compile_error"),
+    ([_res(stderr="fatal error: cannot find module 'x'")], "compile_error"),
+    ([_res(stderr="No such file or directory: f.py")], "compile_error"),
+    # test failures via stdout/stderr markers
+    ([_res(stdout="FAILED tests/test_a.py::test_b")], "test_failure"),
+    ([_res(stderr="E       assert 1 == 2")], "test_failure"),
+    ([_res(stdout="AssertionError: boom")], "test_failure"),
+    ([_res(stdout="test_x.py .")], "test_failure"),
+    # nothing matches -> unknown
+    ([_res(stdout="boom", stderr="")], "unknown"),
+])
+def test_classify_failure_classes(results, expected):
+    assert classify_failure(results) == expected
+
+
+def test_classify_failure_all_passing_is_unknown():
+    ok = VerificationResult(command="ok", exit_code=0, stdout="", passed=True)
+    assert classify_failure([ok]) == "unknown"
+    assert classify_failure([]) == "unknown"
+
+
+def test_classify_failure_priority_order():
+    # compile-style output plus a timeout -> timeout wins
+    assert classify_failure(
+        [_res(stderr="error: syntax"), _res(timed_out=True)]) == "timeout"
+    # missing binary beats compile-style stderr seen elsewhere
+    assert classify_failure([
+        _res(stderr="error: x"),
+        _res(exit_code=None, stderr="pytest: command not found"),
+    ]) == "missing_binary"
+    # compile beats test markers when both appear for the same result
+    assert classify_failure(
+        [_res(stderr="error: line 3", stdout="FAILED test_z")]
+    ) == "compile_error"
+
+
+# --------------------- cross-session analytics and retention (task 2/3)
+
+
+def _fabricate_session(root, stamp, sid, status, adapter="mock",
+                       mission_name="m", attempts=1, recovery=0,
+                       failing_cmds=()):
+    d = root / f"{stamp}-{mission_name}-{sid[:8]}"
+    (d / "verification").mkdir(parents=True)
+    for i in range(attempts):
+        (d / "verification" / f"attempt-{i + 1:02d}.json").write_text("[]")
+    report = {
+        "session_id": sid,
+        "mission_name": mission_name,
+        "adapter": adapter,
+        "status": status,
+        "verification_results": [
+            {"command": c, "passed": False} for c in failing_cmds
+        ],
+        "recovery_attempts": [{"attempt": i} for i in range(recovery)],
+        "next_steps": [],
+    }
+    (d / "report.json").write_text(json.dumps(report), encoding="utf-8")
+    return d
+
+
+def _stats_runner(tmp_path):
+    from typer.testing import CliRunner
+    from tether.cli import app
+    return CliRunner(), app
+
+
+def test_sessions_stats_counts_percentages_and_rates(tmp_path):
+    root = tmp_path / ".tether" / "sessions"
+    root.mkdir(parents=True)
+    _fabricate_session(root, "20260801-000000", "aaaa11111111", "success",
+                       attempts=1)
+    _fabricate_session(root, "20260802-000000", "bbbb22222222", "failed",
+                       attempts=3, recovery=1, failing_cmds=["pytest -q"])
+    _fabricate_session(root, "20260803-000000", "cccc33333333", "success",
+                       adapter="opencode", attempts=2, recovery=1)
+    _fabricate_session(root, "20260804-000000", "dddd44444444", "cancelled",
+                       adapter="opencode", attempts=1, recovery=1,
+                       failing_cmds=["pytest -q"])
+    runner, app = _stats_runner(tmp_path)
+    r = runner.invoke(app, ["sessions", "stats",
+                            "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    out = r.output
+    assert "4 total" in out
+    assert "success: 2 (50.0%)" in out
+    assert "failed: 1 (25.0%)" in out
+    assert "cancelled: 1 (25.0%)" in out
+    assert "median 1.5, max 3" in out  # attempts: 1,3,2,1
+    assert "33.3%" in out  # recovery successes (1) / recovery sessions (3)
+    assert out.count("pytest -q") >= 1  # most common failing command listed
+    assert "mock: 2 session(s), success rate 50.0%" in out
+    assert "opencode: 2 session(s), success rate 50.0%" in out
+
+
+def test_sessions_stats_json_flag_emits_single_object(tmp_path):
+    root = tmp_path / ".tether" / "sessions"
+    root.mkdir(parents=True)
+    _fabricate_session(root, "20260801-000000", "aaaa11111111", "success")
+    _fabricate_session(root, "20260802-000000", "bbbb22222222", "failed",
+                       attempts=3, recovery=1, failing_cmds=["mypy src"])
+    runner, app = _stats_runner(tmp_path)
+    r = runner.invoke(app, ["sessions", "stats", "--json",
+                            "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    data = json.loads(r.output)  # single parseable JSON object
+    assert data["total_sessions"] == 2
+    assert data["statuses"]["success"] == {"count": 1, "pct": 50.0}
+    assert data["statuses"]["failed"]["count"] == 1
+    assert data["statuses"]["cancelled"] == {"count": 0, "pct": 0.0}
+    assert data["attempts"] == {"median": 2.0, "max": 3}
+    assert data["recovery"] == {"sessions_with_recovery_attempts": 1,
+                                "recoveries_ending_in_success": 0,
+                                "success_rate_pct": 0.0}
+    assert data["top_failing_commands"] == [{"command": "mypy src",
+                                             "count": 1}]
+    assert data["adapters"]["mock"] == {"count": 2, "success_rate_pct": 50.0}
+
+
+def test_sessions_stats_empty_audit_dir(tmp_path):
+    runner, app = _stats_runner(tmp_path)
+    r = runner.invoke(app, ["sessions", "stats",
+                            "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    assert "No sessions found." in r.output
+
+
+def test_parse_older_than_accepts_minutes_hours_days():
+    from tether.cli import _parse_older_than
+    assert _parse_older_than("15m") == 15 * 60
+    assert _parse_older_than("24h") == 24 * 3600
+    assert _parse_older_than("30d") == 30 * 86400
+    with pytest.raises(ValueError):
+        _parse_older_than("1w")
+    with pytest.raises(ValueError):
+        _parse_older_than("abc")
+
+
+def test_sessions_clean_requires_confirm_and_deletes_old_only(tmp_path):
+    import os
+    import time as _time
+    root = tmp_path / ".tether" / "sessions"
+    old = _fabricate_session(root, "20260101-000000", "aaaa11111111",
+                             "failed")
+    fresh = _fabricate_session(root, "20260602-000000", "bbbb22222222",
+                               "success")
+    now = _time.time()
+    os.utime(old, (now - 3 * 3600, now - 3 * 3600))  # 3h old
+    os.utime(fresh, (now - 60, now - 60))            # 1min old
+    runner, app = _stats_runner(tmp_path)
+
+    # Without --confirm nothing is deleted.
+    r = runner.invoke(app, ["sessions", "clean", "--older-than", "1h",
+                            "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    assert f"Would delete: {old}" in r.output
+    assert fresh.name not in r.output.split("Would delete")[1]
+    assert "Dry run" in r.output
+    assert old.exists() and fresh.exists()
+
+    # With --confirm the old directory is gone; the recent one remains.
+    r = runner.invoke(app, ["sessions", "clean", "--older-than", "1h",
+                            "--confirm", "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    assert not old.exists()
+    assert fresh.exists()
+
+
+def test_sessions_clean_falls_back_to_retention_days_config(tmp_path):
+    import os
+    import time as _time
+    (tmp_path / "tether.yaml").write_text("retention_days: 1\n",
+                                          encoding="utf-8")
+    root = tmp_path / ".tether" / "sessions"
+    old = _fabricate_session(root, "20260101-000000", "aaaa11111111",
+                             "success")
+    fresh = _fabricate_session(root, "20260602-000000", "bbbb22222222",
+                               "success")
+    now = _time.time()
+    os.utime(old, (now - 25 * 3600, now - 25 * 3600))  # beyond 1 day
+    os.utime(fresh, (now - 3600, now - 3600))
+    runner, app = _stats_runner(tmp_path)
+    r = runner.invoke(app, ["sessions", "clean", "--confirm",
+                            "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    assert not old.exists() and fresh.exists()
+
+
+def test_retention_days_config_default_is_none(tmp_path):
+    cfg = resolve_config(tmp_path)
+    assert cfg.retention_days is None
+    cfg = resolve_config(tmp_path, cli_overrides={"retention_days": 7})
+    assert cfg.retention_days == 7
+
+
+def test_sessions_clean_without_any_threshold_errors(tmp_path):
+    runner, app = _stats_runner(tmp_path)
+    r = runner.invoke(app, ["sessions", "clean",
+                            "--project-dir", str(tmp_path)])
+    assert r.exit_code == 1
+    assert "retention_days" in r.output

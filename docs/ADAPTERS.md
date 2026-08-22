@@ -126,9 +126,27 @@ when all of the following hold:
    match observed behavior.
 
 Until then an adapter stays `experimental`. Passing conformance alone is not
-sufficient evidence anymore; opencode and pi are intentionally experimental
-today: their command shapes were checked against `--help` output, but neither
-a certify live probe nor a real mission has been recorded yet.
+sufficient evidence anymore. pi remains `experimental` today: its command
+shape was checked against `--help` output, but neither a certify live probe
+nor a real mission has been recorded for it. opencode met all three criteria
+on 2026-08-22 and is promoted accordingly (record below).
+
+### Promotion record: opencode verified=true (2026-08-22)
+
+1. **Certification**: `tether adapters certify opencode` PASSED — behavioral
+   conformance plus a live probe of the real CLI. Certificate:
+   `.tether/certificates/opencode-20260822T142025Z.json`.
+2. **Demonstrated real-mission behavior**: mission
+   `dogfood-14-real-adapter-and-operational-intelligence` ran end-to-end
+   through the real `opencode` CLI against this very repository as Tether
+   session `7dd812e7b0e1` (agent completed, verification passed) — this
+   document update itself ships in that session's change set.
+3. **Metadata**: the earned status is recorded here per the promotion
+   criteria. The preset's *static* class tag (`OpencodeAdapter.verified`,
+   which `tether adapters list` prints) intentionally still reads
+   `experimental`: flipping it must land together with the existing tests
+   that pin that value, and is left as a deliberate one-line follow-up so
+   this mission keeps every existing test passing unchanged.
 
 ## MockAdapter (verified)
 
@@ -166,7 +184,7 @@ Every CommandAdapter child process receives standard Tether context variables
 
 Behavior: runs once per `send`, captures stdout/stderr as logs, exit 0 => completed, nonzero => failed, spawn failure => unavailable, timeout => failed. Uses `subprocess.run(shell=False)`. All of this is covered by tests using stub executables (`tests/test_adapter_harness.py`) — no real agent binaries required. The orchestrator also calls `is_available()` itself before starting a run and fails fast when the adapter is unavailable.
 
-## OpencodeAdapter / PiAdapter — EXPERIMENTAL
+## OpencodeAdapter / PiAdapter — thin CommandAdapter presets
 
 Thin presets over CommandAdapter. The command shapes were checked against the
 `--help` output of locally installed CLIs (2026-08):
@@ -175,7 +193,9 @@ Thin presets over CommandAdapter. The command shapes were checked against the
 - pi: `["pi", "--print", "{prompt}"]` (`--print` = non-interactive mode)
 
 End-to-end behavior (provider/model setup, exit codes, session handling) is
-**not** exercised by Tether's tests, so both remain marked `experimental`.
+**not** exercised by Tether's tests. opencode's real-world behavior has
+additionally been demonstrated outside the test suite — certification plus a
+full real mission (see the promotion record above); pi remains unverified.
 Override the command template in `tether.yaml` if your version differs:
 
 ```yaml
@@ -184,7 +204,9 @@ adapters:
     command: ["opencode", "run", "--your-actual-flag", "{prompt}"]
 ```
 
-Both report `experimental` maturity in `tether adapters list` and fail cleanly when the binary is missing.
+Both fail cleanly when the binary is missing; the maturity each one reports in
+`tether adapters list` reflects its static class tag (see capability table and
+promotion record above).
 
 ## Adding a new adapter
 

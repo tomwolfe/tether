@@ -133,3 +133,36 @@ def summarize(results: list[VerificationResult]) -> tuple[bool, str]:
         body = clip_output(f"{r.stdout}\n{r.stderr}".strip(), per_command)
         parts.append(f"--- COMMAND: {r.command} ({reason}) ---\n{body}")
     return False, "\n\n".join(parts)
+
+
+# Coarse failure classes used to tailor recovery prompts (dogfood-14).
+COMPILE_ERROR_PATTERNS: tuple[str, ...] = (
+    "error:", "SyntaxError", "TypeError", "ImportError",
+    "cannot find", "No such file",
+)
+TEST_FAILURE_PATTERNS: tuple[str, ...] = (
+    "FAILED", "assert", "AssertionError", "test_",
+)
+
+
+def classify_failure(results: list[VerificationResult]) -> str:
+    """Classify a failed verification attempt into one coarse class.
+
+    Pure helper over the results (no I/O). Precedence per spec:
+    timeout > missing_binary > compile_error > test_failure > unknown.
+    Returns "compile_error", "test_failure", "timeout", "missing_binary",
+    or "unknown".
+    """
+    if any(r.timed_out for r in results):
+        return "timeout"
+    if any("not found" in r.stderr for r in results):
+        return "missing_binary"
+    failing = [r for r in results
+               if r.exit_code is not None and r.exit_code != 0]
+    if any(any(p in r.stderr for p in COMPILE_ERROR_PATTERNS)
+           for r in failing):
+        return "compile_error"
+    if any(any(p in r.stdout or p in r.stderr for p in TEST_FAILURE_PATTERNS)
+           for r in failing):
+        return "test_failure"
+    return "unknown"

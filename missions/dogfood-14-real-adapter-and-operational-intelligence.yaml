@@ -1,0 +1,170 @@
+mission:
+  name: dogfood-14-real-adapter-and-operational-intelligence
+  goal: "Close Tether's highest-impact gaps by dogfooding the tool on its own\ncodebase with a REAL adapter\
+    \ (opencode). This mission has two phases:\n\nPHASE 1 \u2014 REAL ADAPTER CERTIFICATION (must succeed\
+    \ before Phase 2):\n  Run `tether adapters certify opencode` against this repository.\n  If it passes,\
+    \ update docs/ADAPTERS.md to mark opencode as verified\n  with the certificate path and this mission's\
+    \ session id as the\n  demonstrated real-mission reference. If it fails, diagnose and fix\n  the Tether-side\
+    \ issue (not opencode itself) and re-run until it\n  passes. Do NOT mark opencode verified unless\
+    \ certify passes AND\n  this mission itself completes successfully with opencode as the\n  adapter.\n\
+    \nPHASE 2 \u2014 OPERATIONAL INTELLIGENCE (implement after Phase 1):\n  Each task is proven by tests\
+    \ that fail before and pass after.\n  All existing tests must keep passing. Change NOTHING outside\
+    \ scope.\n\n  Tasks (implement in order; keep every change minimal, typed, scoped):\n\n  1. RECOVERY\
+    \ FAILURE CLASSIFICATION:\n     - In src/tether/verification.py, add a pure helper:\n         def\
+    \ classify_failure(results: list[VerificationResult]) -> str\n       returning one of: \"compile_error\"\
+    , \"test_failure\", \"timeout\",\n       \"missing_binary\", \"unknown\". Rules:\n       * timed_out\
+    \ on any result -> \"timeout\"\n       * \"not found\" in stderr -> \"missing_binary\"\n       * exit_code\
+    \ != 0 and stderr matches patterns like \"error:\",\n         \"SyntaxError\", \"TypeError\", \"ImportError\"\
+    , \"cannot find\",\n         \"No such file\" -> \"compile_error\"\n       * exit_code != 0 and stdout/stderr\
+    \ contains \"FAILED\", \"assert\",\n         \"AssertionError\", \"test_\" -> \"test_failure\"\n \
+    \      * otherwise -> \"unknown\"\n     - In src/tether/orchestrator.py, call classify_failure() after\n\
+    \       verification fails and include the classification in the repair\n       prompt header with\
+    \ tailored guidance:\n       * compile_error: \"Fix syntax/import/type errors first.\"\n       * test_failure:\
+    \ \"Fix the failing assertions or the code they test.\"\n       * timeout: \"The command timed out;\
+    \ simplify or optimize.\"\n       * missing_binary: \"A required binary is missing; check the command.\"\
+    \n       * unknown: \"Diagnose the failure from the output below.\"\n     - Record failure_class in\
+    \ each recovery_attempts entry in report.json.\n     - Do NOT change any AgentAdapter signature.\n\
+    \     - Tests: unit tests for classify_failure covering each class;\n       integration test proving\
+    \ repair prompt contains classification;\n       test proving report.json recovery_attempts carry\
+    \ failure_class.\n\n  2. CROSS-SESSION ANALYTICS:\n     - Add `tether sessions stats` in src/tether/cli.py\
+    \ that scans all\n       session directories under the configured audit_dir and prints:\n       *\
+    \ total sessions, success/failed/cancelled counts and percentages\n       * median and max verification\
+    \ attempts across all sessions\n       * recovery success rate (sessions with recovery_attempts >\
+    \ 0 AND\n         status \"success\" / sessions with recovery_attempts > 0)\n       * the 5 most common\
+    \ failing verification commands\n       * per-adapter breakdown (count, success rate)\n     - Support\
+    \ --json flag emitting a single JSON object to stdout.\n     - Tests: create 3+ mock sessions via\
+    \ CliRunner, assert stats output\n       contains correct counts, percentages, and --json is parseable.\n\
+    \n  3. SESSION LIFECYCLE MANAGEMENT:\n     - Add `tether sessions clean` with --older-than (e.g. \"\
+    30d\", \"24h\")\n       that deletes session directories older than the threshold.\n     - Print what\
+    \ would be deleted; require --confirm to actually delete.\n     - Add retention_days config key to\
+    \ TetherConfig (default: null).\n     - Tests: create session dirs with known timestamps, run clean\
+    \ with\n       --older-than 1h --confirm, assert old gone and recent remain;\n       assert without\
+    \ --confirm nothing is deleted.\n\n  4. CRASH-RECOVERY DETECTION:\n     - In src/tether/orchestrator.py,\
+    \ at the start of run(), after\n       acquiring the writer lock, scan audit_dir for session directories\n\
+    \       whose events.jsonl last event is NOT \"session_end\".\n     - If found, log a warning and\
+    \ add a next_steps entry suggesting\n       `tether sessions clean` or manual inspection.\n     -\
+    \ Do NOT auto-delete or auto-modify incomplete sessions.\n     - Test: create a session dir with events.jsonl\
+    \ lacking session_end,\n       run a new mission, assert warning appears in report next_steps.\n\n\
+    \  5. TESTS AND DOCS:\n     - All new behavior covered by tests in existing test files.\n     - Update\
+    \ README.md \"Quick tour\" with sessions stats and clean.\n     - Update docs/ARCHITECTURE.md if new\
+    \ files are added.\n     - Update docs/ADAPTERS.md: if Phase 1 succeeded, mark opencode as\n     \
+    \  verified=true with the certificate path and this mission's\n       session id as the real-mission\
+    \ demonstration reference.\n     - All existing tests keep passing; do not weaken any test.\n"
+  context:
+  - Read docs/ARCHITECTURE.md, docs/SECURITY.md, docs/ADAPTERS.md, README.md, src/tether/orchestrator.py,
+    src/tether/verification.py, src/tether/cli.py, src/tether/audit.py, src/tether/certify.py, and tests/test_adapters_cli.py
+    before changing anything.
+  - dogfood-13 added usage telemetry and certification artifacts. Build on them; do not regress.
+  - The core loop must stay adapter-agnostic (AgentAdapter interface only).
+  - subprocess stays shell=False everywhere.
+  - classify_failure must be a pure function with no side effects.
+  - PHASE 1 MUST SUCCEED BEFORE PHASE 2 BEGINS. If `tether adapters certify opencode` fails, the agent
+    must diagnose whether the failure is a Tether bug (fix it) or an opencode configuration issue (adjust
+    the adapter command template in this mission's adapters block). Do not proceed to Phase 2 until certify
+    passes.
+  - This mission itself IS the real-mission demonstration required by the promotion criteria in docs/ADAPTERS.md.
+    Its successful completion with opencode as the adapter satisfies criterion
+  context_files:
+  - docs/ARCHITECTURE.md
+  - docs/ADAPTERS.md
+  - README.md
+  - src/tether/orchestrator.py
+  - src/tether/verification.py
+  - src/tether/cli.py
+  - src/tether/audit.py
+  - src/tether/certify.py
+  constraints:
+  - do not change AgentAdapter method signatures
+  - do not weaken existing tests; all current tests must keep passing
+  - subprocess usage stays shell=False
+  - no new third-party dependencies (stdlib only)
+  - keep changes minimal, typed, and scoped to the five tasks + Phase 1
+  - sessions clean must NEVER delete without --confirm
+  - crash detection must be advisory only, never auto-modify
+  - do NOT mark opencode as verified unless BOTH certify passes AND this mission completes successfully
+    with opencode as the adapter
+name: dogfood-14-real-adapter-and-operational-intelligence
+goal: "Close Tether's highest-impact gaps by dogfooding the tool on its own\ncodebase with a REAL adapter\
+  \ (opencode). This mission has two phases:\n\nPHASE 1 \u2014 REAL ADAPTER CERTIFICATION (must succeed\
+  \ before Phase 2):\n  Run `tether adapters certify opencode` against this repository.\n  If it passes,\
+  \ update docs/ADAPTERS.md to mark opencode as verified\n  with the certificate path and this mission's\
+  \ session id as the\n  demonstrated real-mission reference. If it fails, diagnose and fix\n  the Tether-side\
+  \ issue (not opencode itself) and re-run until it\n  passes. Do NOT mark opencode verified unless certify\
+  \ passes AND\n  this mission itself completes successfully with opencode as the\n  adapter.\n\nPHASE\
+  \ 2 \u2014 OPERATIONAL INTELLIGENCE (implement after Phase 1):\n  Each task is proven by tests that\
+  \ fail before and pass after.\n  All existing tests must keep passing. Change NOTHING outside scope.\n\
+  \n  Tasks (implement in order; keep every change minimal, typed, scoped):\n\n  1. RECOVERY FAILURE CLASSIFICATION:\n\
+  \     - In src/tether/verification.py, add a pure helper:\n         def classify_failure(results: list[VerificationResult])\
+  \ -> str\n       returning one of: \"compile_error\", \"test_failure\", \"timeout\",\n       \"missing_binary\"\
+  , \"unknown\". Rules:\n       * timed_out on any result -> \"timeout\"\n       * \"not found\" in stderr\
+  \ -> \"missing_binary\"\n       * exit_code != 0 and stderr matches patterns like \"error:\",\n    \
+  \     \"SyntaxError\", \"TypeError\", \"ImportError\", \"cannot find\",\n         \"No such file\" ->\
+  \ \"compile_error\"\n       * exit_code != 0 and stdout/stderr contains \"FAILED\", \"assert\",\n  \
+  \       \"AssertionError\", \"test_\" -> \"test_failure\"\n       * otherwise -> \"unknown\"\n     -\
+  \ In src/tether/orchestrator.py, call classify_failure() after\n       verification fails and include\
+  \ the classification in the repair\n       prompt header with tailored guidance:\n       * compile_error:\
+  \ \"Fix syntax/import/type errors first.\"\n       * test_failure: \"Fix the failing assertions or the\
+  \ code they test.\"\n       * timeout: \"The command timed out; simplify or optimize.\"\n       * missing_binary:\
+  \ \"A required binary is missing; check the command.\"\n       * unknown: \"Diagnose the failure from\
+  \ the output below.\"\n     - Record failure_class in each recovery_attempts entry in report.json.\n\
+  \     - Do NOT change any AgentAdapter signature.\n     - Tests: unit tests for classify_failure covering\
+  \ each class;\n       integration test proving repair prompt contains classification;\n       test proving\
+  \ report.json recovery_attempts carry failure_class.\n\n  2. CROSS-SESSION ANALYTICS:\n     - Add `tether\
+  \ sessions stats` in src/tether/cli.py that scans all\n       session directories under the configured\
+  \ audit_dir and prints:\n       * total sessions, success/failed/cancelled counts and percentages\n\
+  \       * median and max verification attempts across all sessions\n       * recovery success rate (sessions\
+  \ with recovery_attempts > 0 AND\n         status \"success\" / sessions with recovery_attempts > 0)\n\
+  \       * the 5 most common failing verification commands\n       * per-adapter breakdown (count, success\
+  \ rate)\n     - Support --json flag emitting a single JSON object to stdout.\n     - Tests: create 3+\
+  \ mock sessions via CliRunner, assert stats output\n       contains correct counts, percentages, and\
+  \ --json is parseable.\n\n  3. SESSION LIFECYCLE MANAGEMENT:\n     - Add `tether sessions clean` with\
+  \ --older-than (e.g. \"30d\", \"24h\")\n       that deletes session directories older than the threshold.\n\
+  \     - Print what would be deleted; require --confirm to actually delete.\n     - Add retention_days\
+  \ config key to TetherConfig (default: null).\n     - Tests: create session dirs with known timestamps,\
+  \ run clean with\n       --older-than 1h --confirm, assert old gone and recent remain;\n       assert\
+  \ without --confirm nothing is deleted.\n\n  4. CRASH-RECOVERY DETECTION:\n     - In src/tether/orchestrator.py,\
+  \ at the start of run(), after\n       acquiring the writer lock, scan audit_dir for session directories\n\
+  \       whose events.jsonl last event is NOT \"session_end\".\n     - If found, log a warning and add\
+  \ a next_steps entry suggesting\n       `tether sessions clean` or manual inspection.\n     - Do NOT\
+  \ auto-delete or auto-modify incomplete sessions.\n     - Test: create a session dir with events.jsonl\
+  \ lacking session_end,\n       run a new mission, assert warning appears in report next_steps.\n\n \
+  \ 5. TESTS AND DOCS:\n     - All new behavior covered by tests in existing test files.\n     - Update\
+  \ README.md \"Quick tour\" with sessions stats and clean.\n     - Update docs/ARCHITECTURE.md if new\
+  \ files are added.\n     - Update docs/ADAPTERS.md: if Phase 1 succeeded, mark opencode as\n       verified=true\
+  \ with the certificate path and this mission's\n       session id as the real-mission demonstration\
+  \ reference.\n     - All existing tests keep passing; do not weaken any test.\n"
+context: []
+constraints: []
+verification:
+  commands:
+  - python -m pytest -q
+  - ruff check src tests
+  - mypy src/tether
+  - .venv/bin/tether adapters conformance mock
+  timeout_seconds: 900
+  artifacts:
+  - README.md
+  - docs/ARCHITECTURE.md
+  - docs/ADAPTERS.md
+recovery:
+  max_attempts: 4
+adapter: opencode
+adapters:
+  opencode:
+    command:
+    - opencode
+    - run
+    - -m
+    - opencode/x-preview-f-free
+    - '{prompt}'
+    timeout_seconds: 1800
+allowed_paths:
+- src/**
+- tests/**
+- docs/**
+- README.md
+forbidden_paths:
+- .git/**
+- .tether/**
+- missions/**
+context_files: []
