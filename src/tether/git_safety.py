@@ -9,11 +9,14 @@ Rollback: `git reset --hard <original_head>`; `git clean -fd` is NEVER run
 (blanket cleans are destructive). When the tree is dirty (e.g. agent-created
 untracked files), the default rollback refuses and reports exact manual steps;
 an opt-in `clean=True` performs a scoped restore that only removes untracked
-files attributable to the session (per its report's changed_files).
+files attributable to the session (per its report's changed_files). A caller
+may additionally pass `preserve` (paths recorded as untracked *before* the
+session ran); those are never removed.
 """
 from __future__ import annotations
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 from tether.models import CheckpointInfo
 
@@ -189,7 +192,8 @@ def _session_changed_files(project_dir: Path, session_id: str,
 
 def rollback(project_dir: Path, session_id: str,
              audit_dir: str = ".tether/sessions",
-             clean: bool = False) -> tuple[bool, str]:
+             clean: bool = False,
+             preserve: Optional[list[str]] = None) -> tuple[bool, str]:
     """Reset tracked files back to the checkpoint. Accepts a session id prefix.
 
     With clean=False (default), refuses when the tree is dirty but always
@@ -197,7 +201,9 @@ def rollback(project_dir: Path, session_id: str,
     With clean=True, performs a scoped restore: `git reset --hard <target>`
     plus removal of untracked files attributable to the session (those listed
     in the session report's changed_files). Pre-existing untracked user files
-    are never removed.
+    are never removed; callers that recorded the pre-session untracked set can
+    pass it via ``preserve`` to guarantee those paths survive even when the
+    report's changed_files includes them (e.g. --allow-dirty runs).
     """
     if not is_git_repo(project_dir):
         return False, f"{project_dir} is not a git repository; nothing to roll back."
@@ -211,7 +217,11 @@ def rollback(project_dir: Path, session_id: str,
         untracked = _untracked_files(project_dir)
         session_files = set(_session_changed_files(project_dir, session_id, audit_dir))
         # Untracked files attributable to this session per its report.
-        session_untracked = [f for f in untracked if f in session_files]
+        preserved = set(preserve or [])
+        session_untracked = [
+            f for f in untracked
+            if f in session_files and f not in preserved
+        ]
         manual = [
             "Working tree is dirty; refusing destructive rollback. Manual steps:",
             f"  git -C {project_dir} stash push -u -m 'pre-rollback {session_id}'",

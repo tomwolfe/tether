@@ -170,6 +170,12 @@ def run(
     allow_dirty: Optional[bool] = typer.Option(
         None, "--allow-dirty/--no-allow-dirty",
         help="Proceed despite dirty git tree. Overrides project config when given."),
+    auto_rollback: Optional[bool] = typer.Option(
+        None, "--auto-rollback/--no-auto-rollback",
+        help="Automatically roll back failed/cancelled missions (scoped clean "
+             "rollback for git projects, backup restore otherwise). Never "
+             "applies to success or dry-run. Overrides project config when "
+             "given."),
     strict: bool = typer.Option(
         False, "--strict", help="Treat unknown adapter settings as errors."),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
@@ -194,6 +200,7 @@ def run(
         "max_attempts": max_attempts,
         "dry_run": dry_run,
         "allow_dirty": allow_dirty,
+        "auto_rollback": auto_rollback,
     }
     try:
         config = resolve_config(pd, mission_overrides=mission_overrides or None,
@@ -366,10 +373,25 @@ def sessions_show(
 def diff(
     session_id: str = typer.Argument(..., help="Session id (or prefix)."),
     project_dir: Optional[Path] = typer.Option(None, "--project-dir"),
+    patch: bool = typer.Option(
+        False, "--patch",
+        help="Print the saved change artifact instead of the changed-file "
+             "list: patch.diff for git sessions, manifest_diff.json for "
+             "non-git sessions."),
 ) -> None:
     """List files changed during a past session."""
     pd = _project_dir(project_dir)
     session = _find_session_or_exit(pd, session_id)
+    if patch:
+        for name in ("patch.diff", "manifest_diff.json"):
+            path = session / name
+            if path.exists():
+                typer.echo(path.read_bytes())
+                return
+        typer.echo(
+            f"No change artifact (patch.diff or manifest_diff.json) found in "
+            f"{session}.", err=True)
+        raise typer.Exit(code=1)
     report_path = session / "report.json"
     if not report_path.exists():
         typer.echo(f"Session found at {session} but no report.json present.", err=True)

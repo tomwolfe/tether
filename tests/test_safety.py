@@ -11,7 +11,7 @@ from typer.testing import CliRunner
 from tether.adapters.base import AgentAdapter, SessionInfo
 from tether.adapters.mock import MockAdapter
 from tether.audit import find_session_dir
-from tether.cli import app
+from tether.cli import EXIT_FAILED, app
 from tether.config import resolve_config
 from tether.git_safety import (
     create_checkpoint,
@@ -910,3 +910,310 @@ def test_writer_lock_stale_seconds_configurable(tmp_path):
     assert calls2 == []
     assert any("freshsess9999" in s for s in report2["next_steps"])
     assert lock.read_text().strip() == "freshsess9999"  # not clobbered
+
+
+# -------------------------- dogfood-07: forensic capture + auto rollback
+
+
+class _MultiWriterAdapter(AgentAdapter):
+    """Writes several files (text or binary) on the execute send."""
+
+    name = "multiwriter"
+    verified = True
+
+    def __init__(self, files, fail_execute=False):
+        super().__init__({})
+        self.files = dict(files)  # relpath -> str | bytes
+        self.fail_execute = fail_execute
+        self._planned = False
+
+    def is_available(self):
+        return True, ""
+
+    def start_session(self, project_dir, session_id):
+        self.project_dir = project_dir
+        return SessionInfo(session_id=session_id, project_dir=project_dir)
+
+    def send(self, prompt, session):
+        if not self._planned:
+            self._planned = True
+            return AgentState(status="completed", logs="plan")
+        for rel, content in self.files.items():
+            target = Path(self.project_dir) / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if isinstance(content, bytes):
+                target.write_bytes(content)
+            else:
+                target.write_text(content)
+        if self.fail_execute:
+            return AgentState(status="failed", logs="boom")
+        return AgentState(status="completed", logs="done")
+
+    def cancel(self, session):
+        pass
+
+
+def test_git_session_captures_patch_diff_and_untracked(tmp_path):
+    _git_repo(tmp_path)
+    # a committed binary file so --binary capture can be proven later
+    (tmp_path / "blob.bin").write_bytes(b"\x00\x01\x02original")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "binary"],
+                   check=True)
+    mp = _committed_mission(tmp_path, body=(
+        "mission:\n  name: forensics\n  goal: g\n"
+        f"verification:\n  commands:\n    - {PASS_CMD}\nadapter: mock\n"
+    ))
+    adapter = _MultiWriterAdapter({
+        "f.txt": "changed by agent\n",               # tracked modification
+        "blob.bin": b"\x00\xff\x7fBINARY",           # tracked binary change
+        "agent-added.txt": "new file\n",             # untracked (not in diff)
+    })
+    cfg = TetherConfig(audit_dir=".tether/sessions")
+    report = Orchestrator(adapter, cfg, tmp_path).run(load_mission(mp))
+    assert report["status"] == "success"
+    session = find_session_dir(tmp_path, ".tether/sessions", report["session_id"])
+    patch = session / "patch.diff"
+    assert patch.exists()
+    raw = patch.read_bytes()
+    assert b"diff --git a/f.txt" in raw
+    assert b"GIT binary patch" in raw  # binary content captured via --binary
+    untracked = (session / "untracked.txt").read_text(encoding="utf-8")
+    assert "agent-added.txt" in untracked.splitlines()  # diff misses untracked
+    assert ".tether/" not in untracked  # Tether's own files never listed
+
+
+def test_non_git_session_captures_manifest_diff_json(tmp_path):
+    (tmp_path / "seed.txt").write_text("v1")
+    adapter = _MultiWriterAdapter({
+        "seed.txt": "v2",
+        "created-by-agent.txt": "hi",
+    })
+    cfg = TetherConfig(audit_dir=".tether/sessions")
+    report = Orchestrator(adapter, cfg, tmp_path).run(load_mission(_mission(tmp_path)))
+    assert report["status"] == "success"
+    session = find_session_dir(tmp_path, ".tether/sessions", report["session_id"])
+    path = session / "manifest_diff.json"
+    assert path.exists()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["added"] == ["created-by-agent.txt"]
+    assert data["modified"] == ["seed.txt"]
+    assert data["deleted"] == []
+    # before/after fingerprints are recorded and differ for modified files
+    assert data["before"]["seed.txt"] != data["after"]["seed.txt"]
+    assert "created-by-agent.txt" not in data["before"]
+    assert isinstance(data["after"]["created-by-agent.txt"], list)
+
+
+def test_cli_diff_patch_flag_prints_saved_artifacts(tmp_path):
+    # non-git session -> manifest_diff.json is printable via --patch.
+    # A real CommandAdapter writes the files during execution so the
+    # change capture (which happens pre-verification) sees them.
+    (tmp_path / "seed.txt").write_text("v1")
+    agent_code = (
+        'open("seed.txt", "w").write("v2"); '
+        'open("created-by-agent.txt", "w").write("hi")'
+    )
+    mp = _mission(tmp_path, body=(
+        "mission:\n  name: patchcli\n  goal: g\n"
+        f"verification:\n  commands:\n    - {PASS_CMD}\n"
+        "adapter: command\n"
+        "adapters:\n  command:\n    command:\n"
+        f"      - {json.dumps(sys.executable)}\n"
+        "      - '-c'\n"
+        f"      - '{agent_code}'\n"
+    ))
+    r = runner.invoke(app, ["run", str(mp), "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    sid = r.output.split("Session: ")[1].split()[0]
+    # default behavior unchanged: lists changed files
+    r = runner.invoke(app, ["diff", sid, "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0
+    assert "seed.txt" in r.output.splitlines()
+    # --patch prints the saved artifact instead
+    r = runner.invoke(app, ["diff", sid, "--patch", "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    assert '"added"' in r.output and "created-by-agent.txt" in r.output
+
+    # git session -> --patch prints the actual git patch text.
+    # A real CommandAdapter modifies the TRACKED file during execution so the
+    # change capture (which happens pre-verification) sees it.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@example.com"],
+                   check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+    (repo / "a.txt").write_text("v1\n")
+    mp = _mission(repo, name="g.yaml", body=(
+        "mission:\n  name: gitpatch\n  goal: g\n"
+        f"verification:\n  commands:\n    - {PASS_CMD}\n"
+        "adapter: command\n"
+        "adapters:\n  command:\n    command:\n"
+        f"      - {json.dumps(sys.executable)}\n"
+        "      - '-c'\n"
+        "      - 'open(\"a.txt\", \"w\").write(\"v2\")'\n"
+    ))
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "init"], check=True)
+    r = runner.invoke(app, ["run", str(mp), "--project-dir", str(repo)])
+    assert r.exit_code == 0, r.output
+    gid = r.output.split("Session: ")[1].split()[0]
+    r = runner.invoke(app, ["diff", gid, "--project-dir", str(repo)])
+    assert r.exit_code == 0
+    assert "a.txt" in r.output.splitlines()  # default behavior unchanged
+    r = runner.invoke(app, ["diff", gid, "--patch", "--project-dir", str(repo)])
+    assert r.exit_code == 0, r.output
+    assert "diff --git a/a.txt" in r.output
+
+
+def test_cli_diff_patch_missing_artifact_exits_nonzero(tmp_path):
+    # a session directory without change artifacts (e.g. from older versions)
+    audit = _git_repo_with_session(tmp_path)
+    audit.write_report({"session_id": "aaaa1111aaaa"})
+    r = runner.invoke(app, ["diff", "aaaa1111aaaa", "--patch",
+                            "--project-dir", str(tmp_path)])
+    assert r.exit_code != 0
+    assert "No change artifact" in r.output
+
+
+# -------------------------- dogfood-07: opt-in automatic rollback
+
+
+def _failing_git_mission(tmp_path, name="arb.yaml"):
+    """Committed git mission whose verification clobbers f.txt then fails."""
+    clobber_fail = py_cmd(
+        'import sys; open("f.txt", "w").write("clobbered\\n"); sys.exit(1)')
+    mp = _committed_mission(tmp_path, name=name, body=(
+        "mission:\n  name: arb\n  goal: g\n"
+        "verification:\n  commands:\n"
+        f"    - {clobber_fail}\nadapter: mock\n"
+    ))
+    return mp
+
+
+def test_auto_rollback_restores_failed_git_session(tmp_path):
+    _git_repo(tmp_path)
+    mp = _failing_git_mission(tmp_path)
+    base = head_sha(tmp_path)  # HEAD after the mission commit = checkpoint target
+    adapter = _MultiWriterAdapter(
+        {"f.txt": "clobbered by agent\n", "agent-added.txt": "extra\n"},
+        fail_execute=True,
+    )
+    cfg = TetherConfig(audit_dir=".tether/sessions", auto_rollback=True,
+                       max_attempts=1)
+    report = Orchestrator(adapter, cfg, tmp_path).run(load_mission(mp))
+    assert report["status"] == "failed"
+    ar = report["auto_rollback"]
+    assert ar["attempted"] is True
+    assert ar["ok"] is True
+    assert ar["message"]
+    # tracked modification reverted and session-created untracked file removed
+    assert (tmp_path / "f.txt").read_text() == "hello\n"
+    assert not (tmp_path / "agent-added.txt").exists()
+    assert head_sha(tmp_path) == base
+    # persisted report carries the same result plus manual guidance
+    saved = json.loads((find_session_dir(tmp_path, ".tether/sessions",
+                                         report["session_id"]) /
+                        "report.json").read_text())
+    assert saved["auto_rollback"]["ok"] is True
+    assert any("rollback" in s.lower() for s in saved["next_steps"])
+
+
+def test_auto_rollback_keeps_preexisting_untracked_files(tmp_path):
+    _git_repo(tmp_path)
+    # commit the mission first so this pre-existing untracked file is NOT
+    # part of the committed tree
+    mp = _failing_git_mission(tmp_path)
+    (tmp_path / "user-notes.txt").write_text("keep me\n")  # pre-existing
+    adapter = _MultiWriterAdapter(
+        {"f.txt": "clobbered\n", "agent-added.txt": "extra\n"},
+        fail_execute=True,
+    )
+    cfg = TetherConfig(audit_dir=".tether/sessions", auto_rollback=True,
+                       max_attempts=1)
+    report = Orchestrator(adapter, cfg, tmp_path).run(load_mission(mp),
+                                                      allow_dirty=True)
+    assert report["status"] == "failed"
+    assert report["auto_rollback"]["ok"] is True
+    # session changes are undone...
+    assert (tmp_path / "f.txt").read_text() == "hello\n"
+    assert not (tmp_path / "agent-added.txt").exists()
+    # ...but the pre-existing untracked file survives even though change
+    # detection attributed it to the session (it was untracked at detect time)
+    assert (tmp_path / "user-notes.txt").read_text() == "keep me\n"
+
+
+def test_no_auto_rollback_on_success(tmp_path):
+    _git_repo(tmp_path)
+    mp = _committed_mission(tmp_path)
+    adapter = _WritingAdapter("success-output.txt")
+    cfg = TetherConfig(audit_dir=".tether/sessions", auto_rollback=True,
+                       max_attempts=1)
+    report = Orchestrator(adapter, cfg, tmp_path).run(load_mission(mp))
+    assert report["status"] == "success"
+    assert "auto_rollback" not in report  # never rolled back a success
+    assert (tmp_path / "success-output.txt").exists()  # change kept
+
+
+def test_no_auto_rollback_in_dry_run(tmp_path):
+    _git_repo(tmp_path)
+    mp = _committed_mission(tmp_path)
+    adapter = SpyAdapter({"scenario": "success"})
+    cfg = TetherConfig(audit_dir=".tether/sessions", auto_rollback=True,
+                       dry_run=True)
+    report = Orchestrator(adapter, cfg, tmp_path).run(load_mission(mp))
+    assert report["status"] == "success"
+    assert "auto_rollback" not in report
+
+
+def test_auto_rollback_disabled_by_default_keeps_changes(tmp_path):
+    _git_repo(tmp_path)
+    mp = _failing_git_mission(tmp_path)
+    adapter = _MultiWriterAdapter({"f.txt": "clobbered\n"}, fail_execute=True)
+    cfg = TetherConfig(audit_dir=".tether/sessions", max_attempts=1)
+    assert cfg.auto_rollback is False
+    report = Orchestrator(adapter, cfg, tmp_path).run(load_mission(mp))
+    assert report["status"] == "failed"
+    assert "auto_rollback" not in report
+    assert (tmp_path / "f.txt").read_text() == "clobbered\n"
+
+
+def test_cli_tri_state_auto_rollback_flag(tmp_path):
+    _git_repo(tmp_path)
+    mp = _failing_git_mission(tmp_path)
+
+    # default (flag omitted): no rollback, changes remain
+    r = runner.invoke(app, ["run", str(mp), "--project-dir", str(tmp_path)])
+    assert r.exit_code == EXIT_FAILED
+    sid1 = r.output.split("Session: ")[1].split()[0]
+    rep1 = json.loads((find_session_dir(tmp_path, ".tether/sessions", sid1) /
+                       "report.json").read_text())
+    assert "auto_rollback" not in rep1
+    assert (tmp_path / "f.txt").read_text() != "hello\n"
+
+    # explicit --no-auto-rollback: same outcome
+    r = runner.invoke(app, ["run", str(mp), "--project-dir", str(tmp_path),
+                            "--allow-dirty", "--no-auto-rollback"])
+    assert r.exit_code == EXIT_FAILED
+
+    # --auto-rollback: failed mission is restored automatically
+    r = runner.invoke(app, ["run", str(mp), "--project-dir", str(tmp_path),
+                            "--allow-dirty", "--auto-rollback"])
+    assert r.exit_code == EXIT_FAILED, r.output  # status stays failed
+    sid3 = r.output.split("Session: ")[1].split()[0]
+    rep3 = json.loads((find_session_dir(tmp_path, ".tether/sessions", sid3) /
+                       "report.json").read_text())
+    assert rep3["auto_rollback"]["attempted"] is True
+    assert rep3["auto_rollback"]["ok"] is True
+    assert (tmp_path / "f.txt").read_text() == "hello\n"
+
+
+def test_auto_rollback_config_resolution(tmp_path):
+    # project config applies; CLI overrides win; default is off
+    assert resolve_config(tmp_path).auto_rollback is False
+    (tmp_path / "tether.yaml").write_text("auto_rollback: true\n")
+    assert resolve_config(tmp_path).auto_rollback is True
+    assert resolve_config(
+        tmp_path, cli_overrides={"auto_rollback": False}).auto_rollback is False
+

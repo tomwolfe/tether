@@ -57,6 +57,10 @@ class TetherConfig(BaseModel):
     verification_timeout_seconds: int = 600
     max_attempts: int = 3
     allow_dirty: bool = False
+    # Opt-in: automatically roll back failed/cancelled missions (scoped clean
+    # rollback for git projects, backup restore otherwise). Never applies to
+    # successful runs or dry-runs.
+    auto_rollback: bool = False
     redact_prompts: bool = False
     writer_lock_stale_seconds: int = 43200  # 12 hours
     adapters: Dict[str, Dict[str, Any]] = Field(default_factory=dict)

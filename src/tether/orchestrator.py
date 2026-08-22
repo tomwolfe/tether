@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 import time
 from fnmatch import fnmatch
 from pathlib import Path
@@ -13,9 +14,11 @@ from tether.git_safety import (
     changed_files_since,
     create_checkpoint,
     make_file_backup,
+    restore_from_backup,
 )
+from tether.git_safety import rollback as git_rollback
 from tether.manifest import diff_manifests, snapshot_manifest
-from tether.models import AgentState, TetherConfig, VerificationResult
+from tether.models import AgentState, CheckpointInfo, TetherConfig, VerificationResult
 from tether.verification import run_verification, summarize
 
 log = logging.getLogger("tether")
@@ -51,6 +54,36 @@ def fresh_lock_holder(lock_path: Path,
     if age > stale_seconds:
         return None
     return holder
+
+
+def _git_patch_bytes(project_dir: Path, base: str) -> Optional[bytes]:
+    """`git diff --no-color --binary <base>` as bytes, or None on failure."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(project_dir), "diff", "--no-color", "--binary", base],
+            capture_output=True, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def _git_untracked_files(project_dir: Path) -> list[str]:
+    """Untracked files (excluding .tether/), relative to project_dir."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(project_dir), "ls-files", "--others",
+             "--exclude-standard"],
+            capture_output=True, text=True, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0:
+        return []
+    return sorted(
+        line for line in proc.stdout.splitlines()
+        if line.strip() and not line.startswith(".tether/")
+    )
 
 
 class Orchestrator:
@@ -109,6 +142,87 @@ class Orchestrator:
                     {"path": path, "rule": "not matched by allowed_paths"}
                 )
         return violations
+
+    def _persist_change_artifact(
+        self, audit: AuditTrail, checkpoint: CheckpointInfo,
+        manifest_before: Optional[dict[str, tuple[int, str | int]]],
+    ) -> None:
+        """Forensic change capture into the session audit directory.
+
+        Git projects: ``patch.diff`` (``git diff --no-color --binary
+        <original_head>``) plus ``untracked.txt``, since a plain diff does not
+        include untracked file contents. Non-git projects:
+        ``manifest_diff.json`` with added/modified/deleted and the before/after
+        fingerprints used by the manifest. Best-effort: failures are logged,
+        never fatal.
+        """
+        if checkpoint.is_git_repo and checkpoint.original_head:
+            try:
+                patch = _git_patch_bytes(self.project_dir, checkpoint.original_head)
+                untracked = _git_untracked_files(self.project_dir)
+                if patch is not None:
+                    (audit.dir / "patch.diff").write_bytes(patch)
+                (audit.dir / "untracked.txt").write_text(
+                    "".join(f"{f}\n" for f in untracked), encoding="utf-8"
+                )
+                audit.log_event("change_capture", {
+                    "patch_diff": patch is not None,
+                    "untracked_count": len(untracked),
+                })
+            except OSError as e:
+                log.debug("Change capture failed: %s", e)
+            return
+        if manifest_before is None:
+            return
+        try:
+            after = snapshot_manifest(self.project_dir)
+            diff = diff_manifests(manifest_before, after)
+            touched = sorted(
+                set(diff["added"]) | set(diff["modified"]) | set(diff["deleted"])
+            )
+            payload = {
+                **diff,
+                "before": {f: list(manifest_before[f]) for f in touched
+                           if f in manifest_before},
+                "after": {f: list(after[f]) for f in touched if f in after},
+            }
+            audit.save_json("manifest_diff.json", payload)
+            audit.log_event("change_capture", {"manifest_diff": True})
+        except OSError as e:
+            log.debug("Change capture failed: %s", e)
+
+    def _auto_rollback(self, checkpoint: CheckpointInfo,
+                       pre_existing_untracked: Optional[list[str]] = None
+                       ) -> Dict[str, Any]:
+        """Scoped automatic rollback for a failed/cancelled mission.
+
+        Git projects get the scoped clean rollback (reset to the checkpoint
+        plus removal of session-attributable untracked files); non-git projects
+        are restored from their tar backup. Pre-existing untracked files that
+        are not attributable to the session are never removed.
+        """
+        if checkpoint.is_git_repo:
+            ok, message = git_rollback(
+                self.project_dir, self.session_id,
+                audit_dir=self.config.audit_dir, clean=True,
+                preserve=pre_existing_untracked,
+            )
+        else:
+            ok, message = restore_from_backup(
+                self.project_dir, self.session_id,
+                backup_dir=self.config.backup_dir,
+                audit_dir=self.config.audit_dir,
+            )
+        result = {"attempted": True, "ok": ok, "message": message}
+        if ok:
+            first_line = message.splitlines()[0] if message else ""
+            log.info("Automatic rollback applied: %s", first_line)
+        else:
+            # The original failed/cancelled status and the manual rollback
+            # guidance in next_steps stay untouched.
+            log.warning("Automatic rollback did not succeed: %s",
+                        message.splitlines()[0] if message else "")
+        return result
 
     def run(self, mission: Any, allow_dirty: Optional[bool] = None,
             dry_run: Optional[bool] = None) -> Dict[str, Any]:
@@ -313,6 +427,13 @@ class Orchestrator:
             except OSError as e:
                 log.debug("Manifest snapshot failed: %s", e)
 
+        # Git projects: remember which untracked files existed before the agent
+        # ran; automatic rollback must never remove those even if change
+        # detection later attributes them to the session (--allow-dirty runs).
+        pre_existing_untracked: list[str] = []
+        if checkpoint.is_git_repo and not dry_run:
+            pre_existing_untracked = _git_untracked_files(self.project_dir)
+
         session = None
         state: AgentState | None = None
         try:
@@ -385,6 +506,11 @@ class Orchestrator:
                 except OSError:
                     pass
             audit.log_event("changed_files", {"files": changed})
+
+            # Forensic change capture: persist the diff evidence now, before
+            # verification (or any later rollback) can alter the tree further.
+            if not dry_run:
+                self._persist_change_artifact(audit, checkpoint, manifest_before)
 
             # Write-sandbox gate (post-execution): forbid or restrict which
             # paths the agent may touch. On violation, fail the mission and
@@ -509,6 +635,18 @@ class Orchestrator:
             "audit_dir": str(audit.dir),
         }
         report_path = audit.write_report(report)
+
+        # Opt-in automatic rollback: only for failed/cancelled outcomes, never
+        # on success and never during dry-run. Runs after the initial report
+        # so the scoped clean path can use the recorded changed_files;
+        # report.json is then updated with the auto_rollback outcome.
+        if (self.config.auto_rollback and not dry_run
+                and status in ("failed", "cancelled")):
+            report["auto_rollback"] = self._auto_rollback(
+                checkpoint, pre_existing_untracked)
+            report_path = audit.write_report(report)
+            audit.log_event("auto_rollback", report["auto_rollback"])
+
         audit.log_event("session_end", {"status": status})
         log.info("Mission %s finished with status %s (report: %s)",
                  mission.name, status, report_path)
