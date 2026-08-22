@@ -122,7 +122,7 @@ Only commands explicitly declared in the mission (or project config) are execute
 
 ## Recovery
 
-On verification failure (or agent failure), Tether sends a concise repair prompt containing the failing output back to the adapter and re-verifies, up to `recovery.max_attempts` (total verification attempts, including the first). It never retries silently forever; every attempt is recorded in the audit trail. Repair prompts embed only a bounded excerpt of the failing output (~8KB budget); the full output is always preserved in the audit records.
+On verification failure (or agent failure), Tether sends a concise repair prompt containing the failing output back to the adapter and re-verifies, up to `recovery.max_attempts` (total verification attempts, including the first). It never retries silently forever; every attempt is recorded in the audit trail. Repair prompts embed only a bounded excerpt of the failing output (~8KB budget) extended by a bounded forensic context: the session's current changed files, an excerpt of the latest change artifact (`patch.diff` / `manifest_diff.json`), and the previous attempt's changed files so the agent sees its own delta; the full output is always preserved in the audit records. After every recovery send, change detection, forensic capture, and the write-sandbox gate run again — a recovery attempt that violates `allowed_paths`/`forbidden_paths` fails the mission immediately and skips further verification. Each recovery attempt also records per-attempt evidence in the session directory: the changed files at that attempt (in the report's `recovery_attempts`) and, for git projects, a patch snapshot under `verification/attempt-NN.patch`.
 
 A mission reports `success` **only** if the final agent step completed *and* verification passed. Non-completed agent states (`failed`, `unavailable`, `cancelled`, `needs_input`, `running`) always drive the failure/recovery path, and the orchestrator checks adapter availability itself before starting. A failed planning step aborts the mission before execution.
 
@@ -136,14 +136,14 @@ Adapter commands run via `subprocess` with `shell=False` in their own process gr
 
 Missions can restrict agent writes with the contract's `allowed_paths` / `forbidden_paths` fnmatch globs (relative to the project dir; a forbidden match or — when `allowed_paths` is set — no allowed match is a violation). The config key `sandbox_mode` controls how violations are detected:
 
-- `warn` (default): post-execution detection, unchanged behavior. After the agent finishes, every detected changed file (git diff vs checkpoint HEAD plus untracked files; non-git projects use a before/after manifest) is checked against the globs. Violations fail the mission, skip verification entirely, and point at rollback.
-- `enforce`: additionally snapshots the project tree before execution (the same file manifest used for non-git projects) and unions filesystem-metadata diffs into the post-execution check. Untracked git files are already checked in both modes; the metadata diff additionally catches writes that content-based detection can miss, e.g. new files under `.gitignore`d paths in git repos.
+- `warn` (default): post-send detection. After every agent send — the initial execution and each recovery attempt — every detected changed file (git diff vs checkpoint HEAD plus untracked files; non-git projects use a before/after manifest) is checked against the globs. Violations fail the mission immediately, skip verification entirely, and point at rollback.
+- `enforce`: additionally snapshots the project tree before execution (the same file manifest used for non-git projects) and unions filesystem-metadata diffs into the post-send check. Untracked git files are already checked in both modes; the metadata diff additionally catches writes that content-based detection can miss, e.g. new files under `.gitignore`d paths in git repos.
 
 Be honest about the limit: enforce mode narrows but does **not** eliminate risk. It is best-effort detection layered onto post-hoc analysis — **not OS-level containment** (see docs/SECURITY.md). Use containers, VMs, or separate users when isolating untrusted agents.
 
 ## Change capture (forensics)
 
-Right after execution (before verification can touch anything), Tether persists a change artifact into the session audit directory:
+Right after every agent send — the initial execution and each recovery attempt (before verification can touch anything) — Tether persists a change artifact into the session audit directory:
 
 - Git projects: `patch.diff` (`git diff --no-color --binary <original_head>`, so binary changes are included) plus `untracked.txt`, because a plain diff does not include untracked file contents.
 - Non-git projects: `manifest_diff.json` with added/modified/deleted files and the before/after fingerprints used by the manifest.

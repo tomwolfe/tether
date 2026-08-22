@@ -34,13 +34,32 @@ from tether.models import (
     VerificationResult,
 )
 from tether.verification import (
+    REPAIR_OUTPUT_BUDGET,
     check_artifacts,
+    clip_output,
     run_verification,
     summarize,
     summarize_artifacts,
 )
 
 log = logging.getLogger("tether")
+
+# Sub-budget for the change-artifact excerpt embedded in repair prompts; the
+# whole forensic context still goes through clip_output at the ~8KB budget.
+FORENSIC_EXCERPT_BUDGET = REPAIR_OUTPUT_BUDGET // 2
+
+
+class _SandboxViolationError(RuntimeError):
+    """Write-sandbox gate failure carrying the detected violations.
+
+    Raised by ``_gate_and_capture`` so verification is skipped and the
+    report's ``sandbox_violations`` reflects the offending paths.
+    """
+
+    def __init__(self, message: str,
+                 violations: list[Dict[str, str]]) -> None:
+        super().__init__(message)
+        self.violations = violations
 
 # Single-writer lock: taken under <project_dir>/.tether/ for the duration of
 # each run so two Tether sessions never mutate the same project concurrently.
@@ -345,6 +364,113 @@ class Orchestrator:
             audit.log_event("change_capture", {"manifest_diff": True})
         except OSError as e:
             log.debug("Change capture failed: %s", e)
+
+    def _gate_and_capture(
+        self, audit: AuditTrail, mission: Any, checkpoint: CheckpointInfo,
+        manifest_before: Optional[dict[str, tuple[int, str | int]]],
+        dry_run: bool,
+    ) -> list[str]:
+        """Re-detect changes, refresh forensic artifacts, re-run the gate.
+
+        Runs after EVERY adapter send (the initial execution and every
+        recovery attempt alike): recomputes changed files (``git diff`` vs
+        checkpoint HEAD plus untracked; non-git projects and sandbox
+        ``enforce`` mode union the filesystem-metadata diff), refreshes the
+        change artifact in the session directory, then applies the
+        write-sandbox gate. On violation, logs the ``sandbox_violations``
+        audit event and raises :class:`_SandboxViolationError` so the mission
+        fails and verification is skipped. Returns the detected changed
+        files.
+        """
+        changed = changed_files_since(self.project_dir, checkpoint.original_head)
+        # Non-git projects: fall back to the pre-execution manifest so change
+        # detection (and the sandbox gate below) sees the files the agent
+        # just wrote. In sandbox enforce mode, git repos get the same
+        # filesystem-metadata diff unioned in: untracked files are already
+        # covered by changed_files_since above, and the manifest additionally
+        # catches writes invisible to git (e.g. gitignored paths) so they
+        # still hit the sandbox gate.
+        if manifest_before is not None and (
+            not checkpoint.is_git_repo or self.config.sandbox_mode == "enforce"
+        ):
+            try:
+                mdiff = diff_manifests(manifest_before,
+                                       snapshot_manifest(self.project_dir))
+                changed = sorted(
+                    set(changed)
+                    | set(mdiff["added"]) | set(mdiff["modified"])
+                    | set(mdiff["deleted"])
+                )
+            except OSError:
+                pass
+        audit.log_event("changed_files", {"files": changed})
+
+        # Forensic change capture: persist the diff evidence now, before
+        # verification (or any later rollback) can alter the tree further.
+        if not dry_run:
+            self._persist_change_artifact(audit, checkpoint, manifest_before)
+
+        # Write-sandbox gate: forbid or restrict which paths the agent may
+        # touch. On violation, fail the mission and skip verification.
+        violations = self._sandbox_violations(mission, changed)
+        if violations:
+            names = ", ".join(v["path"] for v in violations)
+            audit.log_event("sandbox_violations",
+                            {"violations": violations})
+            raise _SandboxViolationError(
+                f"write sandbox violated by: {names}", violations)
+        return changed
+
+    def _save_attempt_patch(self, audit: AuditTrail, checkpoint: CheckpointInfo,
+                            attempt: int) -> None:
+        """Persist a per-attempt patch for git sessions (best-effort).
+
+        Written to ``verification/attempt-NN.patch`` after each recovery send
+        so the tree state produced by that attempt stays inspectable even if
+        later attempts or verification overwrite it.
+        """
+        if not (checkpoint.is_git_repo and checkpoint.original_head):
+            return
+        try:
+            patch = _git_patch_bytes(self.project_dir, checkpoint.original_head)
+            if patch is not None:
+                path = audit.dir / "verification" / f"attempt-{attempt:02d}.patch"
+                path.write_bytes(patch)
+        except OSError as e:
+            log.debug("Per-attempt patch capture failed: %s", e)
+
+    def _forensic_context(
+        self, audit: AuditTrail, checkpoint: CheckpointInfo,
+        changed: list[str], prev_changed: Optional[list[str]],
+    ) -> str:
+        """Bounded forensic context folded into recovery prompts.
+
+        Includes the session's current changed files, an excerpt of the
+        latest change artifact (``patch.diff`` for git, ``manifest_diff.json``
+        otherwise, when present), and the previous attempt's changed files so
+        the agent sees what its last repair round actually altered. Bounded;
+        best-effort (missing artifacts are simply omitted).
+        """
+        lines = [
+            "--- Forensic context ---",
+            "Changed files:\n"
+            + ("\n".join(f"- {c}" for c in changed) or "- (none)"),
+        ]
+        if prev_changed is not None:
+            lines.append(
+                "Changed files at previous attempt:\n"
+                + ("\n".join(f"- {c}" for c in prev_changed) or "- (none)"))
+        name = "patch.diff" if checkpoint.is_git_repo else "manifest_diff.json"
+        try:
+            artifact = (audit.dir / name).read_text(encoding="utf-8",
+                                                    errors="replace")
+        except OSError:
+            artifact = ""
+        if artifact.strip():
+            lines.append(
+                f"Latest change artifact ({name}):\n"
+                + clip_output(artifact.strip(), FORENSIC_EXCERPT_BUDGET))
+        return "\n\n".join(lines)
 
     def _auto_rollback(self, checkpoint: CheckpointInfo,
                        pre_existing_untracked: Optional[list[str]] = None
@@ -704,48 +830,13 @@ class Orchestrator:
                 audit.save_response("execute", state.model_dump())
                 log.info("Execution step status: %s", state.status)
 
-            changed = changed_files_since(self.project_dir, checkpoint.original_head)
-            # Non-git projects: fall back to the pre-execution manifest so
-            # change detection (and the sandbox gate below) sees the files
-            # the agent just wrote. In sandbox enforce mode, git repos get
-            # the same filesystem-metadata diff unioned in: untracked files
-            # are already covered by changed_files_since above, and the
-            # manifest additionally catches writes invisible to git (e.g.
-            # gitignored paths) so they still hit the sandbox gate.
-            if manifest_before is not None and (
-                not checkpoint.is_git_repo or self.config.sandbox_mode == "enforce"
-            ):
-                try:
-                    mdiff = diff_manifests(manifest_before,
-                                           snapshot_manifest(self.project_dir))
-                    changed = sorted(
-                        set(changed)
-                        | set(mdiff["added"]) | set(mdiff["modified"])
-                        | set(mdiff["deleted"])
-                    )
-                except OSError:
-                    pass
-            audit.log_event("changed_files", {"files": changed})
-
-            # Forensic change capture: persist the diff evidence now, before
-            # verification (or any later rollback) can alter the tree further.
-            if not dry_run:
-                self._persist_change_artifact(audit, checkpoint, manifest_before)
-
-            # Write-sandbox gate (post-execution): forbid or restrict which
-            # paths the agent may touch. On violation, fail the mission and
-            # skip verification entirely.
-            sandbox_violations = self._sandbox_violations(mission, changed)
-            if sandbox_violations:
-                names = ", ".join(v["path"] for v in sandbox_violations)
-                audit.log_event("sandbox_violations",
-                                {"violations": sandbox_violations})
-                next_steps.append(
-                    "Write sandbox violated by: " + names + ". Verification "
-                    f"was skipped. Roll back with: tether rollback "
-                    f"{self.session_id} --project-dir {self.project_dir}"
-                )
-                raise RuntimeError(f"write sandbox violated by: {names}")
+            # Gate + forensic capture after the initial execute send (and,
+            # below, after every recovery send): recompute changed files,
+            # refresh patch.diff/untracked.txt/manifest_diff.json, then apply
+            # the write-sandbox gate. On violation the mission fails here and
+            # verification is skipped entirely.
+            changed = self._gate_and_capture(
+                audit, mission, checkpoint, manifest_before, dry_run)
 
             # Verification + recovery loop
             attempt = 0
@@ -753,6 +844,7 @@ class Orchestrator:
             # never report success unless the last agent send completed.
             agent_failed = state.status != "completed"
             artifact_patterns = self._effective_verification_artifacts(mission)
+            prev_changed: Optional[list[str]] = None
             while True:
                 attempt += 1
                 log.info("Verification attempt %d/%d", attempt, max_attempts)
@@ -801,7 +893,18 @@ class Orchestrator:
                 # Recovery attempt
                 reason = failing_output or missing_output or (
                     state.error or "agent reported failure")
-                recovery_attempts.append({"attempt": attempt, "failing_output": reason[:4000]})
+                recovery_attempt: Dict[str, Any] = {
+                    "attempt": attempt,
+                    "failing_output": reason[:4000],
+                    "changed_files_at_attempt": list(changed),
+                }
+                recovery_attempts.append(recovery_attempt)
+                # Recovery intelligence: fold a bounded forensic context
+                # (current changed files, latest change-artifact excerpt,
+                # previous attempt's changed files) into the failing output
+                # passed to the existing repair-prompt builder.
+                reason = clip_output(reason + "\n\n" + self._forensic_context(
+                    audit, checkpoint, changed, prev_changed))
                 repair_prompt = self.adapter.repair_prompt(
                     self.mission_summary(mission), reason
                 )
@@ -814,10 +917,27 @@ class Orchestrator:
                     state = self.adapter.send(repair_prompt, session)
                     audit.save_response(f"repair-{attempt}", state.model_dump())
                     log.info("Recovery attempt %d status: %s", attempt, state.status)
+                    # Re-gate and refresh forensic evidence after EVERY send:
+                    # changes made during recovery must hit the same sandbox
+                    # gate as the initial execution, before the next
+                    # verification runs.
+                    prev_changed = list(changed)
+                    changed = self._gate_and_capture(
+                        audit, mission, checkpoint, manifest_before, dry_run)
+                    recovery_attempt["changed_files_at_attempt"] = list(changed)
+                    self._save_attempt_patch(audit, checkpoint, attempt)
                 agent_failed = state.status != "completed"
         except RuntimeError as e:
             # Deliberate aborts (e.g. planning failure) already set next_steps.
             status = "failed"
+            if isinstance(e, _SandboxViolationError):
+                sandbox_violations = e.violations
+                names = ", ".join(v["path"] for v in sandbox_violations)
+                next_steps.append(
+                    "Write sandbox violated by: " + names + ". Verification "
+                    f"was skipped. Roll back with: tether rollback "
+                    f"{self.session_id} --project-dir {self.project_dir}"
+                )
             log.error("%s", e)
         except Exception as e:
             status = "failed"
