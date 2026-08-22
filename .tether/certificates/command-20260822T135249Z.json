@@ -1,0 +1,53 @@
+{
+  "name": "command",
+  "utc_timestamp": "2026-08-22T13:52:49Z",
+  "availability": {
+    "available": false,
+    "reason": "CommandAdapter requires settings['command'] as a list of strings"
+  },
+  "conformance": {
+    "verdict": "PASS",
+    "checks": [
+      {
+        "name": "availability",
+        "status": "passed"
+      },
+      {
+        "name": "success_completes",
+        "status": "passed"
+      },
+      {
+        "name": "logs_capture_output",
+        "status": "passed"
+      },
+      {
+        "name": "failure_maps_failed",
+        "status": "passed"
+      },
+      {
+        "name": "timeout_fails_and_terminates_tree",
+        "status": "passed"
+      },
+      {
+        "name": "cancel_terminates_active",
+        "status": "passed"
+      },
+      {
+        "name": "spawn_failure_unavailable",
+        "status": "passed"
+      },
+      {
+        "name": "runs_in_project_dir",
+        "status": "passed"
+      }
+    ]
+  },
+  "live_probe": {
+    "status": null,
+    "exit_code": null,
+    "elapsed_seconds": 0.0
+  },
+  "ok": false,
+  "failed_stage": "live_probe",
+  "verdict_line": "FAILED at live probe: CommandAdapter requires settings['command'] as a list of strings"
+}
