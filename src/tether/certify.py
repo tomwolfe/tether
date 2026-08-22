@@ -18,7 +18,8 @@ least one real mission (docs/ADAPTERS.md).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Any, Optional
 
 from tether import smoke
 from tether.adapters.base import AgentAdapter
@@ -86,6 +87,43 @@ class CertifyResult:
         detail = self.live_probe.error or (
             f"adapter reported status {self.live_probe.status!r}")
         return f"live send against the real command did not complete ({detail})"
+
+
+def to_dict(result: CertifyResult) -> dict:
+    """Serialize a CertifyResult into an auditable, JSON-ready certificate."""
+    if result.conformance is not None:
+        conformance: Any = {
+            "verdict": result.conformance.verdict,
+            "checks": [
+                {"name": check.name, "status": check.status}
+                for check in result.conformance.checks
+            ],
+        }
+    else:
+        conformance = "skipped"
+    probe = result.live_probe
+    live_probe: Any = (
+        {
+            "status": probe.status or None,
+            "exit_code": probe.exit_code,
+            "elapsed_seconds": probe.elapsed_seconds,
+        }
+        if probe is not None
+        else "skipped"
+    )
+    return {
+        "name": result.name,
+        "utc_timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "availability": {
+            "available": result.available,
+            "reason": result.availability_reason,
+        },
+        "conformance": conformance,
+        "live_probe": live_probe,
+        "ok": result.ok,
+        "failed_stage": result.failed_stage,
+        "verdict_line": result.verdict_line,
+    }
 
 
 def run_certify(adapter: AgentAdapter, name: str) -> CertifyResult:

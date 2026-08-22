@@ -187,8 +187,8 @@ Tests use only temp directories, git temp repos with local identity, and the Moc
 ## Current limitations
 
 - No streaming/interactive agent sessions; adapters are one-shot prompt→result.
-- Non-git changed-file detection is best-effort (size/mtime manifest; no content diff). `manifest_diff.json` captures the same fingerprints, not file contents.
+- Non-git changed-file detection is best-effort: files smaller than 1 MiB (`manifest.HASH_SIZE_LIMIT`) are fingerprinted by sha256 content hash, larger files fall back to size+mtime; there is no content diff. `manifest_diff.json` carries those fingerprints, not file contents.
 - Process-tree containment is best-effort: descendants that escape the process group (e.g. by double-forking into a new session on POSIX) or survive `taskkill /T /F` on Windows cannot be force-killed by Tether.
-- Token/cost usage is only reported if an adapter provides it (Mock/Command do not).
+- Token/cost usage is only reported if an adapter provides it (Mock provides none; Command only elapsed time and exit code).
 - opencode/pi presets are unverified assumptions; override their command templates in config.
 - Ctrl-C during adapter interaction is handled gracefully: the adapter's `cancel()` terminates the running command tree best-effort, the report is finalized with status `cancelled` (CLI exit code 2), and the rollback hint is printed — but a second interrupt or one outside the agent loop still aborts hard.

@@ -187,6 +187,9 @@ def adapters_certify(
     project_dir: Optional[Path] = typer.Option(
         None, "--project-dir",
         help="Project whose tether.yaml configures the adapter."),
+    json_output: bool = typer.Option(
+        False, "--json",
+        help="Also print the full certificate JSON to stdout."),
 ) -> None:
     """Certify an adapter: availability, conformance, then a live probe.
 
@@ -201,6 +204,15 @@ def adapters_certify(
         typer.echo(f"Certify FAILED: {e}", err=True)
         raise typer.Exit(code=1)
     result = certify.run_certify(adapter_instance, name)
+
+    # Auditable artifact: written for every run (pass or fail) before any
+    # nonzero exit so failures are recorded too.
+    cert = certify.to_dict(result)
+    cert_dir = pd / ".tether" / "certificates"
+    cert_dir.mkdir(parents=True, exist_ok=True)
+    filename_stamp = str(cert["utc_timestamp"]).replace("-", "").replace(":", "")
+    cert_path = cert_dir / f"{name}-{filename_stamp}.json"
+    cert_path.write_text(json.dumps(cert, indent=2) + "\n", encoding="utf-8")
 
     typer.echo(f"{'Adapter:':<14}{name}")
     availability = ("available" if result.available
@@ -232,6 +244,9 @@ def adapters_certify(
         typer.echo("  Live probe: skipped (previous stage failed)")
 
     typer.echo(result.verdict_line)
+    typer.echo(f"Certificate: {cert_path}")
+    if json_output:
+        typer.echo(json.dumps(cert, indent=2))
     if not result.ok:
         raise typer.Exit(code=1)
 
@@ -596,6 +611,9 @@ def sessions_show(
     typer.echo(f"Status:   {data.get('status')}")
     typer.echo(f"Started:  {data.get('started_at')}")
     typer.echo(f"Finished: {data.get('finished_at')}")
+    usage = data.get("usage")
+    if usage:
+        typer.echo(f"Usage:    {json.dumps(usage, sort_keys=True)}")
     changed = data.get("changed_files") or []
     typer.echo(f"Changed files ({len(changed)}):")
     for f in changed[:20]:

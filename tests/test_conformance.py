@@ -1,4 +1,5 @@
 """Capability metadata + conformance harness tests (dogfood-09)."""
+import json
 import sys
 
 from typer.testing import CliRunner
@@ -266,8 +267,9 @@ def test_cli_certify_mock_exit_zero(tmp_path, monkeypatch):
     assert "Verdict: PASS" in r.output
     assert "Live probe [PASS]" in r.output
     assert "[FAIL]" not in r.output
-    # throwaway directories only: the caller's tree is untouched
-    assert list(tmp_path.iterdir()) == []
+    # throwaway directories only: besides the certificate artifact under
+    # .tether/, the caller's tree is untouched
+    assert [p.name for p in tmp_path.iterdir()] == [".tether"]
 
 
 def test_cli_certify_unconfigured_command_exits_nonzero(tmp_path, monkeypatch):
@@ -284,3 +286,61 @@ def test_cli_certify_unknown_adapter_exits_nonzero(tmp_path, monkeypatch):
     r = runner.invoke(app, ["adapters", "certify", "no-such-adapter"])
     assert r.exit_code == 1
     assert "no-such-adapter" in r.output
+
+
+# ------------------------------------------------- certification artifacts
+
+
+def _read_certificate(tmp_path, prefix):
+    cert_dir = tmp_path / ".tether" / "certificates"
+    matches = sorted(cert_dir.glob(f"{prefix}-*.json"))
+    assert len(matches) == 1, matches
+    return json.loads(matches[0].read_text(encoding="utf-8")), matches[0]
+
+
+def test_cli_certify_mock_writes_certificate(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    r = runner.invoke(app, ["adapters", "certify", "mock"])
+    assert r.exit_code == 0, r.output
+    cert, path = _read_certificate(tmp_path, "mock")
+    assert f"Certificate: {path}" in r.output
+    assert cert["name"] == "mock"
+    assert cert["utc_timestamp"].endswith("Z")
+    assert path.name.startswith("mock-") and path.name.endswith(".json")
+    # overall ok + the conformance verdict and per-check statuses recorded
+    assert cert["ok"] is True
+    assert cert["conformance"]["verdict"] == "PASS"
+    assert cert["conformance"]["checks"]
+    assert all(
+        check["status"] in ("passed", "skipped")
+        for check in cert["conformance"]["checks"]
+    )
+    assert "CERTIFIED" in cert["verdict_line"]
+    probe = cert["live_probe"]
+    assert probe["status"] == "completed" and probe["exit_code"] is None
+    assert isinstance(probe["elapsed_seconds"], (int, float))
+
+
+def test_cli_certify_json_flag_prints_parseable_json(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    r = runner.invoke(app, ["adapters", "certify", "mock", "--json"])
+    assert r.exit_code == 0, r.output
+    lines = r.output.splitlines()
+    idx = next(i for i, line in enumerate(lines) if line.startswith("Certificate:"))
+    cert = json.loads("\n".join(lines[idx + 1:]))
+    assert cert["name"] == "mock"
+    assert cert["ok"] is True
+    # human-readable output is still present alongside the --json block
+    assert "CERTIFIED (experimental)" in "\n".join(lines[:idx])
+
+
+def test_cli_certify_failure_writes_certificate_naming_stage(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)  # no tether.yaml: live probe must fail
+    r = runner.invoke(app, ["adapters", "certify", "command"])
+    assert r.exit_code == 1
+    cert, path = _read_certificate(tmp_path, "command")
+    assert f"Certificate: {path}" in r.output
+    assert cert["name"] == "command"
+    assert cert["ok"] is False
+    assert cert["failed_stage"] == "live_probe"
+    assert "FAILED at live probe" in cert["verdict_line"]

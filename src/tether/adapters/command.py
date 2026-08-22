@@ -31,6 +31,7 @@ import shlex
 import signal
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -211,6 +212,7 @@ class CommandAdapter(AgentAdapter):
             self._active_procs[session.session_id] = proc
         timed_out = False
         interrupted = False
+        started_at = time.monotonic()
         try:
             try:
                 stdout, stderr = proc.communicate(input=stdin_data, timeout=timeout)
@@ -245,17 +247,24 @@ class CommandAdapter(AgentAdapter):
 
         logs = (f"$ {' '.join(shlex.quote(a) for a in argv)}\n"
                 f"{_text(stdout)}{_text(stderr)}")
+        # Basic telemetry surfaced into report.json by the orchestrator.
+        usage: Dict[str, Any] = {
+            "elapsed_seconds": time.monotonic() - started_at,
+            "exit_code": proc.returncode,
+        }
         if timed_out:
             return AgentState(
                 status="failed",
                 logs=logs,
                 error=f"command timed out after {timeout}s: {argv[0]}",
+                usage=usage,
             )
         if proc.returncode == 0:
-            return AgentState(status="completed", logs=logs, result={"exit_code": 0})
+            return AgentState(status="completed", logs=logs,
+                              result={"exit_code": 0}, usage=usage)
         return AgentState(
             status="failed", logs=logs, error=f"exit code {proc.returncode}",
-            result={"exit_code": proc.returncode},
+            result={"exit_code": proc.returncode}, usage=usage,
         )
 
     def cancel(self, session: SessionInfo) -> None:

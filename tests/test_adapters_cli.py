@@ -66,6 +66,56 @@ def test_command_adapter_runs_real_command(tmp_path):
     assert bad.send("x", session).status == "unavailable"
 
 
+def test_command_adapter_usage_on_completed_and_failed_sends(tmp_path):
+    ok = CommandAdapter({"command": [sys.executable, "-c", "print('hi')"]})
+    session = ok.start_session(str(tmp_path), "abc123")
+    state = ok.send("ignored", session)
+    assert state.status == "completed"
+    usage = state.usage
+    assert usage is not None
+    assert isinstance(usage["elapsed_seconds"], float)
+    assert usage["elapsed_seconds"] >= 0
+    assert usage["exit_code"] == 0
+
+    fail = CommandAdapter({"command": [sys.executable, "-c", "raise SystemExit(3)"]})
+    failed = fail.send("x", session)
+    assert failed.status == "failed"
+    failed_usage = failed.usage
+    assert failed_usage is not None
+    assert isinstance(failed_usage["elapsed_seconds"], float)
+    assert failed_usage["elapsed_seconds"] >= 0
+    assert failed_usage["exit_code"] == 3
+
+
+def test_run_report_and_sessions_show_carry_usage(tmp_path):
+    from tether.audit import find_session_dir
+
+    config = {
+        "default_adapter": "command",
+        "adapters": {"command": {"command": [sys.executable, "-c", "print('stub ran')"]}},
+    }
+    (tmp_path / "tether.json").write_text(json.dumps(config))
+    mission = tmp_path / "m.yaml"
+    mission.write_text("mission:\n  name: usage-run\n  goal: g\nadapter: command\n")
+    r = runner.invoke(app, ["run", str(mission), "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    sid = r.output.split("Session: ")[1].split()[0]
+
+    session_dir = find_session_dir(tmp_path, ".tether/sessions", sid)
+    assert session_dir is not None
+    report = json.loads((session_dir / "report.json").read_text(encoding="utf-8"))
+    usage = report.get("usage")
+    assert usage is not None
+    assert isinstance(usage["elapsed_seconds"], float)
+    assert usage["elapsed_seconds"] >= 0
+    assert usage["exit_code"] == 0
+
+    r = runner.invoke(app, ["sessions", "show", sid, "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    assert "Usage:" in r.output
+    assert "elapsed_seconds" in r.output and "exit_code" in r.output
+
+
 def test_cli_adapters_smoke_mock(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     r = runner.invoke(app, ["adapters", "smoke", "mock"])

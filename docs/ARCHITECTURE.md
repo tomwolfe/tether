@@ -28,6 +28,9 @@ src/tether/
                    changed files, backups
   manifest.py      Best-effort file manifests for non-git change visibility
   audit.py         Session directories, events.jsonl, report.json, secret redaction
+  smoke.py         One-trivial-prompt adapter probe inside a throwaway directory
+  conformance.py   Behavioral battery over any AgentAdapter with per-check results
+  certify.py       Availability + conformance + live-probe certification verdicts
   orchestrator.py  The core loop (adapter-agnostic): change capture, auto rollback
   cli.py           Typer CLI
 ```
