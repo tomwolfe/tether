@@ -725,6 +725,8 @@ def sessions_stats(
     adapter_successes: Dict[str, int] = {}
     attempt_counts: list[int] = []
     recovery_sessions = recovery_successes = 0
+    reviewed_sessions = review_approves = review_rejections = 0
+    review_rejections_caused_failures = 0
     failing_commands: Counter[str] = Counter()
     for d, data in entries:
         status = str(data.get("status", "?"))
@@ -739,6 +741,18 @@ def sessions_stats(
             recovery_sessions += 1
             if status == "success":
                 recovery_successes += 1
+        # Review-gate telemetry (dogfood-18): read-only aggregation over each
+        # report's optional "review" mapping; older reports lack it.
+        review = data.get("review")
+        if isinstance(review, dict) and review.get("enabled"):
+            reviewed_sessions += 1
+            verdict = str(review.get("verdict", ""))
+            if verdict == "approve":
+                review_approves += 1
+            elif verdict == "request_changes":
+                review_rejections += 1
+                if status == "failed":
+                    review_rejections_caused_failures += 1
         for r in data.get("verification_results") or []:
             if (isinstance(r, dict) and r.get("passed") is False
                     and r.get("command")):
@@ -776,6 +790,14 @@ def sessions_stats(
         },
         "top_failing_commands": top_failing,
         "adapters": adapters_stats,
+        "review_gate": {
+            "sessions_reviewed": reviewed_sessions,
+            "verdicts": {
+                "approve": review_approves,
+                "request_changes": review_rejections,
+            },
+            "rejections_caused_failures": review_rejections_caused_failures,
+        },
     }
 
     if json_output:
@@ -803,6 +825,12 @@ def sessions_stats(
     for name, info in adapters_stats.items():
         typer.echo(f"  {name}: {info['count']} session(s), "
                    f"success rate {info['success_rate_pct']}%")
+    if reviewed_sessions:
+        typer.echo(
+            f"Review gate: {reviewed_sessions} reviewed session(s), "
+            f"approve {review_approves}, request_changes {review_rejections}, "
+            f"rejections causing failures "
+            f"{review_rejections_caused_failures}")
 
 
 _DURATION_RE = re.compile(r"^(\d+)([mhd])$")

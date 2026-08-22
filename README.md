@@ -40,6 +40,8 @@ tether logs <session-id>                           # event log of a session
 tether rollback <session-id-or-prefix>             # restore the git checkpoint
 ```
 
+`tether sessions stats` aggregates cross-session analytics from every session's `report.json`, including a `review_gate` block that counts reviewed sessions, `approve`/`request_changes` verdicts, and rejections that caused failures.
+
 Useful `run` flags: `--adapter`, `--project-dir`, `--dry-run/--no-dry-run`, `--max-attempts`, `--allow-dirty/--no-allow-dirty`, `--auto-rollback/--no-auto-rollback`, `--strict`, `--verbose`. The boolean flags are tri-state: when omitted they do not override project config; when given they always do.
 
 The target project defaults to the current directory and is overridden with `--project-dir`; it does not have to be the Tether repo itself.

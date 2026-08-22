@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -1099,7 +1100,7 @@ def test_classify_failure_priority_order():
 
 def _fabricate_session(root, stamp, sid, status, adapter="mock",
                        mission_name="m", attempts=1, recovery=0,
-                       failing_cmds=()):
+                       failing_cmds=(), review=None):
     d = root / f"{stamp}-{mission_name}-{sid[:8]}"
     (d / "verification").mkdir(parents=True)
     for i in range(attempts):
@@ -1115,6 +1116,8 @@ def _fabricate_session(root, stamp, sid, status, adapter="mock",
         "recovery_attempts": [{"attempt": i} for i in range(recovery)],
         "next_steps": [],
     }
+    if review is not None:
+        report["review"] = review
     (d / "report.json").write_text(json.dumps(report), encoding="utf-8")
     return d
 
@@ -1183,6 +1186,73 @@ def test_sessions_stats_empty_audit_dir(tmp_path):
                             "--project-dir", str(tmp_path)])
     assert r.exit_code == 0, r.output
     assert "No sessions found." in r.output
+
+
+def test_sessions_stats_review_gate_aggregation(tmp_path):
+    root = tmp_path / ".tether" / "sessions"
+    root.mkdir(parents=True)
+    # Older session without any review mapping: ignored by the aggregation.
+    _fabricate_session(root, "20260801-000000", "aaaa11111111", "success")
+    # Reviewed and approved.
+    _fabricate_session(root, "20260802-000000", "bbbb22222222", "success",
+                       review={"enabled": True, "adapter": "mock",
+                               "verdict": "approve", "reason": "fine"})
+    # Reviewed, rejected, and the rejection caused the failure.
+    _fabricate_session(root, "20260803-000000", "cccc33333333", "failed",
+                       review={"enabled": True, "adapter": "mock",
+                               "verdict": "request_changes",
+                               "reason": "broken"})
+    # Reviewed and rejected but the mission still succeeded.
+    _fabricate_session(root, "20260804-000000", "dddd44444444", "success",
+                       review={"enabled": True, "adapter": "mock",
+                               "verdict": "request_changes",
+                               "reason": "meh"})
+    runner, app = _stats_runner(tmp_path)
+    r = runner.invoke(app, ["sessions", "stats", "--json",
+                            "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    data = json.loads(r.output)
+    assert data["review_gate"] == {
+        "sessions_reviewed": 3,
+        "verdicts": {"approve": 1, "request_changes": 2},
+        "rejections_caused_failures": 1,
+    }
+    # Human output gains a short Review gate line once reviews exist.
+    rh = runner.invoke(app, ["sessions", "stats",
+                             "--project-dir", str(tmp_path)])
+    assert rh.exit_code == 0, rh.output
+    assert "Review gate: 3 reviewed session(s)" in rh.output
+    assert "approve 1" in rh.output
+    assert "request_changes 2" in rh.output
+    assert "rejections causing failures 1" in rh.output
+
+
+def test_sessions_stats_without_review_data_unchanged_and_zeroed(tmp_path):
+    root = tmp_path / ".tether" / "sessions"
+    root.mkdir(parents=True)
+    _fabricate_session(root, "20260801-000000", "aaaa11111111", "success")
+    _fabricate_session(root, "20260802-000000", "bbbb22222222", "failed")
+    runner, app = _stats_runner(tmp_path)
+    r = runner.invoke(app, ["sessions", "stats", "--json",
+                            "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    data = json.loads(r.output)
+    assert data["review_gate"] == {
+        "sessions_reviewed": 0,
+        "verdicts": {"approve": 0, "request_changes": 0},
+        "rejections_caused_failures": 0,
+    }
+    # Human output stays byte-identical to before: no Review gate line.
+    rh = runner.invoke(app, ["sessions", "stats",
+                             "--project-dir", str(tmp_path)])
+    assert rh.exit_code == 0, rh.output
+    assert "Review gate" not in rh.output
+
+
+def test_readme_documents_review_gate_analytics():
+    readme = (Path(__file__).resolve().parent.parent
+              / "README.md").read_text(encoding="utf-8")
+    assert "review_gate" in readme
 
 
 def test_parse_older_than_accepts_minutes_hours_days():
