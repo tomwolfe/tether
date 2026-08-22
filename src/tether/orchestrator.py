@@ -755,11 +755,7 @@ class Orchestrator:
             "dry_run": dry_run,
         })
         audit.save_json("mission.json", mission.model_dump())
-        audit.save_json("resolved-config.json", redact_secrets(
-            self.config.model_dump(),
-            denylist=self.config.secret_denylist,
-            allowlist=self.config.secret_allowlist,
-        ))
+        audit.save_json("resolved-config.json", redact_secrets(self.config.model_dump()))
 
         status = "failed"
         verification_results: list[VerificationResult] = []
