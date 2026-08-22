@@ -1,0 +1,172 @@
+mission:
+  name: dogfood-20-verification-depth-and-telemetry
+  goal: |
+    Close Tether's deepest correctness gap: "verification passed" still does
+    not mean "the change behaves correctly." Add behavioral verification
+    probes (assert on a command's OUTPUT, not just its exit code), an
+    optional full-context review mode, and config-driven usage/cost
+    telemetry. Each task proven by tests that fail before and pass after.
+    All existing tests keep passing. Change NOTHING outside this scope.
+
+    Tasks (implement in order; keep every change minimal, typed, scoped):
+
+    1. BEHAVIORAL VERIFICATION PROBES:
+       - In src/tether/models.py add a ProbeSpec model:
+           command: str                    # run via subprocess, shell=False
+           contains: Optional[str] = None  # literal substring in output
+           matches: Optional[str] = None   # regex searched with re.search
+         and add to VerificationSpec:
+           probes: Optional[List[ProbeSpec]] = None
+       - In src/tether/mission.py, structurally validate `probes` (list of
+         mappings; command required non-empty string; contains/matches
+         optional strings). Raise MissionError otherwise. Existence/behavior
+         checks happen at run time against the target project.
+       - In src/tether/verification.py add a ProbeResult model
+         (command, passed, exit_code, matched, detail) and:
+           def run_probes(probes, project_dir, timeout_seconds) -> list[ProbeResult]
+         Each probe runs its command (shell=False, cwd=project_dir, timeout,
+         capture stdout+stderr). A probe PASSES when the combined
+         stdout+stderr satisfies ALL of contains/matches. Exit code is
+         recorded but is NOT itself the pass criterion (that is the point:
+         behavior, not exit status). Timeout or missing binary => probe
+         FAILED with a clear detail.
+       - In src/tether/orchestrator.py, after command + artifact + assertion
+         checks pass on an otherwise-green attempt, run probes. A failing
+         probe fails the attempt (recovery proceeds normally). Record probe
+         results in report["verification_results"] alongside commands,
+         artifacts, and assertions. Skipped in dry-run (mark as skipped).
+       - Tests: probe passes/fails on stdout content; `matches` regex works;
+         exit-code alone does not decide; missing binary fails; timeout
+         fails; report includes probe entries; structural validation errors;
+         dry-run skips probes.
+
+    2. FULL-CONTEXT INDEPENDENT REVIEW (additive, non-regressing):
+       - In src/tether/models.py extend ReviewSpec with:
+           context: str = "excerpt"   # "excerpt" (today) or "full"
+       - In src/tether/mission.py validate context is one of the two values.
+       - In src/tether/orchestrator.py _run_review_gate: when
+         context == "full", embed the ENTIRE captured artifact (patch.diff
+         or manifest_diff.json) up to a large cap (e.g. 64 KiB) instead of
+         REVIEW_EXCERPT_BUDGET, and instruct the reviewer to cite specific
+         hunks/lines. Default "excerpt" behavior MUST be byte-for-byte
+         unchanged. Do NOT change the last-marker fail-safe verdict
+         semantics or any AgentAdapter signature.
+       - Tests: default excerpt unchanged (regression guard); "full" embeds
+         substantially more of the artifact; both modes still fail safe on
+         garbage output; invalid context value rejected at validation.
+
+    3. ADAPTER USAGE/COST TELEMETRY:
+       - In src/tether/adapters/command.py, read an optional per-adapter
+         setting `usage_patterns`: a list of {metric: str, regex: str}. For
+         completed AND failed sends, apply each regex (re.search) to the
+         combined stdout+stderr and, on match, set
+         state.usage[metric] = float(group) when numeric else str(group).
+         Keep the existing elapsed_seconds and exit_code keys. Do NOT change
+         any AgentAdapter signature.
+       - In src/tether/cli.py sessions stats, aggregate a simple total for
+         each numeric usage metric across sessions that report usage; include
+         it in both the human output (only when at least one session reports
+         usage) and the --json block. Keep existing output byte-identical
+         otherwise.
+       - Tests: a stub command prints "tokens: 123 cost: 0.42"; config
+         usage_patterns extracts both into state.usage; a full run's report
+         carries them; sessions show displays Usage; stats aggregates the
+         totals and stays unchanged when no usage is present.
+
+    4. DOCUMENTATION TRUTH + TESTS:
+       - README.md: document probes under Verification; document
+         review.context under Review gate; mention usage aggregation under
+         sessions stats. Update Current limitations (usage is now
+         config-extractable, not only elapsed/exit).
+       - docs/ARCHITECTURE.md: note probes in the verification step and the
+         full-context review option in step 12.
+       - A test asserts README.md mentions "probes" and "usage_patterns".
+
+context:
+  - >-
+    Read docs/ARCHITECTURE.md, docs/SECURITY.md, docs/ADAPTERS.md,
+    README.md, src/tether/orchestrator.py, src/tether/verification.py,
+    src/tether/models.py, src/tether/mission.py, src/tether/cli.py,
+    src/tether/adapters/command.py, tests/test_safety.py,
+    tests/test_review_gate.py, and tests/test_adapters_cli.py first.
+  - >-
+    dogfood-11 added artifact assertions; dogfood-15 added the review gate;
+    dogfood-17 added independent reviewer + retry routing; dogfood-18 added
+    review telemetry; dogfood-19 added structural assertions + scrub +
+    per-mission baselines. Build on all of them; do not regress.
+  - >-
+    Probes are the key new idea: they assert on a command's OUTPUT, which
+    exercises the code, making verification harder to game than file-content
+    assertions or exit codes. This directly attacks "verification passed is
+    not the same as the change is correct."
+  - >-
+    The core loop must stay adapter-agnostic (AgentAdapter interface only).
+    No AgentAdapter signature changes. subprocess stays shell=False
+    everywhere; stdlib only.
+  - >-
+    Container/OS-level containment, streaming adapters, and certifying more
+    real adapters (aider, claude-code, finishing pi) are deliberate
+    FOLLOW-UPS, not part of this mission.
+context_files:
+  - docs/ARCHITECTURE.md
+  - docs/SECURITY.md
+  - README.md
+  - src/tether/orchestrator.py
+  - src/tether/verification.py
+  - src/tether/models.py
+  - src/tether/mission.py
+  - src/tether/cli.py
+  - src/tether/adapters/command.py
+constraints:
+  - do not change AgentAdapter method signatures
+  - do not weaken existing tests; all current tests must keep passing
+  - subprocess usage stays shell=False
+  - no new third-party dependencies (stdlib only)
+  - keep changes minimal, typed, and scoped to the four tasks
+  - probes must default to None so existing missions work unchanged
+  - review.context must default to "excerpt" so existing review behavior is unchanged
+  - a probe's pass criterion is its output content, not its exit code
+  - usage extraction must not break adapters that emit no usage output
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+    - ".venv/bin/tether adapters conformance mock"
+  artifacts:
+    - "README.md"
+    - "docs/ARCHITECTURE.md"
+  assertions:
+    - path: src/tether/verification.py
+      contains: run_probes
+    - path: src/tether/models.py
+      contains: ProbeSpec
+    - path: src/tether/adapters/command.py
+      contains: usage_patterns
+    - path: README.md
+      contains: probes
+recovery:
+  max_attempts: 4
+review:
+  enabled: true
+  required: true
+  adapter: opencode
+  retry_on_rejection: true
+  # NOTE: `context: full` is added by this mission itself (Task 2); it is
+  # commented out here because the current validator rejects the key until
+  # the feature ships. Re-enable after Task 2 lands.
+  # context: full
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 1800
+allowed_paths:
+  - src/**
+  - tests/**
+  - docs/**
+  - README.md
+forbidden_paths:
+  - .git/**
+  - .tether/**
+  - missions/**
