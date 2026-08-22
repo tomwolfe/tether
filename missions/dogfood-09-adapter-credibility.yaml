@@ -1,0 +1,118 @@
+mission:
+  name: dogfood-09-adapter-credibility
+  goal: |
+    Phase 1: adapter credibility — a capability model, a conformance harness,
+    and honest verified/experimental status so Tether can prove whether an
+    adapter is trustworthy rather than merely supporting it.
+
+    Tasks:
+
+    1. ADAPTER CAPABILITY MODEL:
+       - In src/tether/adapters/base.py, add capability metadata to the
+         AgentAdapter interface as class attributes with safe defaults:
+             supports_cancel: bool = False
+             supports_process_tree_kill: bool = False
+             supports_usage: bool = False
+             supports_streaming: bool = False
+             one_shot: bool = True
+       - Do NOT change any existing method signatures.
+       - Set capabilities accurately on each built-in adapter:
+           * CommandAdapter (and subclasses): supports_cancel=True,
+             supports_process_tree_kill=True, one_shot=True,
+             supports_usage only if the adapter parses usage from output,
+           * MockAdapter: minimal honest values.
+       - Expose capabilities in `tether adapters list` output.
+
+    2. ADAPTER CONFORMANCE HARNESS:
+       - Add src/tether/conformance.py implementing a reusable conformance
+         check that runs an adapter through a battery of behavioral checks and
+         returns structured per-check results (name, passed, detail).
+       - Checks must cover, where applicable:
+           * is_available() reports correctly for a working command,
+           * success exit code => completed state,
+           * nonzero exit => failed state,
+           * timeout => failed state with tree termination,
+           * cancel() terminates an active command (only when
+             supports_cancel),
+           * stdout/stderr captured into logs,
+           * spawn failure of a nonexistent binary => unavailable,
+           * project directory: command runs inside project_dir.
+       - Add CLI: `tether adapters conformance <name>` printing per-check
+         results and an overall PASS/FAIL verdict; exit nonzero on FAIL.
+       - `tether adapters conformance mock` must pass out of the box.
+       - For `command`, build stub executables (small Python scripts written
+         to a temp dir) so checks are deterministic; skip genuinely
+         inapplicable checks with a clear "skipped" status rather than failing.
+       - The harness must work against ANY AgentAdapter instance so future
+         adapters can self-certify.
+
+    3. HONEST VERIFIED/EXPERIMENTAL STATUS:
+       - `tether adapters list` already shows verified vs experimental. Extend
+         it to also show the conformance verdict when cheaply available, or at
+         minimum document in README/docs/ADAPTERS.md how an adapter earns
+         "verified": conformance harness passing plus demonstrated real CLI
+         behavior.
+       - Do NOT mark opencode or pi as verified. Keep them experimental.
+       - Update docs/ADAPTERS.md: capability table for built-ins, conformance
+         instructions (`tether adapters conformance <name>`), and promotion
+         criteria from experimental to verified.
+
+    4. TESTS:
+       - Unit tests for the capability defaults on base and accurate overrides
+         on built-ins.
+       - Tests running the conformance harness against MockAdapter (all pass)
+         and against CommandAdapter configured with stub executables covering:
+         availability, success, failure, timeout, unavailable binary.
+       - Test the CLI command exit codes: pass => 0, fail => nonzero.
+       - All existing tests keep passing; do not weaken any test.
+
+    Change NOTHING outside this scope.
+
+  context:
+    - Read src/tether/adapters/base.py, command.py, experimental.py, mock.py,
+      src/tether/smoke.py (existing smoke-test pattern), src/tether/cli.py
+      adapters subcommands, docs/ADAPTERS.md, and tests/test_adapter_harness.py
+      first.
+    - dogfood-07 made CommandAdapter Popen-based with process-group kill and a
+      real cancel(); the conformance timeout/cancel checks should reuse those
+      behaviors and their test patterns.
+    - The 'tether adapters smoke' command and smoke.py show the established
+      pattern for
+      throwaway-directory adapter exercises; follow its style.
+    - tests use stub Python scripts and temp dirs; keep that approach.
+
+  constraints:
+    - do not change AgentAdapter method signatures (new class attributes are fine)
+    - do not weaken existing tests; all current tests must keep passing
+    - subprocess usage stays shell=False
+    - no new third-party dependencies
+    - keep changes minimal, typed, and scoped
+
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+    - ".venv/bin/tether adapters conformance mock"
+  timeout_seconds: 900
+
+recovery:
+  max_attempts: 3
+
+adapter: opencode
+
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 1800
+
+allowed_paths:
+  - src/**
+  - tests/**
+  - docs/**
+  - README.md
+
+forbidden_paths:
+  - .git/**
+  - .tether/**
+  - missions/**
