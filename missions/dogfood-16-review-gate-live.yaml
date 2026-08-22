@@ -1,0 +1,102 @@
+mission:
+  name: dogfood-16-review-gate-live
+  goal: |
+    First live exercise of the dogfood-15 REVIEW GATE (this mission sets
+    review.enabled: true). The functional payload is roadmap item "explicit
+    secret allow/denylists" (G2 polish): let operators explicitly force
+    redaction or exempt specific keys from Tether's secret redaction.
+
+    Tasks (implement in order; keep every change minimal, typed, scoped):
+
+    1. EXPLICIT ALLOW/DENYLISTS FOR REDACTION:
+       - In src/tether/audit.py extend redaction so callers can pass an
+         explicit denylist (keys ALWAYS redacted, case-insensitive exact match)
+         and an explicit allowlist (keys NEVER redacted even when they contain
+         a secret marker). Denylist wins over allowlist; built-in marker
+         behavior is unchanged when both lists are empty or absent.
+       - Add module-level helpers or extend existing signatures WITHOUT
+         breaking any existing caller: all current call sites must keep their
+         exact behavior by default.
+       - In src/tether/models.py add two Optional config fields:
+             secret_denylist: List[str] = []
+             secret_allowlist: List[str] = []
+       - Wire the lists through wherever resolved-config redaction happens
+         (audit trail construction / redact_secrets call sites) so operator
+         configuration actually takes effect. Keep it minimal; do not
+         refactor unrelated code.
+
+    2. TESTS:
+       - New file tests/test_redaction_lists.py covering: denylist forces
+         redaction of a non-marker key; allowlist exempts a marker key;
+         denylist beats allowlist on conflict; empty/absent lists preserve
+         existing behavior exactly (existing tests must keep passing).
+
+    3. DOCUMENTATION:
+       - README.md: document the new config fields briefly under the
+         secrets/redaction discussion (or Current limitations if none exists).
+       - A test asserts README.md mentions "secret_denylist".
+
+    Change NOTHING outside this scope. All existing tests keep passing.
+
+context:
+  - >-
+    Read src/tether/audit.py, src/tether/models.py,
+    src/tether/orchestrator.py, tests/test_review_gate.py, and README.md
+    first.
+  - >-
+    dogfood-15 added the review gate; this is its first live use with
+    review.enabled: true. Do not modify the gate itself unless a genuine
+    defect blocks this mission, and never weaken it.
+  - >-
+    opencode is verified (docs/ADAPTERS.md promotion record). Do not regress
+    that status.
+  - subprocess stays shell=False everywhere; no new third-party dependencies.
+
+context_files:
+  - src/tether/audit.py
+  - src/tether/models.py
+  - src/tether/orchestrator.py
+  - tests/test_review_gate.py
+  - README.md
+
+constraints:
+  - do not change AgentAdapter method signatures
+  - do not weaken existing tests; all current tests must keep passing
+  - subprocess usage stays shell=False
+  - no new third-party dependencies (stdlib only)
+  - default behavior of all redaction paths must be unchanged
+  - do not change the review gate's fail-safe semantics
+
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+  artifacts:
+    - "tests/test_redaction_lists.py"
+    - "README.md"
+  timeout_seconds: 900
+
+recovery:
+  max_attempts: 4
+
+review:
+  enabled: true
+  required: true
+
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 1800
+
+allowed_paths:
+  - src/**
+  - tests/**
+  - docs/**
+  - README.md
+
+forbidden_paths:
+  - .git/**
+  - .tether/**
+  - missions/**
