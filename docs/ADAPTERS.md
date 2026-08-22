@@ -115,10 +115,11 @@ tether adapters certify opencode  # live probe requires a real `opencode` binary
 
 The optional mission review gate opens a fresh session on the **mission's own
 adapter instance** and sends an adversarial review prompt over the captured
-change; the reviewer is just another `send()` — no extra interface. Today this
-is self-review (same adapter as the worker), which is weaker than independent
-review; routing the review through a **different adapter** is a documented
-future option and requires no core-loop changes.
+change; the reviewer is just another `send()` — no extra interface. Setting
+`review.adapter` in the contract routes that session through a **different
+adapter** (resolved from the same adapters config; its availability is checked
+before the run), so independent review needs no core-loop changes — when
+unset, the gate remains self-review by the mission adapter.
 
 ## Experimental vs verified (promotion criteria)
 

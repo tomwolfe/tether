@@ -54,40 +54,46 @@ FORENSIC_EXCERPT_BUDGET = REPAIR_OUTPUT_BUDGET // 2
 REVIEW_EXCERPT_BUDGET = REPAIR_OUTPUT_BUDGET // 2
 REVIEW_REASON_BUDGET = 500
 # Fail-safe verdict contract (case-insensitive scan of the reviewer's logs):
-# the DECISIVE marker is the LAST occurrence of either token — command
-# adapters echo the full prompt (which mentions both tokens) ahead of the
-# reviewer's actual verdict line, so counting occurrences misclassifies every
-# real run. No marker at all => request_changes.
+# only lines STARTING with a verdict marker count, and the LAST such line
+# decides. Bare substring matching is unsafe twice over: command adapters
+# echo the full prompt (which mentions both tokens) ahead of the verdict,
+# and captured diffs may legitimately contain marker strings inside test
+# fixtures — but echoed prompts and diff hunks never BEGIN a line with
+# "REVIEW:". No qualifying line => request_changes.
 REVIEW_APPROVE_TOKEN = "review: approve"
 REVIEW_CHANGES_TOKEN = "review: request_changes"
+
+
+def _verdict_lines(logs: str) -> list[tuple[int, str]]:
+    """Indices and lowered text of lines starting with a verdict marker."""
+    out: list[tuple[int, str]] = []
+    for idx, line in enumerate(logs.splitlines()):
+        stripped = line.strip().lower()
+        if stripped.startswith(REVIEW_APPROVE_TOKEN) or \
+                stripped.startswith(REVIEW_CHANGES_TOKEN):
+            out.append((idx, stripped))
+    return out
 
 
 def _parse_review_verdict(logs: str) -> tuple[str, str]:
     """Fail-safe verdict parse over raw reviewer output.
 
     Returns ``(verdict, reason)`` where verdict is ``"approve"`` or
-    ``"request_changes"``. The last occurrence of either marker decides
-    (the reviewer's final verdict line follows any echoed prompt); output
-    with no marker fails safe as request_changes; the reason is the first
-    line after the decisive marker (bounded), or a short diagnostic when no
-    marker is present.
+    ``"request_changes"``. The last line beginning with a verdict marker
+    decides; output with no such line fails safe as request_changes; the
+    reason is the first line after the decisive marker (bounded), or a
+    short diagnostic when no marker is present.
     """
-    lowered = logs.lower()
-    i_approve = lowered.rfind(REVIEW_APPROVE_TOKEN)
-    i_reject = lowered.rfind(REVIEW_CHANGES_TOKEN)
-    if i_approve < 0 and i_reject < 0:
+    candidates = _verdict_lines(logs)
+    if not candidates:
         return ("request_changes",
                 "no valid review verdict found in reviewer output")
-    if i_approve >= i_reject:
-        marker, verdict = REVIEW_APPROVE_TOKEN, "approve"
-    else:
-        marker, verdict = REVIEW_CHANGES_TOKEN, "request_changes"
+    idx, text = candidates[-1]
+    verdict = ("approve" if text.startswith(REVIEW_APPROVE_TOKEN)
+               else "request_changes")
     lines = logs.splitlines()
-    for idx, line in enumerate(lines):
-        if marker in line.lower():
-            reason = lines[idx + 1].strip() if idx + 1 < len(lines) else ""
-            return verdict, clip_output(reason, REVIEW_REASON_BUDGET)
-    return verdict, ""
+    reason = lines[idx + 1].strip() if idx + 1 < len(lines) else ""
+    return verdict, clip_output(reason, REVIEW_REASON_BUDGET)
 
 # Tailored recovery guidance per verification failure class (dogfood-14);
 # emitted as the header of every repair prompt after a failed attempt.
@@ -98,6 +104,13 @@ FAILURE_CLASS_GUIDANCE: Dict[str, str] = {
     "missing_binary": "A required binary is missing; check the command.",
     "unknown": "Diagnose the failure from the output below.",
 }
+
+# Guidance header for review-triggered recovery rounds (dogfood-17): the
+# reviewer's objections replace the usual failing-output section below.
+REVIEW_RETRY_GUIDANCE = (
+    "The adversarial review gate rejected the change; address the "
+    "reviewer's objections while keeping the mission goal."
+)
 
 
 class _SandboxViolationError(RuntimeError):
@@ -340,8 +353,12 @@ def find_incomplete_sessions(project_dir: Path, audit_dir: str,
 
 class Orchestrator:
     def __init__(self, adapter: AgentAdapter, config: TetherConfig,
-                 project_dir: Path, session_id: Optional[str] = None) -> None:
+                 project_dir: Path, session_id: Optional[str] = None,
+                 reviewer: Optional[AgentAdapter] = None) -> None:
         self.adapter = adapter
+        # Independent reviewer (dogfood-17): defaults to the mission adapter
+        # so unset keeps today's self-review path byte-for-byte.
+        self.reviewer = reviewer if reviewer is not None else adapter
         self.config = config
         self.project_dir = project_dir
         self.session_id = session_id or new_session_id()
@@ -559,16 +576,17 @@ class Orchestrator:
                          checkpoint: CheckpointInfo) -> Dict[str, Any]:
         """Adversarial review gate over the captured change (dogfood-15).
 
-        Opens a FRESH reviewer session on this mission's adapter instance
-        and sends goal + a bounded excerpt of the already-captured change
-        artifact (``patch.diff`` for git, ``manifest_diff.json`` otherwise;
-        no re-diff). The verdict is parsed fail-safe from the reviewer's
-        logs: the LAST occurrence of either marker decides (command
-        adapters echo the prompt, which mentions both tokens, ahead of the
-        verdict line); output with no marker counts as request_changes. A
-        rejection does
-        NOT re-execute anything — recovery routing is a documented
-        follow-up. Returns the ``report["review"]`` payload.
+        Opens a FRESH reviewer session on ``self.reviewer`` — the mission's
+        adapter instance unless an independent reviewer adapter was injected
+        (dogfood-17) — and sends goal + a bounded excerpt of the
+        already-captured change artifact (``patch.diff`` for git,
+        ``manifest_diff.json`` otherwise; no re-diff). The verdict is parsed
+        fail-safe from the reviewer's logs: the LAST line BEGINNING with
+        either marker decides (echoed prompts and diff hunks never begin a
+        line with the marker, even when they contain the token mid-line);
+        output with no such line counts as request_changes. Returns the
+        ``report["review"]`` payload, recording
+        the ACTUAL reviewer adapter name.
         """
         name = "patch.diff" if checkpoint.is_git_repo else "manifest_diff.json"
         try:
@@ -591,9 +609,9 @@ class Orchestrator:
         audit.save_prompt("review", prompt)
         state_json: Dict[str, Any] = {"status": "unavailable", "logs": ""}
         try:
-            reviewer_session = self.adapter.start_session(
+            reviewer_session = self.reviewer.start_session(
                 str(self.project_dir), f"{self.session_id}-review")
-            state = self.adapter.send(prompt, reviewer_session)
+            state = self.reviewer.send(prompt, reviewer_session)
             verdict, reason = _parse_review_verdict(state.logs)
             state_json = state.model_dump()
         except Exception as e:  # noqa: BLE001 - gate must fail safe
@@ -602,7 +620,7 @@ class Orchestrator:
         audit.save_response("review", state_json)
         info: Dict[str, Any] = {
             "enabled": True,
-            "adapter": self.adapter.name,
+            "adapter": self.reviewer.name,
             "verdict": verdict,
             "reason": reason,
         }
@@ -1041,6 +1059,11 @@ class Orchestrator:
                 if not artifacts_passed:
                     log.warning("%s", missing_output)
                 passed = commands_passed and artifacts_passed
+                # Set when a required review rejects but retry_on_rejection
+                # is enabled and attempt budget remains (dogfood-17): control
+                # falls through into the normal recovery machinery below
+                # instead of failing immediately.
+                review_retry_reason: Optional[str] = None
                 if passed and not agent_failed:
                     # Review gate (dogfood-15): an independent adversarial
                     # pass over the captured diff, run only after every
@@ -1052,7 +1075,7 @@ class Orchestrator:
                             # configured-but-not-executed gate honestly.
                             review_result = {
                                 "enabled": True,
-                                "adapter": self.adapter.name,
+                                "adapter": self.reviewer.name,
                                 "verdict": "skipped",
                                 "reason": "dry-run",
                             }
@@ -1062,15 +1085,33 @@ class Orchestrator:
                                 audit, mission, checkpoint)
                         if (review_result["verdict"] == "request_changes"
                                 and review_spec.required):
-                            status = "failed"
-                            next_steps.append(
-                                "Review gate rejected the change: "
-                                + (review_result["reason"] or "no reason given"))
-                            log.warning("Review gate rejected the change: %s",
-                                        review_result["reason"])
-                            break
-                    status = "success"
-                    break
+                            if (getattr(review_spec, "retry_on_rejection",
+                                        False) and attempt < max_attempts):
+                                # Review-triggered recovery routing: one
+                                # more pass through the EXISTING recovery
+                                # machinery, bounded by the same
+                                # max_attempts budget.
+                                review_retry_reason = (
+                                    review_result["reason"]
+                                    or "no reason given")
+                                log.warning(
+                                    "Review gate rejected the change; "
+                                    "routing back into recovery "
+                                    "(attempt %d/%d)",
+                                    attempt, max_attempts)
+                            else:
+                                status = "failed"
+                                next_steps.append(
+                                    "Review gate rejected the change: "
+                                    + (review_result["reason"]
+                                       or "no reason given"))
+                                log.warning(
+                                    "Review gate rejected the change: %s",
+                                    review_result["reason"])
+                                break
+                    if review_retry_reason is None:
+                        status = "success"
+                        break
                 if attempt >= max_attempts:
                     status = "failed"
                     if missing_output and not failing_output:
@@ -1084,12 +1125,19 @@ class Orchestrator:
                 # Recovery attempt. classify_failure() is a pure helper over
                 # the verification results; the class drives the tailored
                 # guidance embedded in the repair prompt header below and is
-                # recorded in the recovery_attempts audit entry.
-                failure_class = classify_failure(verification_results)
-                guidance = FAILURE_CLASS_GUIDANCE.get(
-                    failure_class, FAILURE_CLASS_GUIDANCE["unknown"])
-                reason = failing_output or missing_output or (
-                    state.error or "agent reported failure")
+                # recorded in the recovery_attempts audit entry. A review-
+                # triggered round (dogfood-17) reuses this exact machinery,
+                # with the review reason as the failure input.
+                if review_retry_reason is not None:
+                    failure_class = "review_rejection"
+                    guidance = REVIEW_RETRY_GUIDANCE
+                    reason = review_retry_reason
+                else:
+                    failure_class = classify_failure(verification_results)
+                    guidance = FAILURE_CLASS_GUIDANCE.get(
+                        failure_class, FAILURE_CLASS_GUIDANCE["unknown"])
+                    reason = failing_output or missing_output or (
+                        state.error or "agent reported failure")
                 recovery_attempt: Dict[str, Any] = {
                     "attempt": attempt,
                     "failure_class": failure_class,

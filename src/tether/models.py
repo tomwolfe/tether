@@ -27,6 +27,13 @@ class ReviewSpec(BaseModel):
     missions validate and behave unchanged."""
     enabled: bool = False   # default OFF; existing missions unchanged
     required: bool = True   # when enabled, a rejection fails the mission
+    # Independent reviewer adapter name (dogfood-17); None defaults to the
+    # mission adapter (self-review). Resolved via the registry at run time,
+    # never at validation time.
+    adapter: Optional[str] = None
+    # When a required review rejects, route back into the bounded recovery
+    # loop instead of failing immediately (default off = current behavior).
+    retry_on_rejection: bool = False
 
 
 class MissionContract(BaseModel):

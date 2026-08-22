@@ -16,6 +16,7 @@ import typer
 import tether.adapters as registry
 from tether import __version__
 from tether import certify, conformance, smoke
+from tether.adapters.base import AgentAdapter
 from tether.audit import find_session_dir, new_session_id
 from tether.config import load_project_config, resolve_config
 from tether.git_safety import rollback as git_rollback
@@ -357,7 +358,29 @@ def run(
         typer.echo(f"Adapter {adapter_name!r} unavailable: {reason}", err=True)
         raise typer.Exit(code=1)
 
-    orch = Orchestrator(adapter_instance, config, pd, session_id=new_session_id())
+    # Independent reviewer (dogfood-17): when the contract enables review AND
+    # names a review.adapter, resolve it via the same registry/adapters config
+    # and fail fast here — an unavailable reviewer aborts before any agent
+    # runs. Review disabled or adapter unset keeps today's self-review path.
+    reviewer_instance: Optional[AgentAdapter] = None
+    if (mission.review is not None and mission.review.enabled
+            and mission.review.adapter):
+        try:
+            reviewer_instance = registry.resolve_adapter(
+                mission.review.adapter, config.adapters,
+                default_timeout=config.command_timeout_seconds,
+            )
+        except ValueError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(code=1)
+        rok, rreason = reviewer_instance.is_available()
+        if not rok and not config.dry_run:
+            typer.echo(f"Reviewer adapter {mission.review.adapter!r} "
+                       f"unavailable: {rreason}", err=True)
+            raise typer.Exit(code=1)
+
+    orch = Orchestrator(adapter_instance, config, pd,
+                        session_id=new_session_id(), reviewer=reviewer_instance)
     report = orch.run(mission)
     typer.echo(f"\nStatus: {report['status']}")
     typer.echo(f"Session: {report['session_id']}")

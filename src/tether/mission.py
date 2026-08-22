@@ -81,24 +81,32 @@ def load_mission(path: str | Path) -> MissionContract:
         raise MissionError("'recovery.max_attempts' must be an integer between 1 and 20")
 
     # Structural validation only: the review gate itself runs at mission
-    # runtime (orchestrator), never during validate-mission.
+    # runtime (orchestrator), never during validate-mission. Registry
+    # resolution of review.adapter is likewise a run-time concern.
     review_block = data.get("review")
     review: ReviewSpec | None = None
     if review_block is not None:
         if not isinstance(review_block, dict):
             raise MissionError("'review' must be a mapping")
-        for key in ("enabled", "required"):
+        for key in ("enabled", "required", "retry_on_rejection"):
             value = review_block.get(key)
             if key in review_block and not isinstance(value, bool):
                 raise MissionError(f"'review.{key}' must be a boolean")
-        unknown = set(review_block) - {"enabled", "required"}
+        review_adapter = review_block.get("adapter")
+        if review_adapter is not None and not isinstance(review_adapter, str):
+            raise MissionError("'review.adapter' must be a string")
+        unknown = set(review_block) - {
+            "enabled", "required", "adapter", "retry_on_rejection"}
         if unknown:
             raise MissionError(
-                "'review' accepts only 'enabled' and 'required'; got: "
+                "'review' accepts only 'enabled', 'required', 'adapter', "
+                "and 'retry_on_rejection'; got: "
                 + ", ".join(sorted(unknown)))
         review = ReviewSpec(
             enabled=review_block.get("enabled", False),
             required=review_block.get("required", True),
+            adapter=review_adapter,
+            retry_on_rejection=review_block.get("retry_on_rejection", False),
         )
 
     adapter = data.get("adapter")
