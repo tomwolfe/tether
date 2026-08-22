@@ -1,0 +1,92 @@
+mission:
+  name: dogfood-18-review-telemetry-and-promotion-evidence
+  goal: |
+    G6 batch: one more recorded real-adapter mission, plus a small G5/G2
+    payload — review-gate telemetry in cross-session analytics. All changes
+    minimal, typed, proven by tests that fail before and pass after. All
+    existing tests keep passing. Change NOTHING outside this scope.
+
+    TASK — REVIEW-GATE TELEMETRY in `tether sessions stats`:
+    - In src/tether/cli.py, sessions_stats already iterates every session
+      report. Extend it to aggregate review-gate outcomes from each report's
+      optional "review" mapping (absent in older sessions; ignore those):
+          "review_gate": {
+              "sessions_reviewed": <int>,   # reports containing review.enabled true
+              "verdicts": {"approve": <int>, "request_changes": <int>},
+              "rejections_caused_failures": <int>,
+          }
+      "rejections_caused_failures" counts reports where verdict is
+      "request_changes" AND overall status is "failed".
+    - Include the same "review_gate" block in the --json output (it is the
+      same dict; keep one code path).
+    - Human output: print a short "Review gate:" line only when at least one
+      reviewed session exists (keep existing output byte-identical otherwise).
+    - Tests (extend the existing sessions-stats test file or add one): mixed
+      fixture reports with/without review data produce correct counts;
+      reports without any review data leave human output unchanged and yield
+      zeroed counts in JSON.
+
+    DOCUMENTATION:
+    - README.md: extend the sessions stats / analytics description with one
+      sentence about review-gate aggregation.
+    - A test asserts README.md mentions "review_gate".
+
+    Change NOTHING else. Do not modify the review gate itself, verdict
+    parsing, adapter presets, verified statuses, or promotion records.
+
+context:
+  - >-
+    Read src/tether/cli.py (sessions_stats), the existing sessions-stats
+    tests, README.md analytics sections, and docs/ARCHITECTURE.md first.
+  - >-
+    dogfood-15 added the gate; dogfood-16 fixed line-anchored verdict
+    parsing; dogfood-17 added independent reviewer + retry routing. This
+    mission only adds READ-ONLY analytics over existing report.json fields.
+  - >-
+    opencode is verified per docs/ADAPTERS.md promotion record; do not
+    regress. subprocess stays shell=False; stdlib only.
+
+context_files:
+  - src/tether/cli.py
+  - README.md
+  - docs/ARCHITECTURE.md
+
+constraints:
+  - do not change AgentAdapter method signatures
+  - do not weaken existing tests; all current tests must keep passing
+  - human-readable stats output must be unchanged when no reviewed sessions exist
+  - read-only over report.json; do not write anything new
+  - subprocess usage stays shell=False
+  - no new third-party dependencies (stdlib only)
+
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+  artifacts:
+    - "README.md"
+  timeout_seconds: 900
+
+recovery:
+  max_attempts: 4
+
+review:
+  enabled: true
+
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 1800
+
+allowed_paths:
+  - src/**
+  - tests/**
+  - docs/**
+  - README.md
+
+forbidden_paths:
+  - .git/**
+  - .tether/**
+  - missions/**
