@@ -691,3 +691,188 @@ def test_verify_event_chain_reports_first_break(tmp_path):
     broken_json = lines[:2] + ["{not json"] + lines[3:]
     ok, msg = verify_event_chain(broken_json)
     assert not ok and "event 3" in msg and "invalid JSON" in msg
+
+
+# --------------------------------------- dogfood-10: bounded context files
+
+
+class _PromptRecorder(AgentAdapter):
+    """Records every prompt sent; always completes."""
+
+    name = "recorder"
+    verified = True
+
+    def __init__(self):
+        super().__init__({})
+        self.prompts: list[str] = []
+
+    def is_available(self):
+        return True, ""
+
+    def start_session(self, project_dir, session_id):
+        return SessionInfo(session_id=session_id, project_dir=project_dir)
+
+    def send(self, prompt, session):
+        self.prompts.append(prompt)
+        return AgentState(status="completed", logs="ok")
+
+    def cancel(self, session):
+        pass
+
+
+def _ctx_mission(tmp_path, entries):
+    listing = "".join(f"  - '{e}'\n" for e in entries)
+    p = tmp_path / "m.yaml"
+    p.write_text(
+        "mission:\n  name: ctx\n  goal: g\n"
+        f"context_files:\n{listing}"
+        f"verification:\n  commands:\n    - {PASS_CMD}\nadapter: mock\n",
+        encoding="utf-8",
+    )
+    return load_mission(p)
+
+
+def _run_ctx(tmp_path, mission, adapter=None, **cfg_kwargs):
+    cfg = TetherConfig(audit_dir=".tether/sessions", **cfg_kwargs)
+    adapter = adapter or _PromptRecorder()
+    report = Orchestrator(adapter, cfg, tmp_path).run(mission)
+    return report, adapter
+
+
+def test_context_files_reach_plan_and_execute_prompts(tmp_path):
+    (tmp_path / "notes.txt").write_text("CONTEXT-MARKER-ONE\n", encoding="utf-8")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "guide.md").write_text("GUIDE-MARKER\n", encoding="utf-8")
+    report, adapter = _run_ctx(
+        tmp_path, _ctx_mission(tmp_path, ["notes.txt", "sub/guide.md"]))
+    assert report["status"] == "success"
+    assert len(adapter.prompts) == 2  # plan + execute
+    for prompt in adapter.prompts:
+        assert "Context file: notes.txt" in prompt
+        assert "<<<BEGIN notes.txt>>>\nCONTEXT-MARKER-ONE" in prompt
+        assert "<<<END notes.txt>>>" in prompt
+        assert "GUIDE-MARKER" in prompt
+    # contents also reach the stored audit prompts
+    session = find_session_dir(tmp_path, ".tether/sessions",
+                               report["session_id"])
+    stored = "".join(p.read_text(encoding="utf-8")
+                     for p in sorted((session / "prompts").glob("*.txt")))
+    assert "CONTEXT-MARKER-ONE" in stored
+
+
+def test_context_files_too_many_fails_before_execution(tmp_path):
+    entries = []
+    for i in range(33):  # limit is 32
+        rel = f"f{i:02d}.txt"
+        (tmp_path / rel).write_text("x", encoding="utf-8")
+        entries.append(rel)
+    report, adapter = _run_ctx(tmp_path, _ctx_mission(tmp_path, entries))
+    assert report["status"] == "failed"
+    assert adapter.prompts == []  # aborted before any adapter interaction
+    assert report["verification_results"] == []
+    assert any("limit is 32 files" in s for s in report["next_steps"])
+
+
+def test_context_files_oversized_file_fails(tmp_path):
+    (tmp_path / "big.txt").write_text("x" * (256 * 1024 + 1), encoding="utf-8")
+    report, adapter = _run_ctx(tmp_path, _ctx_mission(tmp_path, ["big.txt"]))
+    assert report["status"] == "failed"
+    assert adapter.prompts == []
+    assert any("per-file limit is 262144 bytes" in s
+               for s in report["next_steps"])
+
+
+def test_context_files_total_limit_fails(tmp_path):
+    # each file under the per-file cap, together over the 512 KiB total
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (tmp_path / name).write_text("x" * (200 * 1024), encoding="utf-8")
+    report, adapter = _run_ctx(
+        tmp_path, _ctx_mission(tmp_path, ["a.txt", "b.txt", "c.txt"]))
+    assert report["status"] == "failed"
+    assert adapter.prompts == []
+    assert any("total 614400 bytes" in s and "limit is 524288 bytes" in s
+               for s in report["next_steps"])
+
+
+def test_context_files_binary_refused(tmp_path):
+    (tmp_path / "blob.bin").write_bytes(b"A" * 100 + b"\x00" + b"B" * 10)
+    report, adapter = _run_ctx(tmp_path, _ctx_mission(tmp_path, ["blob.bin"]))
+    assert report["status"] == "failed"
+    assert adapter.prompts == []
+    assert any("binary" in s for s in report["next_steps"])
+
+
+@pytest.mark.parametrize("entry,reason", [
+    ("../outside.txt", "escapes the project directory"),
+    ("/etc/hostname", "must be relative"),
+])
+def test_context_files_path_escapes_refused(tmp_path, entry, reason):
+    # the target exists outside the project dir: rejection must be path policy,
+    # not a missing file
+    (tmp_path.parent / "outside.txt").write_text("out there", encoding="utf-8")
+    report, adapter = _run_ctx(tmp_path, _ctx_mission(tmp_path, [entry]))
+    assert report["status"] == "failed"
+    assert adapter.prompts == []
+    assert any(reason in s for s in report["next_steps"])
+
+
+def test_context_files_missing_file_is_error_not_warning(tmp_path):
+    report, adapter = _run_ctx(tmp_path, _ctx_mission(tmp_path, ["ghost.md"]))
+    assert report["status"] == "failed"
+    assert adapter.prompts == []
+    assert any("context file not found: ghost.md" in s
+               for s in report["next_steps"])
+
+
+def test_validate_mission_checks_structure_only(tmp_path):
+    # existence/size/binary are run-time checks against the target project;
+    # validate-mission only enforces the list-of-strings structure.
+    p = tmp_path / "m.yaml"
+    p.write_text("mission:\n  name: x\n  goal: y\n"
+                 "context_files:\n  - ghost.md\n")
+    m = load_mission(p)
+    assert m.context_files == ["ghost.md"]
+
+
+@pytest.mark.parametrize("bad", [
+    "mission:\n  name: x\n  goal: y\ncontext_files: not-a-list\n",
+    "mission:\n  name: x\n  goal: y\ncontext_files: ['a', 42]\n",
+])
+def test_context_files_structural_errors_raise_mission_error(tmp_path, bad):
+    p = tmp_path / "bad.yaml"
+    p.write_text(bad)
+    with pytest.raises(MissionError):
+        load_mission(p)
+
+
+def test_context_files_redacted_when_redact_prompts_enabled(tmp_path):
+    # marker sits beyond the 64-char head/tail excerpts kept by redact_body
+    body = "F" * 100 + "TOPSECRET-CONTEXT-BODY" + "G" * 100
+    (tmp_path / "sec.txt").write_text(body + "\n", encoding="utf-8")
+    report, adapter = _run_ctx(tmp_path, _ctx_mission(tmp_path, ["sec.txt"]),
+                               redact_prompts=True)
+    assert report["status"] == "success"
+    # delivered prompts carry the redacted form only
+    assert all("TOPSECRET-CONTEXT-BODY" not in p for p in adapter.prompts)
+    assert all("[REDACTED sha256=" in p for p in adapter.prompts)
+    # audit-stored prompts carry no raw content either
+    session = find_session_dir(tmp_path, ".tether/sessions",
+                               report["session_id"])
+    stored = "".join(p.read_text(encoding="utf-8")
+                     for p in sorted((session / "prompts").glob("*.txt")))
+    assert "TOPSECRET-CONTEXT-BODY" not in stored
+    assert "[REDACTED sha256=" in stored
+
+
+def test_context_files_audit_event_lists_paths_and_sizes(tmp_path):
+    body = "hello context"  # 13 bytes
+    (tmp_path / "notes.txt").write_text(body, encoding="utf-8")
+    report, _ = _run_ctx(tmp_path, _ctx_mission(tmp_path, ["notes.txt"]))
+    assert report["status"] == "success"
+    session = find_session_dir(tmp_path, ".tether/sessions",
+                               report["session_id"])
+    events = [json.loads(line) for line in
+              (session / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    ev = next(e for e in events if e["kind"] == "context_files")
+    assert ev["files"] == [{"path": "notes.txt", "bytes": len(body)}]
+    assert ev["total_bytes"] == len(body)

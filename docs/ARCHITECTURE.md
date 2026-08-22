@@ -6,8 +6,10 @@
 src/tether/
   models.py        Pydantic models: MissionContract, TetherConfig, AgentState,
                    VerificationResult, CheckpointInfo
-  mission.py       Mission loading/validation (YAML/JSON) -> MissionContract
-  config.py        Config layering: CLI > mission > project tether.* > defaults
+   mission.py       Mission loading/validation (YAML/JSON) -> MissionContract
+   context_files.py Bounded mission context_files: limits, path/binary rules,
+                    prompt rendering
+   config.py        Config layering: CLI > mission > project tether.* > defaults
   adapters/
     base.py        AgentAdapter ABC + SessionInfo (the only thing core knows)
     mock.py        Deterministic MockAdapter (success / fail_then_succeed / always_fail)
@@ -37,7 +39,7 @@ src/tether/
 3. Create session id and audit directory; save resolved config with secrets redacted.
 4. Adapter availability check (non-dry-run): an unavailable adapter fails fast with a clear next step.
 5. Git checkpoint (record HEAD, create `refs/tether/checkpoint/<session-id>`). Dry-run records intent but writes no ref and takes no backup. A dirty tree aborts the mission before any adapter call unless `allow_dirty` is set (mission/config/CLI precedence applies). Non-git projects get a tar backup under `backup_dir`; backup failure fails the mission.
-6. Planning prompt -> adapter; response stored. A non-completed planning status aborts the mission before execution.
+6. Planning prompt -> adapter; response stored. A non-completed planning status aborts the mission before execution. Declared `context_files` are read and validated against the target project *before* planning (limits: 32 files / 256 KiB per file / 512 KiB total; relative paths only, no `..`, must exist, NUL byte in first 8 KiB => binary refusal); any violation fails the mission before any adapter call. Loaded content is embedded into the planning and execution summaries (and passed through the prompt redaction helper when `redact_prompts` is on), with a `context_files` audit event recording paths and byte sizes.
 7. Execution prompt -> adapter; agent state stored.
 8. Changed-file detection (`git diff` vs checkpoint HEAD + untracked; non-git projects use a before/after file manifest).
 9. Forensic change capture into the session audit directory (skipped in dry-run): git projects get `patch.diff` (`git diff --no-color --binary <original_head>`, includes binary changes) plus `untracked.txt` (a plain diff misses untracked contents); non-git projects get `manifest_diff.json` (added/modified/deleted plus the before/after fingerprints). Captured before verification so the evidence reflects the agent's changes.
@@ -47,6 +49,15 @@ src/tether/
 13. A `KeyboardInterrupt` (Ctrl-C) during adapter interaction is handled gracefully: `adapter.cancel(session)` is invoked best-effort (for CommandAdapter this terminates the running process tree), a `cancelled` event is appended to `events.jsonl`, the audit trail is finalized with a `report.json` of status `cancelled`, and `next_steps` carries rollback guidance (`tether rollback <session-id>`).
 
 Effective values follow strict precedence: mission explicit value > project config > built-in default, applied independently for `recovery.max_attempts`, `verification.commands`, and `verification.timeout_seconds`. Mission models keep these fields Optional so "unset" is distinguishable from an explicit value.
+
+## Sandbox modes
+
+`sandbox_mode` selects how the write sandbox (mission `allowed_paths` / `forbidden_paths` globs) reacts:
+
+- `warn` (default): post-execution gate. Detected changes (git diff + untracked files; non-git manifest) are matched against the globs after the agent finishes; violations fail the mission and skip verification.
+- `enforce`: additionally snapshots the tree before execution (the shared file manifest) and unions the filesystem-metadata diff into the post-execution check for git repos too — untracked files are already covered in both modes, and the metadata diff catches writes content-based detection misses (e.g. gitignored paths).
+
+Enforce narrows risk but does not eliminate it: it is best-effort detection inside the normal loop, not OS-level containment (see docs/SECURITY.md).
 
 The loop never references a concrete adapter type; it only calls the `AgentAdapter` interface (`is_available`, `start_session`, `send`, `cancel`, plus prompt builders). Adding an agent = adding a registry entry or a config block.
 

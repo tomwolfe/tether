@@ -31,6 +31,10 @@ class MissionContract(BaseModel):
     # the project dir. None/empty means unrestricted.
     allowed_paths: Optional[List[str]] = None
     forbidden_paths: Optional[List[str]] = None
+    # Optional bounded reference context: relative paths read at mission start
+    # (before planning) and embedded into the prompt context. Limits, path
+    # rules, and binary refusal live in tether.context_files.
+    context_files: List[str] = Field(default_factory=list)
 
     @field_validator("name")
     @classmethod
@@ -62,6 +66,11 @@ class TetherConfig(BaseModel):
     # successful runs or dry-runs.
     auto_rollback: bool = False
     redact_prompts: bool = False
+    # Write-sandbox posture: "warn" (default) detects violations after
+    # execution and fails the mission; "enforce" additionally snapshots the
+    # project tree and unions filesystem-metadata diffs into the sandbox
+    # check. Best-effort either way — not OS-level containment.
+    sandbox_mode: Literal["warn", "enforce"] = "warn"
     writer_lock_stale_seconds: int = 43200  # 12 hours
     adapters: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     verification: VerificationSpec = Field(default_factory=VerificationSpec)

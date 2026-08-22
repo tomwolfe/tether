@@ -90,6 +90,14 @@ def load_mission(path: str | Path) -> MissionContract:
             raise MissionError(f"'{field}' must be a list of strings")
         sandbox_globs[field] = value
 
+    # Structural checks only: existence/size/binary validation happens at
+    # run time against the target project (tether.context_files).
+    context_files = data.get("context_files", [])
+    if not isinstance(context_files, list):
+        raise MissionError("'context_files' must be a list of relative file paths")
+    if not all(isinstance(x, str) for x in context_files):
+        raise MissionError("'context_files' must be a list of strings")
+
     adapters_block = data.get("adapters") or {}
     if not isinstance(adapters_block, dict):
         raise MissionError("'adapters' must be a mapping of adapter name to settings")
@@ -110,6 +118,7 @@ def load_mission(path: str | Path) -> MissionContract:
             adapters=adapters_block,
             allowed_paths=sandbox_globs.get("allowed_paths"),
             forbidden_paths=sandbox_globs.get("forbidden_paths"),
+            context_files=context_files,
         )
     except ValidationError as e:
         raise MissionError(_format_validation_error(e)) from e

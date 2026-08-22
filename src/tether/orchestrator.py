@@ -11,7 +11,13 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from tether.adapters.base import AgentAdapter
-from tether.audit import AuditTrail, new_session_id, redact_secrets, utcnow
+from tether.audit import AuditTrail, new_session_id, redact_body, redact_secrets, utcnow
+from tether.context_files import (
+    ContextFile,
+    ContextFilesError,
+    load_context_files,
+    render_context_block,
+)
 from tether.git_safety import (
     changed_files_since,
     create_checkpoint,
@@ -551,8 +557,11 @@ class Orchestrator:
             audit.log_event("backup", {"path": backup})
             log.warning("Non-git project; file backup created at %s", backup)
 
-        # Non-git change visibility: snapshot before execution (best-effort).
-        if not checkpoint.is_git_repo:
+        # Change-visibility snapshot before execution (best-effort): always
+        # for non-git projects; for git repos only in sandbox enforce mode,
+        # where the metadata diff below adds a net over writes that
+        # content-based git detection might miss (e.g. gitignored paths).
+        if not checkpoint.is_git_repo or self.config.sandbox_mode == "enforce":
             try:
                 manifest_before = snapshot_manifest(self.project_dir)
             except OSError as e:
@@ -564,6 +573,58 @@ class Orchestrator:
         pre_existing_untracked: list[str] = []
         if checkpoint.is_git_repo and not dry_run:
             pre_existing_untracked = _git_untracked_files(self.project_dir)
+
+        # Bounded reference context (mission.context_files): read + validate
+        # against the target project BEFORE planning; any violation fails the
+        # mission here, so no adapter call ever sees an invalid contract.
+        context_block = ""
+        if getattr(mission, "context_files", None):
+            try:
+                ctx_files = load_context_files(
+                    self.project_dir, list(mission.context_files)
+                )
+            except ContextFilesError as e:
+                reasons = [line.strip("- ") for line in str(e).splitlines()
+                           if line.strip() and line != "invalid context_files:"]
+                audit.log_event("context_files_rejected", {"errors": reasons})
+                report = {
+                    "session_id": self.session_id,
+                    "mission_name": mission.name,
+                    "adapter": self.adapter.name,
+                    "status": "failed",
+                    "started_at": started_at,
+                    "finished_at": utcnow(),
+                    "verification_results": [],
+                    "recovery_attempts": [],
+                    "changed_files": [],
+                    "checkpoint_info": checkpoint.model_dump(),
+                    "plan": "",
+                    "next_steps": ["Mission aborted: invalid context_files. "
+                                   + "; ".join(reasons)],
+                    "audit_dir": str(audit.dir),
+                }
+                audit.write_report(report)
+                audit.log_event("session_end", {"status": "failed"})
+                log.error("Aborted: invalid context_files (%d issue(s)).",
+                          len(reasons))
+                return report
+            audit.log_event("context_files", {
+                "files": [{"path": f.relpath, "bytes": f.size_bytes}
+                          for f in ctx_files],
+                "total_bytes": sum(f.size_bytes for f in ctx_files),
+                "redacted": bool(self.config.redact_prompts),
+            })
+            if self.config.redact_prompts:
+                # Same redaction helper as audit-stored prompts: with
+                # redact_prompts enabled, raw context content never reaches
+                # the adapter either.
+                ctx_files = [
+                    ContextFile(relpath=f.relpath, size_bytes=f.size_bytes,
+                                content=redact_body(f.content))
+                    for f in ctx_files
+                ]
+            if ctx_files:
+                context_block = render_context_block(ctx_files)
 
         session = None
         state: AgentState | None = None
@@ -582,8 +643,12 @@ class Orchestrator:
                 session.metadata["mission_name"] = mission.name
                 audit.log_event("adapter_session", {"name": self.adapter.name})
 
-            # Planning step
-            plan_prompt = self.adapter.plan_prompt(self.mission_summary(mission))
+            # Planning step. Loaded context files (if any) are embedded in
+            # the prompt summary so the agent plans against them too.
+            planning_summary = self.mission_summary(mission)
+            if context_block:
+                planning_summary += "\n\n" + context_block
+            plan_prompt = self.adapter.plan_prompt(planning_summary)
             audit.save_prompt("plan", plan_prompt)
             if dry_run:
                 log.info("[dry-run] would send planning prompt to %s", self.adapter.name)
@@ -607,7 +672,7 @@ class Orchestrator:
 
             # Execution step. The planning output is composed into the
             # mission summary so the agent executes against its own plan.
-            exec_summary = self.mission_summary(mission)
+            exec_summary = planning_summary
             if plan_text:
                 exec_summary += "\n\nPlan:\n" + plan_text
             exec_prompt = self.adapter.execute_prompt(exec_summary)
@@ -625,13 +690,20 @@ class Orchestrator:
             changed = changed_files_since(self.project_dir, checkpoint.original_head)
             # Non-git projects: fall back to the pre-execution manifest so
             # change detection (and the sandbox gate below) sees the files
-            # the agent just wrote.
-            if not checkpoint.is_git_repo and manifest_before is not None:
+            # the agent just wrote. In sandbox enforce mode, git repos get
+            # the same filesystem-metadata diff unioned in: untracked files
+            # are already covered by changed_files_since above, and the
+            # manifest additionally catches writes invisible to git (e.g.
+            # gitignored paths) so they still hit the sandbox gate.
+            if manifest_before is not None and (
+                not checkpoint.is_git_repo or self.config.sandbox_mode == "enforce"
+            ):
                 try:
                     mdiff = diff_manifests(manifest_before,
                                            snapshot_manifest(self.project_dir))
                     changed = sorted(
-                        set(mdiff["added"]) | set(mdiff["modified"])
+                        set(changed)
+                        | set(mdiff["added"]) | set(mdiff["modified"])
                         | set(mdiff["deleted"])
                     )
                 except OSError:

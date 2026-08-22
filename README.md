@@ -90,7 +90,27 @@ CLI flags > mission file > project config (`tether.yaml|yml|json|toml`) > defaul
 
 Mission values that are **unset** (absent) fall back to the project config; only explicit mission values override it. Adapter settings are deep-merged per adapter name: mission adapter settings override project adapter settings key-by-key.
 
-Config keys: `default_adapter`, `audit_dir`, `backup_dir`, `dry_run`, `log_level`, `command_timeout_seconds`, `verification_timeout_seconds`, `max_attempts`, `allow_dirty`, `auto_rollback`, `adapters` (per-adapter settings), `verification.commands`.
+Config keys: `default_adapter`, `audit_dir`, `backup_dir`, `dry_run`, `log_level`, `command_timeout_seconds`, `verification_timeout_seconds`, `max_attempts`, `allow_dirty`, `auto_rollback`, `sandbox_mode`, `adapters` (per-adapter settings), `verification.commands`.
+
+## Context files (mission contracts)
+
+A mission may declare top-level `context_files`: relative paths that Tether reads at mission start (before planning) and embeds into the prompt context delivered to the adapter, each delimited with headers naming the file:
+
+```yaml
+context_files:
+  - docs/ARCHITECTURE.md
+  - src/tether/models.py
+```
+
+Hard limits (constants live in `tether/context_files.py`): **max 32 files**, **max 256 KiB per file**, **max 512 KiB total context**. Violations fail the mission before execution with explicit reasons:
+
+- Paths must be relative and must not escape the project directory: no absolute paths, no `..` components after normalization.
+- Files must exist — a missing file is an error, not a warning.
+- Binary content is refused: any NUL byte within the first 8 KiB marks a file as binary.
+
+`tether validate-mission` checks structure only (must be a list of strings); existence/size/binary checks run at run time against the target project.
+
+Context files are sent verbatim to the agent (modulo redaction) and appear in audit prompts. When `redact_prompts` is enabled, their content is passed through the same redaction helper as other prompts — both what the adapter receives and what the audit trail stores carry only the redacted form. Each run logs a `context_files` audit event listing which files were included and their byte sizes.
 
 ## Verification
 
@@ -111,6 +131,15 @@ Repair-prompt outputs are bounded; audit records keep full output. Note that pro
 ## Process containment
 
 Adapter commands run via `subprocess` with `shell=False` in their own process group/session: on POSIX the child gets `start_new_session=True`; on Windows it gets `CREATE_NEW_PROCESS_GROUP`. Timeouts and `cancel()` therefore terminate the **whole process tree**, not just the immediate child — termination is graceful first (SIGTERM to the group on POSIX, `taskkill /T` on Windows), then forceful (`SIGKILL` / `taskkill /T /F`) after a short grace period. Stdlib only; no third-party dependencies. Ctrl-C during an adapter call cancels the running command tree through the same path.
+
+## Sandbox modes
+
+Missions can restrict agent writes with the contract's `allowed_paths` / `forbidden_paths` fnmatch globs (relative to the project dir; a forbidden match or — when `allowed_paths` is set — no allowed match is a violation). The config key `sandbox_mode` controls how violations are detected:
+
+- `warn` (default): post-execution detection, unchanged behavior. After the agent finishes, every detected changed file (git diff vs checkpoint HEAD plus untracked files; non-git projects use a before/after manifest) is checked against the globs. Violations fail the mission, skip verification entirely, and point at rollback.
+- `enforce`: additionally snapshots the project tree before execution (the same file manifest used for non-git projects) and unions filesystem-metadata diffs into the post-execution check. Untracked git files are already checked in both modes; the metadata diff additionally catches writes that content-based detection can miss, e.g. new files under `.gitignore`d paths in git repos.
+
+Be honest about the limit: enforce mode narrows but does **not** eliminate risk. It is best-effort detection layered onto post-hoc analysis — **not OS-level containment** (see docs/SECURITY.md). Use containers, VMs, or separate users when isolating untrusted agents.
 
 ## Change capture (forensics)
 

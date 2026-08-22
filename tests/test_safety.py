@@ -1012,6 +1012,69 @@ def test_invalid_sandbox_fields_raise_mission_error(tmp_path, bad):
         load_mission(p)
 
 
+# --------------------------------------------- dogfood-10: sandbox modes
+
+
+def test_sandbox_mode_defaults_to_warn_and_unknown_rejected():
+    from pydantic import ValidationError
+    assert TetherConfig().sandbox_mode == "warn"
+    with pytest.raises(ValidationError):
+        TetherConfig(sandbox_mode="yolo")
+
+
+def test_resolve_config_rejects_unknown_sandbox_mode(tmp_path):
+    (tmp_path / "tether.yaml").write_text("sandbox_mode: paranoid\n")
+    with pytest.raises(ValueError):
+        resolve_config(tmp_path)
+
+
+def test_enforce_mode_flags_untracked_forbidden_write(tmp_path):
+    _git_repo(tmp_path)
+    mp = _committed_mission(tmp_path, body=(
+        "mission:\n  name: sbx-enf\n  goal: g\n"
+        "forbidden_paths:\n  - '*.secret'\n"
+        f"verification:\n  commands:\n    - {PASS_CMD}\nadapter: mock\n"
+    ))
+    adapter = _WritingAdapter("brand-new.secret")  # new untracked file
+    cfg = TetherConfig(audit_dir=".tether/sessions", sandbox_mode="enforce")
+    report = Orchestrator(adapter, cfg, tmp_path).run(load_mission(mp))
+    assert report["status"] == "failed"
+    assert {"path": "brand-new.secret",
+            "rule": "forbidden_paths: *.secret"} in report["sandbox_violations"]
+    assert report["verification_results"] == []
+
+
+def test_warn_misses_gitignored_write_but_enforce_flags_it(tmp_path):
+    _git_repo(tmp_path)
+    (tmp_path / ".gitignore").write_text("*.secret\n")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "ignore"],
+                   check=True)
+    mp = _committed_mission(tmp_path, body=(
+        "mission:\n  name: sbx-ign\n  goal: g\n"
+        "forbidden_paths:\n  - '*.secret'\n"
+        f"verification:\n  commands:\n    - {PASS_CMD}\nadapter: mock\n"
+    ))
+
+    def run(relpath, mode):
+        # distinct filename per run so earlier runs' leftovers cannot mask
+        # later diffs
+        adapter = _WritingAdapter(relpath)
+        cfg = TetherConfig(audit_dir=".tether/sessions", sandbox_mode=mode)
+        return Orchestrator(adapter, cfg, tmp_path).run(load_mission(mp))
+
+    # warn (default): content-based detection cannot see gitignored writes
+    warn_report = run("leaked-warn.secret", "warn")
+    assert warn_report["status"] == "success"
+    assert warn_report["sandbox_violations"] == []
+    # enforce: filesystem metadata diff flags it
+    enforce_report = run("leaked-enf.secret", "enforce")
+    assert enforce_report["status"] == "failed"
+    assert {"path": "leaked-enf.secret",
+            "rule": "forbidden_paths: *.secret"} in enforce_report["sandbox_violations"]
+    assert enforce_report["verification_results"] == []
+
+
 # --------------------------------------------- dogfood-06: audit redaction
 
 
