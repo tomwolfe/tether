@@ -37,24 +37,42 @@ def _is_secret_key(key: str) -> bool:
     return lowered == "env"
 
 
-def redact_secrets(obj: Any) -> Any:
+def redact_secrets(obj: Any, *,
+                   denylist: Iterable[str] = (),
+                   allowlist: Iterable[str] = ()) -> Any:
     """Recursively replace values of obviously sensitive keys with a marker.
     Structure is preserved; adapter ``env`` mappings keep their keys but have
-    every value redacted."""
-    if isinstance(obj, dict):
-        out: dict = {}
-        for k, v in obj.items():
-            if str(k).lower() == "env" and isinstance(v, dict):
-                out[k] = {ek: (REDACTED if ev is not None else None)
-                          for ek, ev in v.items()}
-            elif _is_secret_key(str(k)) and v not in (None, {}, []):
-                out[k] = REDACTED
-            else:
-                out[k] = redact_secrets(v)
-        return out
-    if isinstance(obj, list):
-        return [redact_secrets(x) for x in obj]
-    return obj
+    every value redacted.
+
+    ``denylist``: keys whose values are always redacted (exact, lower-case-
+    insensitive name match); wins over ``allowlist`` and the built-in
+    markers. ``allowlist``: keys never redacted even when their name contains
+    a secret marker. Both default to empty, which keeps the built-in marker
+    behavior exactly unchanged."""
+    deny = {str(k).lower() for k in denylist}
+    allow = {str(k).lower() for k in allowlist}
+
+    def _walk(o: Any) -> Any:
+        if isinstance(o, dict):
+            out: dict = {}
+            for k, v in o.items():
+                lowered = str(k).lower()
+                if lowered == "env" and isinstance(v, dict):
+                    out[k] = {ek: (REDACTED if ev is not None else None)
+                              for ek, ev in v.items()}
+                elif lowered in deny and v not in (None, {}, []):
+                    out[k] = REDACTED
+                elif (_is_secret_key(str(k)) and lowered not in allow
+                        and v not in (None, {}, [])):
+                    out[k] = REDACTED
+                else:
+                    out[k] = _walk(v)
+            return out
+        if isinstance(o, list):
+            return [_walk(x) for x in o]
+        return o
+
+    return _walk(obj)
 
 
 def utcnow() -> str:

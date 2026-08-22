@@ -93,7 +93,7 @@ CLI flags > mission file > project config (`tether.yaml|yml|json|toml`) > defaul
 
 Mission values that are **unset** (absent) fall back to the project config; only explicit mission values override it. Adapter settings are deep-merged per adapter name: mission adapter settings override project adapter settings key-by-key.
 
-Config keys: `default_adapter`, `audit_dir`, `backup_dir`, `dry_run`, `log_level`, `command_timeout_seconds`, `verification_timeout_seconds`, `max_attempts`, `allow_dirty`, `auto_rollback`, `sandbox_mode`, `retention_days` (used by `sessions clean` when `--older-than` is omitted), `adapters` (per-adapter settings), `verification.commands`.
+Config keys: `default_adapter`, `audit_dir`, `backup_dir`, `dry_run`, `log_level`, `command_timeout_seconds`, `verification_timeout_seconds`, `max_attempts`, `allow_dirty`, `auto_rollback`, `sandbox_mode`, `retention_days` (used by `sessions clean` when `--older-than` is omitted), `secret_denylist`, `secret_allowlist`, `adapters` (per-adapter settings), `verification.commands`.
 
 ## Context files (mission contracts)
 
