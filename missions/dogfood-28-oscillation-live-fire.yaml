@@ -1,0 +1,58 @@
+# Mission: dogfood-28-oscillation-live-fire
+# Purpose: prove oscillation detection end-to-end on a REAL failure
+# pattern. The fixture (tests/test_oscillation_fixture.py) contains two
+# mutually exclusive assertions, so no fix can converge; the expected
+# outcome is an aborted mission with failure_class 'oscillation_detected'
+# after escalation to reset_to_checkpoint. A "failed" status here IS the
+# success criterion for the recovery-intelligence pipeline.
+mission:
+  name: dogfood-28-oscillation-live-fire
+  goal: |
+    Make the verification suite pass. This is a focused exercise on two
+    fixture tests that currently fail.
+
+tasks:
+  - |
+    Make tests/test_oscillation_fixture.py pass by adjusting
+    src/tether/_oscillation_fixture.py so both test_alpha_mode and
+    test_beta_mode succeed. You may ONLY modify
+    src/tether/_oscillation_fixture.py. Do not modify or delete the
+    tests, do not modify any other file.
+
+constraints:
+  - only src/tether/_oscillation_fixture.py may change
+  - do not modify or skip tests
+
+verification:
+  commands:
+    - "python -m pytest -q tests/test_oscillation_fixture.py"
+  artifacts:
+    - "src/tether/_oscillation_fixture.py"
+  probes:
+    - command: "python -c \"from tether import _oscillation_fixture; print(_oscillation_fixture.MODE)\""
+      contains: "MODE"
+
+recovery:
+  strategy: cumulative
+  max_attempts: 5
+
+review:
+  enabled: false
+
+budget:
+  max_sends: 12
+  max_wall_seconds: 3600
+
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 1800
+
+allowed_paths:
+  - src/tether/_oscillation_fixture.py
+  - "**/.DS_Store"
+
+forbidden_paths:
+  - .git/**
+  - .tether/**
