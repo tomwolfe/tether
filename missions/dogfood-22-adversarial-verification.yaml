@@ -1,0 +1,172 @@
+mission:
+  name: dogfood-22-adversarial-verification
+  goal: |
+    Close Tether's deepest trust gap quantitatively: today nothing measures
+    whether verification would CATCH an incorrect change. Add MUTATION
+    TESTING as an opt-in meta-verification layer: mutate the files the agent
+    just changed, re-run the existing verification suite against each mutant,
+    and report a kill rate. A low kill rate is hard evidence the mission's
+    verification is gameable. Each task proven by tests that fail before and
+    pass after. All existing tests keep passing. Change NOTHING outside scope.
+
+    Tasks (implement in order; minimal, typed, scoped):
+    1. MUTATION MODEL:
+       - In src/tether/models.py add MutationSpec wired into VerificationSpec
+         as Optional `mutation:` (None => unset, existing missions unchanged):
+             enabled: bool = False
+             operators: Optional[List[str]] = None   # default = all built-ins
+             max_mutants: int = 20                    # cap for determinism/cost
+             fail_below: Optional[float] = None       # kill-rate gate, 0..1
+         Add MutantResult (file, operator, site, status: killed|survived|skipped,
+         detail) and MutationSummary (total, killed, survived, skipped,
+         kill_rate, per_file: Dict[str, {killed, survived}]).
+       - In src/tether/mission.py structurally validate `mutation` (mapping;
+         operators list of known strings; max_mutants positive int;
+         fail_below float in [0,1] or null). Raise MissionError otherwise.
+         validate-mission accepts it structurally only.
+    2. MUTANT GENERATION + EXECUTION:
+       - In src/tether/verification.py add a pure, deterministic generator:
+             def generate_mutants(source: str, operators: list[str],
+                                  seed: int, max_mutants: int) -> list[Mutant]
+         using stdlib `ast` only. Built-in operators (one mutant per site,
+         enumerated in stable AST walk order, seeded selection to cap):
+           * negate_compare:  == <-> !=,  < <-> >=,  <= <-> >
+           * flip_bool:       True <-> False,  `not x` <-> x
+           * arithmetic:      + <-> -,  * <-> /
+           * break_return:    `return expr` -> `return None`
+         Skip files that do not parse; skip anything under .tether/.
+       - Add:
+             def run_mutation_testing(spec, changed_files, project_dir,
+                                      run_suite, timeout_seconds) -> MutationSummary
+         where run_suite() re-runs the SAME verification helpers used on the
+         green attempt (run_verification + check_assertions + run_probes over
+         the declared commands/assertions/probes) and returns (passed, detail).
+         For each mutant: write the mutated bytes over the target file, run
+         run_suite(), mark killed if it fails / survived if it still passes,
+         then RESTORE the original bytes in a try/finally. The tree must be
+         byte-identical after mutation testing completes.
+       - Mutate ONLY files in report changed_files that end in .py. Never
+         mutate files outside allowed_paths or inside forbidden_paths.
+    3. ORCHESTRATION + REPORTING:
+       - In src/tether/orchestrator.py, after command+artifact+assertion+probe
+         checks pass on an otherwise-green attempt AND mutation.enabled, run
+         mutation testing. Skipped entirely in dry-run (record as skipped).
+       - Record report["mutation"] = MutationSummary and a `mutation` audit
+         event; save per-mutant detail under verification/mutation.json.
+       - Gating: if fail_below is set and kill_rate < fail_below and
+         (killed+survived) > 0, FAIL the attempt with a clear reason naming
+         the weak verification and the surviving operators (recovery proceeds
+         normally). If fail_below is None, ADVISORY only: log a warning and
+         record the summary; never fail.
+       - No mutation block => behavior byte-identical to today.
+    4. TELEMETRY + DOCS:
+       - Extend `tether sessions stats` to aggregate mutation kill rate
+         (human output only when at least one session reports mutation;
+         always in the --json block). Keep output byte-identical otherwise.
+       - README.md: add "Mutation testing" under Verification + a Current
+         limitations note (Python-only, advisory by default, measures
+         verification strength, not change correctness directly).
+       - docs/ARCHITECTURE.md: note the mutation meta-check runs after the
+         probe tier on green attempts.
+       - Tests: assert README mentions "mutation" and "kill_rate".
+    5. TESTS: cover every operator produces a syntactically valid mutant;
+       killed vs survived classification; kill_rate math; fail_below gating
+       fails the attempt while advisory mode does not; determinism (same seed
+       => same mutants); tree byte-identical after the run (git status clean
+       for a git fixture); dry-run skips; default-off unchanged; only .py
+       changed_files mutated; .tether/ and forbidden paths excluded; report
+       + stats + --json carry the summary.
+
+context:
+  - >-
+    Read docs/ARCHITECTURE.md, docs/SECURITY.md, README.md,
+    src/tether/orchestrator.py (verification/recovery loop + report
+    assembly), src/tether/verification.py (run_verification /
+    check_assertions / run_probes / summarize_*), src/tether/models.py,
+    src/tether/mission.py, src/tether/cli.py (sessions_stats), and
+    tests/test_safety.py + tests/test_review_gate.py first.
+  - >-
+    dogfood-11 added artifact assertions, dogfood-15 added the review gate,
+    dogfood-17 added independent reviewer + retry routing, dogfood-19 added
+    structural assertions, dogfood-20 added behavioral probes + usage
+    telemetry, dogfood-21 added budgets. Build on all of them; do not
+    regress.
+  - >-
+    Mutation testing is the point: it measures whether the declared
+    verification can catch an INCORRECT change. A suite that passes every
+    mutant has a 0% kill rate and is provably gameable. This directly
+    attacks "verification passed is not the same as the change is correct"
+    with a number instead of a vibe.
+  - >-
+    The core loop must stay adapter-agnostic (AgentAdapter interface only).
+    No AgentAdapter signature changes. Mutation testing calls the existing
+    verification helpers; it never invokes the adapter. subprocess stays
+    shell=False everywhere; stdlib only (ast is stdlib).
+  - >-
+    Container/OS-level containment, streaming adapters, independent probe
+    generation, regression oracles, and multi-reviewer consensus are
+    deliberate FOLLOW-UPS, not part of this mission.
+context_files:
+  - docs/ARCHITECTURE.md
+  - docs/SECURITY.md
+  - README.md
+  - src/tether/orchestrator.py
+  - src/tether/verification.py
+  - src/tether/models.py
+  - src/tether/mission.py
+  - src/tether/cli.py
+constraints:
+  - do not change AgentAdapter method signatures
+  - do not weaken existing tests; all current tests must keep passing
+  - subprocess usage stays shell=False
+  - no new third-party dependencies (stdlib ast only)
+  - keep changes minimal, typed, and scoped to the five tasks
+  - mutation must default to disabled so existing missions behave byte-identically
+  - mutation testing must leave the project tree byte-identical after it runs
+  - mutate only .py files in report changed_files, never .tether/ or forbidden paths
+  - a probe/assertion/command passing against a mutant counts as that mutant SURVIVING
+  - advisory mode (fail_below unset) must never fail an attempt
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+    - ".venv/bin/tether adapters conformance mock"
+  artifacts:
+    - "README.md"
+    - "docs/ARCHITECTURE.md"
+  assertions:
+    - path: src/tether/verification.py
+      contains: generate_mutants
+    - path: src/tether/verification.py
+      contains: run_mutation_testing
+    - path: src/tether/models.py
+      contains: MutationSpec
+    - path: src/tether/orchestrator.py
+      contains: kill_rate
+    - path: README.md
+      contains: kill_rate
+  probes:
+    - command: "python -c \"import ast,sys; ast.parse(open('src/tether/verification.py').read()); print('parse ok')\""
+      contains: "parse ok"
+recovery:
+  max_attempts: 4
+review:
+  enabled: true
+  required: true
+  adapter: opencode
+  retry_on_rejection: true
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 1800
+allowed_paths:
+  - src/**
+  - tests/**
+  - docs/**
+  - README.md
+forbidden_paths:
+  - .git/**
+  - .tether/**
+  - missions/**
