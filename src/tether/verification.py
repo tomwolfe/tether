@@ -1,17 +1,30 @@
 """Verification engine: runs only explicitly declared commands, safely."""
 from __future__ import annotations
 
+import ast
 import fnmatch
+import hashlib
 import os
+import random
 import re
 import shlex
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from pydantic import BaseModel
 
-from tether.models import ArtifactResult, AssertionResult, AssertionSpec, ProbeSpec, VerificationResult
+from tether.models import (
+    ArtifactResult,
+    AssertionResult,
+    AssertionSpec,
+    MutantStatus,
+    MutationSpec,
+    MutationSummary,
+    MutantResult,
+    ProbeSpec,
+    VerificationResult,
+)
 
 
 class ProbeResult(BaseModel):
@@ -333,3 +346,266 @@ def classify_failure(results: list[VerificationResult]) -> str:
            for r in failing):
         return "test_failure"
     return "unknown"
+
+
+# --------------------------------------------------------------------------
+# Mutation testing (dogfood-22): a meta-verification layer that measures
+# whether the declared checks would CATCH an incorrect change. Pure stdlib
+# `ast` mutant generation plus suite re-execution over each mutant.
+# --------------------------------------------------------------------------
+
+MUTATION_OPERATORS: tuple[str, ...] = (
+    "negate_compare",   # == <-> !=,  < <-> >=,  <= <-> >
+    "flip_bool",        # True <-> False,  `not x` <-> x
+    "arithmetic",       # + <-> -,  * <-> /
+    "break_return",     # `return expr` -> `return None`
+)
+
+# Bounded per-mutant failure detail recorded in mutation.json / the report.
+_MUTATION_DETAIL_BUDGET = 500
+
+_COMPARE_SWAPS: dict[type, type] = {
+    ast.Eq: ast.NotEq,
+    ast.NotEq: ast.Eq,
+    ast.Lt: ast.GtE,
+    ast.GtE: ast.Lt,
+    ast.LtE: ast.Gt,
+    ast.Gt: ast.LtE,
+}
+
+_ARITHMETIC_SWAPS: dict[type, type] = {
+    ast.Add: ast.Sub,
+    ast.Sub: ast.Add,
+    ast.Mult: ast.Div,
+    ast.Div: ast.Mult,
+}
+
+
+class Mutant(BaseModel):
+    """One candidate mutation of a source file (dogfood-22)."""
+    operator: str
+    site: str      # "<line>:<col>" of the mutated node in the original
+    source: str    # full mutated source text (syntactically valid Python)
+
+
+def _child_slots(node: ast.AST):
+    """Deterministic (field, list-index-or-None, child) triples of a node."""
+    for field, value in ast.iter_fields(node):
+        if isinstance(value, ast.AST):
+            yield field, None, value
+        elif isinstance(value, list):
+            for idx, item in enumerate(value):
+                if isinstance(item, ast.AST):
+                    yield field, idx, item
+
+
+def _site_id(node: ast.AST) -> str:
+    return f"{getattr(node, 'lineno', 0)}:{getattr(node, 'col_offset', 0)}"
+
+
+# A site path is the chain of (field, index) steps from the tree root to the
+# mutated node; re-parsing identical source reproduces identical paths.
+_SitePath = tuple[tuple[str, Optional[int]], ...]
+
+
+def _node_at(tree: ast.AST, path: _SitePath) -> ast.AST:
+    node = tree
+    for field, idx in path:
+        value = getattr(node, field)
+        node = value[idx] if idx is not None else value
+    return node
+
+
+def _collect_sites(tree: ast.AST, operators: set[str]) -> \
+        list[tuple[str, _SitePath, str]]:
+    """One mutant site per mutable node, in stable DFS walk order.
+
+    Each AST node matches at most one operator, so sites are unique per node;
+    paths address the exact node so a fresh parse can apply the mutation.
+    """
+    sites: list[tuple[str, _SitePath, str]] = []
+
+    def visit(node: ast.AST, path: _SitePath) -> None:
+        if "negate_compare" in operators \
+                and isinstance(node, ast.Compare) \
+                and len(node.ops) == 1 \
+                and type(node.ops[0]) in _COMPARE_SWAPS:
+            sites.append(("negate_compare", path, _site_id(node)))
+        elif "flip_bool" in operators \
+                and isinstance(node, ast.Constant) \
+                and (node.value is True or node.value is False):
+            sites.append(("flip_bool", path, _site_id(node)))
+        elif "flip_bool" in operators \
+                and isinstance(node, ast.UnaryOp) \
+                and isinstance(node.op, ast.Not):
+            # `not x` -> x replaces this UnaryOp with its operand; the path
+            # addresses the UnaryOp so the parent swap happens at apply time.
+            sites.append(("flip_bool", path, _site_id(node)))
+        elif "arithmetic" in operators \
+                and isinstance(node, ast.BinOp) \
+                and type(node.op) in _ARITHMETIC_SWAPS:
+            sites.append(("arithmetic", path, _site_id(node)))
+        elif "break_return" in operators \
+                and isinstance(node, ast.Return) \
+                and node.value is not None:
+            sites.append(("break_return", path, _site_id(node)))
+        for field, idx, child in _child_slots(node):
+            visit(child, path + ((field, idx),))
+
+    visit(tree, ())
+    return sites
+
+
+def generate_mutants(source: str, operators: list[str],
+                     seed: int, max_mutants: int) -> list[Mutant]:
+    """Pure, deterministic mutant generator over one Python source string.
+
+    Enumerates one mutant per mutable site in stable AST walk order; when
+    more sites exist than ``max_mutants``, selects a seeded random subset
+    (indices sorted back into walk order). Files that do not parse yield no
+    mutants (the caller records them as skipped). Unknown operator names
+    raise ValueError.
+    """
+    unknown = [o for o in operators if o not in MUTATION_OPERATORS]
+    if unknown:
+        raise ValueError(
+            f"unknown mutation operator(s): {', '.join(unknown)}")
+    try:
+        ast.parse(source)
+    except SyntaxError:
+        return []
+    sites = _collect_sites(ast.parse(source), set(operators))
+    chosen: list[int]
+    if len(sites) > max_mutants:
+        rng = random.Random(seed)
+        chosen = sorted(rng.sample(range(len(sites)), max_mutants))
+    else:
+        chosen = list(range(len(sites)))
+    mutants: list[Mutant] = []
+    for i in chosen:
+        operator, path, site = sites[i]
+        fresh = ast.parse(source)
+        node = _node_at(fresh, path)
+        parent_path = path[:-1]
+        if operator == "negate_compare":
+            node.ops[0] = _COMPARE_SWAPS[type(node.ops[0])]()  # type: ignore[attr-defined]
+        elif operator == "flip_bool" and isinstance(node, ast.Constant):
+            node.value = not node.value  # type: ignore[attr-defined]
+        elif operator == "flip_bool":
+            # `not x` -> x: point the parent at the operand instead.
+            operand = node.operand  # type: ignore[attr-defined]
+            field, idx = path[-1]
+            parent = _node_at(fresh, parent_path)
+            container = getattr(parent, field)
+            if idx is None:
+                setattr(parent, field, operand)
+            else:
+                container[idx] = operand
+        elif operator == "arithmetic":
+            node.op = _ARITHMETIC_SWAPS[type(node.op)]()  # type: ignore[attr-defined]
+        else:  # break_return
+            node.value = ast.Constant(value=None)  # type: ignore[attr-defined]
+        mutants.append(Mutant(
+            operator=operator, site=site, source=ast.unparse(fresh)))
+    return mutants
+
+
+def run_mutation_testing(
+    spec: MutationSpec,
+    changed_files: list[str],
+    project_dir: Path,
+    run_suite: Callable[[], tuple[bool, str]],
+    timeout_seconds: int = 600,
+    collect_results: Optional[list[MutantResult]] = None,
+) -> MutationSummary:
+    """Mutate changed ``.py`` files and re-run the suite per mutant.
+
+    ``run_suite()`` must re-run the SAME verification helpers used on the
+    green attempt (run_verification + check_assertions + run_probes over the
+    declared commands/assertions/probes) and return ``(passed, detail)``. A
+    passing suite against a mutant counts as SURVIVED; a failing (or
+    crashing) suite counts as killed. Original file bytes are restored in a
+    try/finally around every mutant so the project tree stays byte-identical
+    after the run. Only files ending in ``.py`` are touched; anything under
+    ``.tether/`` is never mutated. ``timeout_seconds`` is accepted for
+    signature parity; the bound run_suite closure owns its own deadlines.
+    When ``collect_results`` is a list, per-mutant :class:`MutantResult`
+    entries are appended to it so callers can persist full detail without a
+    second pass (the return value stays the aggregate summary).
+    """
+    operators = list(spec.operators) \
+        if spec.operators is not None else list(MUTATION_OPERATORS)
+    targets: list[str] = []
+    for rel in sorted(changed_files):
+        posix = Path(rel).as_posix()
+        if not posix.endswith(".py"):
+            continue
+        if posix == ".tether" or posix.startswith(".tether/"):
+            continue
+        targets.append(posix)
+
+    results: list[MutantResult] = []
+    for rel in targets:
+        path = project_dir / rel
+        try:
+            original = path.read_bytes()
+        except OSError as e:
+            results.append(MutantResult(
+                file=rel, operator="", site="", status="skipped",
+                detail=f"unreadable file ({e})"))
+            continue
+        try:
+            text = original.decode("utf-8")
+        except UnicodeDecodeError:
+            results.append(MutantResult(
+                file=rel, operator="", site="", status="skipped",
+                detail="file is not valid UTF-8"))
+            continue
+        try:
+            ast.parse(text)
+        except SyntaxError as e:
+            results.append(MutantResult(
+                file=rel, operator="", site="", status="skipped",
+                detail=f"file does not parse ({e})"))
+            continue
+        # Deterministic per-file seed derived from the stable relative path.
+        seed = int.from_bytes(
+            hashlib.sha256(rel.encode("utf-8")).digest()[:8], "big")
+        mutants = generate_mutants(
+            text, operators, seed=seed, max_mutants=spec.max_mutants)
+        for m in mutants:
+            status: MutantStatus = "killed"
+            detail_text = ""
+            try:
+                path.write_text(m.source, encoding="utf-8")
+                passed, suite_detail = run_suite()
+                status = "survived" if passed else "killed"
+                detail_text = "" if passed else clip_output(
+                    suite_detail, _MUTATION_DETAIL_BUDGET)
+            except Exception as e:  # noqa: BLE001 - a crashed suite kills
+                status, detail_text = "killed", f"suite error: {e!r}"
+            finally:
+                try:
+                    path.write_bytes(original)
+                except OSError as e:  # pragma: no cover - best-effort
+                    detail_text = detail_text or f"restore failed ({e})"
+            results.append(MutantResult(
+                file=rel, operator=m.operator, site=m.site,
+                status=status, detail=detail_text))
+    if collect_results is not None:
+        collect_results.extend(results)
+
+    killed = sum(1 for r in results if r.status == "killed")
+    survived = sum(1 for r in results if r.status == "survived")
+    skipped = sum(1 for r in results if r.status == "skipped")
+    denominator = killed + survived
+    kill_rate = round(killed / denominator, 4) if denominator else 0.0
+    per_file: dict[str, dict[str, int]] = {}
+    for r in results:
+        counts = per_file.setdefault(r.file, {"killed": 0, "survived": 0})
+        if r.status in ("killed", "survived"):
+            counts[r.status] += 1
+    return MutationSummary(
+        total=len(results), killed=killed, survived=survived,
+        skipped=skipped, kill_rate=kill_rate, per_file=per_file,
+    )

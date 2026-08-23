@@ -149,6 +149,21 @@ verification:
 
 Each probe's command runs in the target project directory with the same timeout as verification commands; stdout+stderr are combined for matching. A probe PASSES when the combined output satisfies ALL of its `contains`/`matches` criteria — the exit code is recorded but is NOT itself the pass criterion (a command that exits 3 while printing the expected behavior output still passes; a green command printing the wrong thing fails). Timeout or a missing binary fails the probe. Probes run after command + artifact + assertion checks pass on an otherwise-green attempt; a failing probe fails the attempt like any other deliverable miss, results land in `report["verification_results"]`, and dry-runs record probes as skipped without executing them.
 
+### Mutation testing
+
+Verification passing is not the same as the change being correct — so Tether can measure whether verification would CATCH an incorrect change at all (`verification.mutation`, dogfood-22): after command + artifact + assertion + probe checks pass on a green attempt, each changed `.py` file (never `.tether/` or sandbox-forbidden paths) is mutated with built-in stdlib-`ast` operators (`negate_compare`: `== <-> !=`, `< <-> >=`, `<= <-> >`; `flip_bool`: `True <-> False`, `not x -> x`; `arithmetic`: `+ <-> -`, `* <-> /`; `break_return`: `return expr -> return None`), and the SAME verification helpers re-run against every mutant:
+
+```yaml
+verification:
+  mutation:
+    enabled: true
+    operators: [negate_compare, flip_bool]   # default: all built-ins
+    max_mutants: 20                          # per-file cap, deterministic seeded selection
+    fail_below: 0.5                          # kill-rate gate; omit for advisory-only mode
+```
+
+A mutant the suite still passes has **survived** — hard evidence the declared verification is gameable; one that makes it fail is **killed**. The aggregate lands in `report["mutation"]` (`total`, `killed`, `survived`, `skipped`, `kill_rate`, per-file counts) with per-mutant detail in the session's `verification/mutation.json`, and `tether sessions stats` aggregates kill rates across sessions. With `fail_below` set, a `kill_rate` below the gate fails the attempt and recovery proceeds normally; when `fail_below` is unset mutation testing is **advisory only** and never fails an attempt.
+
 ## Dry-run
 
 `--dry-run` is fully non-mutating for the target project: no git checkpoint refs are created, no tar backups are made, no adapters are invoked, and no verification commands are executed. Tether still writes its audit report under `.tether/` (its own directory, not target-project content).
@@ -263,6 +278,7 @@ Tests use only temp directories, git temp repos with local identity, and the Moc
 - Process-tree containment is best-effort: descendants that escape the process group (e.g. by double-forking into a new session on POSIX) or survive `taskkill /T /F` on Windows cannot be force-killed by Tether.
 - Token/cost usage is only reported if an adapter provides it (Mock provides none; Command reports elapsed time and exit code, plus any metrics extracted from the agent's own output via the per-adapter `usage_patterns` config — regexes over stdout+stderr — so extraction is config-driven, not guaranteed).
 - `budget.max_usage` caps are only enforceable for metrics the adapter actually reports: a metric the adapter never reports cannot trigger its cap (it never false-triggers either). `max_wall_seconds` and `max_sends` always enforce.
+- Mutation testing (dogfood-22) is Python-only (stdlib `ast` operators over changed `.py` files) and advisory by default: without `fail_below` a low kill rate is logged and recorded but never fails an attempt. It measures the strength of the declared verification, not change correctness directly — a high kill rate is evidence, not proof.
 - the `pi` preset is an unverified assumption; override its command template in config (opencode is verified).
 - The review gate is a heuristic single-pass judgment of the captured diff, not proof of correctness; without `review.adapter` configured it reviews with the same adapter as the worker (self-review), and `retry_on_rejection` recovery is bounded by `recovery.max_attempts`, not guaranteed to converge.
 - Ctrl-C during adapter interaction is handled gracefully: the adapter's `cancel()` terminates the running command tree best-effort, the report is finalized with status `cancelled` (CLI exit code 2), and the rollback hint is printed — but a second interrupt or one outside the agent loop still aborts hard.

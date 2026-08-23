@@ -21,6 +21,24 @@ class VerificationSpec(BaseModel):
     # Behavioral probes (dogfood-20): assert on a command's OUTPUT, not its
     # exit code. Default None so existing missions work unchanged.
     probes: Optional[List[ProbeSpec]] = None
+    # Mutation testing meta-verification (dogfood-22): mutate changed files,
+    # re-run verification against each mutant, report a kill rate. Default
+    # None so existing missions validate and behave unchanged.
+    mutation: Optional[MutationSpec] = None
+
+
+class MutationSpec(BaseModel):
+    """Opt-in mutation-testing meta-verification (dogfood-22): measures
+    whether the declared verification can CATCH an incorrect change by
+    mutating the files the agent just changed and re-running the suite.
+    Default OFF so existing missions behave unchanged."""
+    enabled: bool = False   # default OFF; existing missions unchanged
+    # Operator names; None means all built-ins (tether.verification).
+    operators: Optional[List[str]] = None
+    # Cap on mutants per file for determinism/cost.
+    max_mutants: int = Field(default=20, gt=0)
+    # Kill-rate gate in [0, 1]; None = advisory only (never fails an attempt).
+    fail_below: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
 
 class ProbeSpec(BaseModel):
@@ -193,6 +211,33 @@ class AssertionResult(BaseModel):
     matched_files: List[str] = []
     passed: bool = False
     detail: str = ""
+
+
+MutantStatus = Literal["killed", "survived", "skipped"]
+
+
+class MutantResult(BaseModel):
+    """Outcome of one mutant under the verification suite (dogfood-22).
+
+    ``killed`` = the suite failed against the mutated file; ``survived`` =
+    the suite still passed (hard evidence of weak verification); ``skipped``
+    = the file did not parse or was unreadable.
+    """
+    file: str
+    operator: str
+    site: str
+    status: MutantStatus
+    detail: str = ""
+
+
+class MutationSummary(BaseModel):
+    """Aggregate mutation-testing outcome for one attempt (dogfood-22)."""
+    total: int = 0
+    killed: int = 0
+    survived: int = 0
+    skipped: int = 0
+    kill_rate: float = 0.0
+    per_file: Dict[str, Dict[str, int]] = Field(default_factory=dict)
 
 
 class CheckpointInfo(BaseModel):

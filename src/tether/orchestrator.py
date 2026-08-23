@@ -32,6 +32,9 @@ from tether.models import (
     AssertionResult,
     AssertionSpec,
     CheckpointInfo,
+    MutationSpec,
+    MutationSummary,
+    MutantResult,
     ProbeSpec,
     TetherConfig,
     VerificationResult,
@@ -43,6 +46,7 @@ from tether.verification import (
     check_assertions,
     classify_failure,
     clip_output,
+    run_mutation_testing,
     run_probes,
     run_verification,
     summarize,
@@ -467,6 +471,11 @@ class Orchestrator:
             return list(mission.verification.probes)
         return list(self.config.verification.probes or [])
 
+    def _effective_verification_mutation(self, mission: Any) -> Optional[MutationSpec]:
+        if mission.verification.mutation is not None:
+            return mission.verification.mutation
+        return self.config.verification.mutation
+
     def _sandbox_violations(self, mission: Any,
                             changed: list[str]) -> list[Dict[str, str]]:
         """Post-execution write-sandbox check over detected changed files.
@@ -642,6 +651,83 @@ class Orchestrator:
                 f"Latest change artifact ({name}):\n"
                 + clip_output(artifact.strip(), FORENSIC_EXCERPT_BUDGET))
         return "\n\n".join(lines)
+
+    def _mutation_targets(self, mission: Any, changed: list[str]) -> list[str]:
+        """Changed files eligible for mutation (dogfood-22).
+
+        Only ``.py`` files are ever mutated; anything under ``.tether/`` is
+        dropped, and the write-sandbox rules apply unchanged: forbidden-glob
+        matches and — when allowed_paths is set — non-matching paths are
+        excluded.
+        """
+        allowed = list(getattr(mission, "allowed_paths", None) or [])
+        forbidden = list(getattr(mission, "forbidden_paths", None) or [])
+        targets: list[str] = []
+        for rel in sorted(changed):
+            posix = Path(rel).as_posix()
+            if not posix.endswith(".py"):
+                continue
+            if next((g for g in forbidden if fnmatch(posix, g)), None) is not None:
+                continue
+            if allowed and not any(fnmatch(posix, g) for g in allowed):
+                continue
+            targets.append(posix)
+        return targets
+
+    def _run_mutation_check(
+        self, audit: AuditTrail, mission: Any, spec: MutationSpec,
+        changed: list[str], timeout: int,
+    ) -> tuple[MutationSummary, list[MutantResult]]:
+        """Run the mutation meta-check over this attempt's changed .py files.
+
+        Builds a ``run_suite`` closure that re-runs the SAME verification
+        helpers used on the green attempt (run_verification +
+        check_assertions + run_probes over the declared
+        commands/assertions/probes), persists per-mutant detail under
+        ``verification/mutation.json``, records the ``mutation`` audit event,
+        and returns ``(summary, per-mutant results)``.
+        """
+
+        def run_suite() -> tuple[bool, str]:
+            ok, out = summarize(run_verification(
+                self._effective_verification_commands(mission),
+                self.project_dir, timeout_seconds=timeout))
+            if not ok:
+                return False, out
+            assertion_specs = self._effective_verification_assertions(mission)
+            if assertion_specs:
+                ok, out = summarize_assertions(
+                    check_assertions(assertion_specs, self.project_dir))
+                if not ok:
+                    return False, out
+            probe_specs = self._effective_verification_probes(mission)
+            if probe_specs:
+                ok, out = summarize_probes(run_probes(
+                    probe_specs, self.project_dir, timeout_seconds=timeout))
+                if not ok:
+                    return False, out
+            return True, ""
+
+        mutants: list[MutantResult] = []
+        summary = run_mutation_testing(
+            spec, self._mutation_targets(mission, changed), self.project_dir,
+            run_suite, timeout_seconds=timeout, collect_results=mutants)
+        try:
+            (audit.dir / "verification" / "mutation.json").write_text(
+                json.dumps([m.model_dump() for m in mutants], indent=2,
+                           default=str),
+                encoding="utf-8")
+        except OSError as e:
+            log.debug("Mutation detail capture failed: %s", e)
+        audit.log_event("mutation", {
+            "enabled": True,
+            "targets": self._mutation_targets(mission, changed),
+            "fail_below": spec.fail_below,
+            **summary.model_dump(),
+            "survived_operators": sorted(
+                {m.operator for m in mutants if m.status == "survived"}),
+        })
+        return summary, mutants
 
     def _run_review_gate(self, audit: AuditTrail, mission: Any,
                          checkpoint: CheckpointInfo) -> Dict[str, Any]:
@@ -884,6 +970,11 @@ class Orchestrator:
         # Budget breach payload (dogfood-21); None unless a limit is breached,
         # so the "budget_exceeded" report key only appears on real breaches.
         budget_exceeded: Optional[Dict[str, Any]] = None
+        # Mutation-testing outcome (dogfood-22); None unless the mission
+        # enables the meta-check, so reports of existing missions stay
+        # byte-for-byte unchanged.
+        mutation_summary: Optional[MutationSummary] = None
+        mutation_output = ""
 
         # Cumulative usage tracking (dogfood-21): every adapter send merges
         # its numeric usage metrics into running totals; budgets are checked
@@ -1257,8 +1348,51 @@ class Orchestrator:
                 audit.save_verification(
                     attempt, [*verification_results, *artifact_results,
                               *assertion_results, *probe_results])
+                # Mutation meta-check (dogfood-22): runs after the probe tier
+                # on otherwise-green attempts when the contract enables it.
+                # Gating (fail_below) fails the attempt like any other
+                # deliverable miss and recovery proceeds normally; without a
+                # gate it is advisory only. Skipped entirely in dry-run.
+                mutation_passed = True
+                mutation_spec = self._effective_verification_mutation(mission)
+                if (commands_passed and not agent_failed
+                        and artifacts_passed and assertions_passed
+                        and probes_passed and mutation_spec is not None
+                        and mutation_spec.enabled):
+                    if dry_run:
+                        mutation_summary = MutationSummary()
+                        audit.log_event("mutation", {
+                            "enabled": True, "status": "skipped",
+                            "reason": "dry-run"})
+                    else:
+                        mutation_summary, mutants = self._run_mutation_check(
+                            audit, mission, mutation_spec, changed, timeout)
+                        survivors = sorted({
+                            m.operator for m in mutants
+                            if m.status == "survived"})
+                        denominator = (mutation_summary.killed
+                                       + mutation_summary.survived)
+                        if (mutation_spec.fail_below is not None
+                                and denominator > 0
+                                and mutation_summary.kill_rate
+                                < mutation_spec.fail_below):
+                            mutation_passed = False
+                            mutation_output = (
+                                "mutation testing exposed weak verification: "
+                                f"kill_rate {mutation_summary.kill_rate} is "
+                                "below fail_below "
+                                f"{mutation_spec.fail_below}; surviving "
+                                "operators: "
+                                + (", ".join(survivors) or "(none)"))
+                            log.warning("%s", mutation_output)
+                        else:
+                            log.warning(
+                                "Mutation testing (advisory): kill_rate %s "
+                                "over %d mutant(s)",
+                                mutation_summary.kill_rate, denominator)
                 passed = commands_passed and artifacts_passed \
-                    and assertions_passed and probes_passed
+                    and assertions_passed and probes_passed \
+                    and mutation_passed
                 # Set when a required review rejects but retry_on_rejection
                 # is enabled and attempt budget remains (dogfood-17): control
                 # falls through into the normal recovery machinery below
@@ -1315,7 +1449,7 @@ class Orchestrator:
                 if attempt >= max_attempts:
                     status = "failed"
                     deliverable_output = missing_output or assertion_output \
-                        or probe_output
+                        or probe_output or mutation_output
                     if deliverable_output and not failing_output:
                         next_steps.append(deliverable_output)
                     next_steps.append(
@@ -1340,6 +1474,7 @@ class Orchestrator:
                         failure_class, FAILURE_CLASS_GUIDANCE["unknown"])
                     reason = (failing_output or missing_output
                               or assertion_output or probe_output
+                              or mutation_output
                               or (state.error or "agent reported failure"))
                 recovery_attempt: Dict[str, Any] = {
                     "attempt": attempt,
@@ -1481,6 +1616,8 @@ class Orchestrator:
             report["review"] = review_result
         if budget_exceeded is not None:
             report["budget_exceeded"] = budget_exceeded
+        if mutation_summary is not None:
+            report["mutation"] = mutation_summary.model_dump()
         report_path = audit.write_report(report)
 
         # Opt-in automatic rollback: only for failed/cancelled outcomes, never

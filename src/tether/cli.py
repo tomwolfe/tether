@@ -745,6 +745,10 @@ def sessions_stats(
     # Budget telemetry (dogfood-21): sessions whose run breached a mission
     # budget (report carries "budget_exceeded").
     budget_exceeded_sessions = 0
+    # Mutation telemetry (dogfood-22): aggregate kill-rate counters over
+    # sessions whose report carries a "mutation" summary.
+    mutation_sessions = mutation_killed = mutation_survived = 0
+    mutation_skipped = 0
     for d, data in entries:
         status = str(data.get("status", "?"))
         status_counts[status] = status_counts.get(status, 0) + 1
@@ -781,6 +785,12 @@ def sessions_stats(
                 failing_commands[str(r["command"])] += 1
         if data.get("budget_exceeded"):
             budget_exceeded_sessions += 1
+        report_mutation = data.get("mutation")
+        if isinstance(report_mutation, dict):
+            mutation_sessions += 1
+            mutation_killed += int(report_mutation.get("killed") or 0)
+            mutation_survived += int(report_mutation.get("survived") or 0)
+            mutation_skipped += int(report_mutation.get("skipped") or 0)
         report_usage = data.get("usage")
         if isinstance(report_usage, dict):
             reported_numeric = False
@@ -863,6 +873,17 @@ def sessions_stats(
         # Budget breaches (dogfood-21): always present in --json output.
         "budgets": {"sessions_exceeded": budget_exceeded_sessions},
     }
+    # Mutation kill-rate aggregation (dogfood-22): always present in --json
+    # output; human output gains a line only when a session reports mutation.
+    mutation_denominator = mutation_killed + mutation_survived
+    stats["mutation"] = {
+        "sessions_reporting": mutation_sessions,
+        "killed": mutation_killed,
+        "survived": mutation_survived,
+        "skipped": mutation_skipped,
+        "kill_rate": round(mutation_killed / mutation_denominator, 4)
+        if mutation_denominator else 0.0,
+    }
     if missions_stats:
         stats["missions"] = missions_stats
     if usage_totals:
@@ -922,6 +943,11 @@ def sessions_stats(
         typer.echo(
             f"Budgets: {budget_exceeded_sessions} session(s) exceeded "
             f"a mission budget")
+    if mutation_sessions:
+        typer.echo(
+            f"Mutation: {mutation_sessions} session(s) reporting; "
+            f"killed {mutation_killed}/{mutation_denominator} mutant(s) "
+            f"(kill_rate {stats['mutation']['kill_rate']})")
 
 
 _DURATION_RE = re.compile(r"^(\d+)([mhd])$")

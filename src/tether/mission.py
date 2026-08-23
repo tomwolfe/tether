@@ -13,11 +13,13 @@ from tether.models import (
     AssertionSpec,
     BudgetSpec,
     MissionContract,
+    MutationSpec,
     ProbeSpec,
     RecoverySpec,
     ReviewSpec,
     VerificationSpec,
 )
+from tether.verification import MUTATION_OPERATORS
 
 
 class MissionError(ValueError):
@@ -137,6 +139,63 @@ def load_mission(path: str | Path) -> MissionContract:
                 matches=entry.get("matches"),
             ))
         probes = parsed_probes
+
+    # Structural validation only (dogfood-22): mutation testing runs at run
+    # time by the orchestrator against the target project; operator names
+    # are checked against the built-in registry (tether.verification).
+    raw_mutation = verification.get("mutation")
+    mutation: MutationSpec | None = None
+    if raw_mutation is not None:
+        if not isinstance(raw_mutation, dict):
+            raise MissionError("'verification.mutation' must be a mapping")
+        unknown = set(raw_mutation) - {
+            "enabled", "operators", "max_mutants", "fail_below"}
+        if unknown:
+            raise MissionError(
+                "'verification.mutation' accepts only 'enabled', "
+                "'operators', 'max_mutants', and 'fail_below'; got: "
+                + ", ".join(sorted(unknown)))
+        enabled = raw_mutation.get("enabled")
+        if "enabled" in raw_mutation and not isinstance(enabled, bool):
+            raise MissionError("'verification.mutation.enabled' must be a boolean")
+        operators = raw_mutation.get("operators")
+        if operators is not None:
+            if not isinstance(operators, list) or \
+                    not all(isinstance(o, str) for o in operators):
+                raise MissionError(
+                    "'verification.mutation.operators' must be a list of "
+                    "strings")
+            bad_ops = [o for o in operators if o not in MUTATION_OPERATORS]
+            if bad_ops:
+                raise MissionError(
+                    "'verification.mutation.operators' contains unknown "
+                    f"operator(s): {', '.join(bad_ops)}; known operators: "
+                    + ", ".join(MUTATION_OPERATORS))
+        max_mutants = raw_mutation.get("max_mutants")
+        if max_mutants is not None and (
+            not isinstance(max_mutants, int) or isinstance(max_mutants, bool)
+            or max_mutants <= 0
+        ):
+            raise MissionError(
+                "'verification.mutation.max_mutants' must be a positive "
+                "integer")
+        fail_below = raw_mutation.get("fail_below")
+        if fail_below is not None and (
+            isinstance(fail_below, bool)
+            or not isinstance(fail_below, (int, float))
+            or not (0.0 <= float(fail_below) <= 1.0)
+        ):
+            raise MissionError(
+                "'verification.mutation.fail_below' must be a number "
+                "between 0 and 1")
+        mutation_kwargs: Dict[str, Any] = {"enabled": bool(enabled)}
+        if operators is not None:
+            mutation_kwargs["operators"] = operators
+        if max_mutants is not None:
+            mutation_kwargs["max_mutants"] = max_mutants
+        if fail_below is not None:
+            mutation_kwargs["fail_below"] = float(fail_below)
+        mutation = MutationSpec(**mutation_kwargs)
 
     recovery = data.get("recovery") or {}
     if not isinstance(recovery, dict):
@@ -272,6 +331,7 @@ def load_mission(path: str | Path) -> MissionContract:
                 artifacts=artifacts,
                 assertions=assertions,
                 probes=probes,
+                mutation=mutation,
             ),
             recovery=RecoverySpec(max_attempts=max_attempts),
             review=review,
