@@ -1,0 +1,87 @@
+# Mission: dogfood-27-integrated-verification-gauntlet
+# Purpose: prove the FULL verification stack (clean-room, mutation testing
+# with fail_below gating, full-context required review, and budget
+# guardrails) works together in a single real-opencode session against
+# this repo, while landing a small scoped refactor to Tether itself.
+mission:
+  name: dogfood-27-integrated-verification-gauntlet
+  goal: |
+    Improve the quality of Tether's verification telemetry: when mutation
+    testing runs below the fail_below threshold (or reports a low kill
+    rate), the summary text surfaced to operators must clearly state the
+    measured kill rate, the configured threshold, and which mutants
+    survived, so an operator can act without re-reading raw JSON.
+    Additionally, extract behavioral probe execution in
+    src/tether/verification.py into a single private helper function so
+    probe logic has one home (no behavior change).
+
+tasks:
+  - |
+    MUTATION SUMMARY CLARITY:
+    In src/tether/verification.py (mutation summary/report rendering),
+    ensure the human-readable mutation summary includes:
+      (a) the measured kill rate as a percentage,
+      (b) the configured fail_below threshold (or "advisory" when unset),
+      (c) the list of surviving mutant identifiers (capped display is fine).
+    Add or extend tests in tests/test_mutation.py pinning this text.
+  - |
+    PROBE HELPER EXTRACTION:
+    Extract the per-probe execution logic in src/tether/verification.py
+    into one private helper function used by all call sites. Pure
+    refactor: no behavior change. Existing tests must pass unchanged.
+  - |
+    DOCS:
+    If any operator-facing behavior changed, update README.md and/or
+    docs accordingly. Otherwise state "no doc changes needed" in your
+    final summary.
+
+constraints:
+  - do not change AgentAdapter method signatures
+  - subprocess stays shell=False
+  - keep changes minimal, typed, scoped
+  - do not weaken existing tests
+
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+  artifacts:
+    - "src/tether/verification.py"
+  assertions:
+    - path: src/tether/verification.py
+      contains: kill rate
+  probes:
+    - command: "python -c \"import ast; ast.parse(open('src/tether/verification.py').read()); print('ok')\""
+      contains: "ok"
+
+recovery:
+  max_attempts: 4
+
+review:
+  enabled: true
+  required: true
+  context: full
+  adapter: opencode
+  retry_on_rejection: true
+
+budget:
+  max_sends: 8
+  max_wall_seconds: 3600
+
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 1800
+
+allowed_paths:
+  - src/**
+  - tests/**
+  - docs/**
+  - README.md
+  - missions/dogfood-27-integrated-verification-gauntlet.yaml
+
+forbidden_paths:
+  - .git/**
+  - .tether/**
