@@ -82,6 +82,8 @@ allowed_paths:
   - README.md
   - missions/dogfood-27-integrated-verification-gauntlet.yaml
 
+  - "**/.DS_Store"
+
 forbidden_paths:
   - .git/**
   - .tether/**
