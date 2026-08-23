@@ -1,0 +1,145 @@
+mission:
+  name: dogfood-21-budget-guardrails
+  goal: |
+    Close Tether's biggest enforcement gap: it detects and reports, but cannot
+    HALT a runaway agent. Today report["usage"] captures only the LAST send's
+    usage (never accumulated), there is no total mission deadline, and no cost
+    cap. Add mission-level BUDGETS (wall-clock, send count, usage-metric caps)
+    that abort execution the moment a limit is breached, with a distinct exit
+    code, report status, and telemetry. Each task proven by failing-then-passing
+    tests. All existing tests keep passing. Change NOTHING outside scope.
+
+    Tasks (implement in order; minimal, typed, scoped):
+
+    1. BUDGET MODEL:
+       - In src/tether/models.py add BudgetSpec and wire onto MissionContract
+         as Optional `budget:` (None => unset, existing missions unchanged):
+             max_wall_seconds: Optional[int]
+             max_sends: Optional[int]
+             max_usage: Optional[Dict[str, float]]   # metric -> ceiling
+       - In src/tether/mission.py structurally validate budget (mapping;
+         positive ints for wall/sends; max_usage mapping str->number).
+         Raise MissionError otherwise.
+
+    2. CUMULATIVE USAGE TRACKING:
+       - In src/tether/orchestrator.py accumulate usage across EVERY send
+         (initial + recovery) into running totals. Always track wall_seconds
+         (monotonic since mission start) and send_count. Merge each
+         AgentState.usage numeric metrics into cumulative total.
+       - Record in report["cumulative_usage"]. Keep existing last-send
+         report["usage"] field unchanged for backward compatibility.
+
+    3. RUNTIME ENFORCEMENT:
+       - Before each adapter.send and around verification/recovery loop,
+         check budgets. On breach: status "failed", skip remaining sends
+         and verification, record report["budget_exceeded"] =
+         {limit, threshold, observed}. Add next_steps naming the breach.
+       - Semantics: max_wall_seconds and max_sends ALWAYS enforceable.
+         max_usage metric enforced ONLY when that metric has appeared in
+         cumulative usage. Configured-but-unreported metric must NOT
+         false-trigger. No budget => byte-identical behavior to today.
+
+    4. EXIT CODE + STATUS:
+       - In src/tether/cli.py add EXIT_BUDGET_EXCEEDED = 5. Map failed runs
+         carrying budget_exceeded to it. Tests via CliRunner + scripted adapter.
+
+    5. TELEMETRY + DOCS:
+       - Extend sessions stats to count budget breaches (human output only
+         when >=1 exists; always in --json). Keep output byte-identical
+         otherwise.
+       - README.md: document budgets under "Budgets" section + Current
+         limitations (metric caps only enforceable when adapter reports
+         that metric). docs/ARCHITECTURE.md: note enforcement in core loop.
+       - Tests: assert README mentions "budget" and "max_wall_seconds".
+
+  context:
+    - >-
+      Read docs/ARCHITECTURE.md, docs/SECURITY.md, README.md,
+      src/tether/orchestrator.py (run loop + report assembly),
+      src/tether/models.py, src/tether/mission.py, src/tether/cli.py
+      (EXIT_* constants + sessions_stats), src/tether/adapters/command.py
+      (usage/usage_patterns), tests/test_core.py + tests/test_adapters_cli.py.
+    - >-
+      CRITICAL: report["usage"] currently holds only the LAST send's usage
+      ("usage": state.usage in orchestrator). It is never accumulated and
+      never enforced. This mission closes that hole.
+    - >-
+      MockAdapter reports no usage. Metric-budget tests MUST use a scripted
+      adapter returning AgentState(usage={...}) — see _ScriptedAdapter /
+      RichAdapter patterns in tests/test_core.py. Wall-clock and send-count
+      budgets are testable with any adapter.
+    - >-
+      dogfood-13 added usage plumbing, dogfood-14 added classify_failure,
+      dogfood-18 added review telemetry, dogfood-19 added per-mission
+      baselines, dogfood-20 added usage_patterns extraction. Build on all;
+      do not regress.
+    - >-
+      Core loop stays adapter-agnostic (AgentAdapter interface only).
+      No signature changes. subprocess stays shell=False. stdlib only.
+
+  context_files:
+    - docs/ARCHITECTURE.md
+    - README.md
+    - src/tether/orchestrator.py
+    - src/tether/models.py
+    - src/tether/mission.py
+    - src/tether/cli.py
+    - src/tether/adapters/command.py
+    - tests/test_core.py
+
+  constraints:
+    - do not change AgentAdapter method signatures
+    - do not weaken existing tests; all current tests must keep passing
+    - subprocess usage stays shell=False
+    - no new third-party dependencies (stdlib only)
+    - keep changes minimal, typed, scoped to five tasks
+    - budget defaults to None so existing missions behave byte-identically
+    - configured max_usage metric never reported must not false-trigger
+    - keep existing last-send report["usage"] semantics unchanged
+
+  verification:
+    commands:
+      - "python -m pytest -q"
+      - "ruff check src tests"
+      - "mypy src/tether"
+      - ".venv/bin/tether adapters conformance mock"
+    artifacts:
+      - "README.md"
+      - "docs/ARCHITECTURE.md"
+    assertions:
+      - path: src/tether/models.py
+        contains: BudgetSpec
+      - path: src/tether/orchestrator.py
+        contains: budget_exceeded
+      - path: src/tether/orchestrator.py
+        contains: cumulative_usage
+      - path: src/tether/cli.py
+        contains: EXIT_BUDGET_EXCEEDED
+      - path: README.md
+        contains: max_wall_seconds
+    timeout_seconds: 900
+
+  recovery:
+    max_attempts: 4
+
+  review:
+    enabled: true
+    required: true
+    adapter: opencode
+    retry_on_rejection: true
+
+  adapter: opencode
+  adapters:
+    opencode:
+      command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+      timeout_seconds: 1800
+
+  allowed_paths:
+    - src/**
+    - tests/**
+    - docs/**
+    - README.md
+  forbidden_paths:
+    - .git/**
+    - .tether/**
+    - missions/**
