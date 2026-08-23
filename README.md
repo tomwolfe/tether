@@ -164,6 +164,28 @@ verification:
 
 A mutant the suite still passes has **survived** — hard evidence the declared verification is gameable; one that makes it fail is **killed**. The aggregate lands in `report["mutation"]` (`total`, `killed`, `survived`, `skipped`, `kill_rate`, per-file counts) with per-mutant detail in the session's `verification/mutation.json`, and `tether sessions stats` aggregates kill rates across sessions. With `fail_below` set, a `kill_rate` below the gate fails the attempt and recovery proceeds normally; when `fail_below` is unset mutation testing is **advisory only** and never fails an attempt.
 
+### Clean-room verification
+
+Verification normally runs inside the agent's working tree — which the agent controls, including files git does not track. A gitignored `conftest.py` or `sitecustomize.py` that patches a failing test can make in-tree pytest green while the actual change is broken (a false green). With `verification.clean_room: true` (dogfood-23), Tether instead materializes a **throwaway checkout** of the checkpoint ref and runs the ENTIRE battery there — commands, artifact checks, assertions, probes, and mutation testing — never in the agent's tree:
+
+```yaml
+verification:
+  clean_room: true
+  clean_room_copy:          # optional; relative paths copied from the
+    - .venv                 # working tree into the room after checkout
+```
+
+What carries into the clean room:
+
+- the checkpoint ref's pristine checkout (`git archive`),
+- the session's captured change (`patch.diff` applied via `git apply`, falling back to `patch -p1`),
+- untracked files listed in `untracked.txt` **except gitignored ones**,
+- explicit `clean_room_copy` entries that exist in the project dir (missing entries are skipped silently); `.git/`, `.tether/`, and sandbox-forbidden paths are never copied.
+
+What deliberately does NOT carry over: **gitignored paths** (that is the whole point — planted helpers like `conftest.py`, `sitecustomize.py`, or `tox.ini` overrides stay behind) and anything resolving outside the project directory. A fresh room is re-materialized for every verification attempt, so recovery rounds always verify the latest captured change; the staging directory is always removed afterwards.
+
+Clean-room materialization is **fail-closed**: any failure (no git checkpoint, corrupt/unapplicable patch, copy error) fails the attempt AND the mission immediately with a `clean_room_error` audit event and the reason in `next_steps` — Tether never falls back to verifying in-tree. Dry-runs record clean_room as skipped without executing anything. When unset or false, behavior is byte-for-byte identical to plain in-tree verification.
+
 ## Dry-run
 
 `--dry-run` is fully non-mutating for the target project: no git checkpoint refs are created, no tar backups are made, no adapters are invoked, and no verification commands are executed. Tether still writes its audit report under `.tether/` (its own directory, not target-project content).
@@ -279,6 +301,7 @@ Tests use only temp directories, git temp repos with local identity, and the Moc
 - Token/cost usage is only reported if an adapter provides it (Mock provides none; Command reports elapsed time and exit code, plus any metrics extracted from the agent's own output via the per-adapter `usage_patterns` config — regexes over stdout+stderr — so extraction is config-driven, not guaranteed).
 - `budget.max_usage` caps are only enforceable for metrics the adapter actually reports: a metric the adapter never reports cannot trigger its cap (it never false-triggers either). `max_wall_seconds` and `max_sends` always enforce.
 - Mutation testing (dogfood-22) is Python-only (stdlib `ast` operators over changed `.py` files) and advisory by default: without `fail_below` a low kill rate is logged and recorded but never fails an attempt. It measures the strength of the declared verification, not change correctness directly — a high kill rate is evidence, not proof.
+- Clean-room verification (dogfood-23) narrows but does **not** eliminate the false-green surface: it excludes gitignored and outside-project paths from the room, but content carried through the tracked diff itself (or through non-gitignored untracked files, or copied `clean_room_copy` trees) is still agent-controlled and still executes during verification.
 - the `pi` preset is an unverified assumption; override its command template in config (opencode is verified).
 - The review gate is a heuristic single-pass judgment of the captured diff, not proof of correctness; without `review.adapter` configured it reviews with the same adapter as the worker (self-review), and `retry_on_rejection` recovery is bounded by `recovery.max_attempts`, not guaranteed to converge.
 - Ctrl-C during adapter interaction is handled gracefully: the adapter's `cancel()` terminates the running command tree best-effort, the report is finalized with status `cancelled` (CLI exit code 2), and the rollback hint is printed — but a second interrupt or one outside the agent loop still aborts hard.

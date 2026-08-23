@@ -63,6 +63,20 @@ user privileges**, on whatever code the agent produced. A malicious agent can
 plant code that executes during verification. Only run missions whose
 verification commands you would be willing to run on untrusted input.
 
+Historically this was worse: verification ran **in the agent's working
+tree**, so an agent could game it without touching anything git-tracked — a
+gitignored `conftest.py` or `sitecustomize.py` that patches the failing code
+made in-tree test runs green while the actual change stayed broken.
+With the dogfood-23 clean-room mode
+(`verification.clean_room: true`), Tether narrows that specific surface by
+re-verifying inside a throwaway checkout of
+the checkpoint ref plus the session's captured change, where gitignored
+paths and outside-project paths do not exist; materialization failures fail
+the mission rather than falling back to the tree. This is still **detection
+hardening, not containment**: whatever the captured diff and non-gitignored
+untracked files legitimately carry into the room is still agent-controlled
+and still executes with your privileges.
+
 ## Rollback limits
 
 - Git rollback resets tracked files listed in the session report and (with

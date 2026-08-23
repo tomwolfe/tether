@@ -25,6 +25,15 @@ class VerificationSpec(BaseModel):
     # re-run verification against each mutant, report a kill rate. Default
     # None so existing missions validate and behave unchanged.
     mutation: Optional[MutationSpec] = None
+    # Clean-room verification (dogfood-23): when True, the entire battery
+    # runs in a throwaway checkout of the checkpoint ref plus the session's
+    # captured change, never in the agent's working tree. Default None (OFF)
+    # so existing missions validate and behave unchanged.
+    clean_room: Optional[bool] = None
+    # Relative paths copied from the working tree into the clean room after
+    # checkout (for things like `.venv`); never carries .tether/, .git/, or
+    # sandbox-forbidden paths. Default None so existing missions unchanged.
+    clean_room_copy: Optional[List[str]] = None
 
 
 class MutationSpec(BaseModel):

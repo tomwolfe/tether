@@ -4,7 +4,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import subprocess
+import tempfile
 import time
 from fnmatch import fnmatch
 from pathlib import Path
@@ -12,6 +14,7 @@ from typing import Any, Dict, Optional
 
 from tether.adapters.base import AgentAdapter
 from tether.audit import AuditTrail, new_session_id, redact_body, redact_secrets, utcnow
+from tether.cleanroom import CleanRoomError, materialize_clean_room
 from tether.context_files import (
     ContextFile,
     ContextFilesError,
@@ -153,6 +156,15 @@ class _BudgetExceededError(RuntimeError):
     def __init__(self, message: str, breach: Dict[str, Any]) -> None:
         super().__init__(message)
         self.breach = breach
+
+
+class _CleanRoomError(RuntimeError):
+    """Clean-room materialization failure (dogfood-23).
+
+    Raised so a materialization failure fails the attempt AND the mission
+    immediately (fail-closed): verification never falls back to running in
+    the agent's working tree.
+    """
 
 
 def _budget_breach(budget: Any, cumulative: Dict[str, float],
@@ -476,6 +488,16 @@ class Orchestrator:
             return mission.verification.mutation
         return self.config.verification.mutation
 
+    def _effective_verification_clean_room(self, mission: Any) -> bool:
+        if mission.verification.clean_room is not None:
+            return bool(mission.verification.clean_room)
+        return bool(self.config.verification.clean_room)
+
+    def _effective_verification_clean_room_copy(self, mission: Any) -> list[str]:
+        if mission.verification.clean_room_copy is not None:
+            return list(mission.verification.clean_room_copy)
+        return list(self.config.verification.clean_room_copy or [])
+
     def _sandbox_violations(self, mission: Any,
                             changed: list[str]) -> list[Dict[str, str]]:
         """Post-execution write-sandbox check over detected changed files.
@@ -677,6 +699,7 @@ class Orchestrator:
     def _run_mutation_check(
         self, audit: AuditTrail, mission: Any, spec: MutationSpec,
         changed: list[str], timeout: int,
+        project_dir: Optional[Path] = None,
     ) -> tuple[MutationSummary, list[MutantResult]]:
         """Run the mutation meta-check over this attempt's changed .py files.
 
@@ -685,32 +708,36 @@ class Orchestrator:
         check_assertions + run_probes over the declared
         commands/assertions/probes), persists per-mutant detail under
         ``verification/mutation.json``, records the ``mutation`` audit event,
-        and returns ``(summary, per-mutant results)``.
+        and returns ``(summary, per-mutant results)``. ``project_dir``
+        selects where mutants are written and the suite re-runs (the
+        clean-room directory when clean-room verification is active);
+        defaults to the target project.
         """
+        target = project_dir if project_dir is not None else self.project_dir
 
         def run_suite() -> tuple[bool, str]:
             ok, out = summarize(run_verification(
                 self._effective_verification_commands(mission),
-                self.project_dir, timeout_seconds=timeout))
+                target, timeout_seconds=timeout))
             if not ok:
                 return False, out
             assertion_specs = self._effective_verification_assertions(mission)
             if assertion_specs:
                 ok, out = summarize_assertions(
-                    check_assertions(assertion_specs, self.project_dir))
+                    check_assertions(assertion_specs, target))
                 if not ok:
                     return False, out
             probe_specs = self._effective_verification_probes(mission)
             if probe_specs:
                 ok, out = summarize_probes(run_probes(
-                    probe_specs, self.project_dir, timeout_seconds=timeout))
+                    probe_specs, target, timeout_seconds=timeout))
                 if not ok:
                     return False, out
             return True, ""
 
         mutants: list[MutantResult] = []
         summary = run_mutation_testing(
-            spec, self._mutation_targets(mission, changed), self.project_dir,
+            spec, self._mutation_targets(mission, changed), target,
             run_suite, timeout_seconds=timeout, collect_results=mutants)
         try:
             (audit.dir / "verification" / "mutation.json").write_text(
@@ -975,6 +1002,10 @@ class Orchestrator:
         # byte-for-byte unchanged.
         mutation_summary: Optional[MutationSummary] = None
         mutation_output = ""
+        # Clean-room staging root (dogfood-23); None unless clean-room
+        # verification is active, so unset missions behave identically.
+        # Created lazily before the attempt loop; removed in finally below.
+        clean_room_root: Optional[Path] = None
 
         # Cumulative usage tracking (dogfood-21): every adapter send merges
         # its numeric usage metrics into running totals; budgets are checked
@@ -1250,6 +1281,33 @@ class Orchestrator:
             changed = self._gate_and_capture(
                 audit, mission, checkpoint, manifest_before, dry_run)
 
+            # Clean-room verification (dogfood-23): when enabled and not
+            # dry-run, the ENTIRE battery below runs in a throwaway checkout
+            # of the checkpoint ref plus the session's captured change —
+            # never in the agent's working tree, where gitignored helper
+            # files could game the declared verification. Materialization
+            # failure fails the attempt AND the mission immediately
+            # (fail-closed; there is no in-tree fallback).
+            verify_dir: Path = self.project_dir
+            clean_room_on = self._effective_verification_clean_room(mission)
+            if clean_room_on and dry_run:
+                audit.log_event("clean_room", {
+                    "enabled": True, "status": "skipped",
+                    "reason": "dry-run"})
+            elif clean_room_on:
+                if not (checkpoint.is_git_repo and checkpoint.original_head):
+                    raise _CleanRoomError(
+                        "clean-room verification requires a git checkpoint; "
+                        f"{self.project_dir} has no checkpoint to materialize")
+                try:
+                    clean_room_root = Path(tempfile.mkdtemp(
+                        prefix="tether-cleanroom-"))
+                except OSError as e:
+                    raise _CleanRoomError(
+                        f"cannot create clean-room directory: {e}") from e
+                log.info("Clean-room verification active; staging under %s",
+                         clean_room_root)
+
             # Verification + recovery loop
             attempt = 0
             # Any non-completed agent state counts as failure: a mission must
@@ -1268,8 +1326,25 @@ class Orchestrator:
                 _require_budget(False)
                 attempt += 1
                 log.info("Verification attempt %d/%d", attempt, max_attempts)
+                # Re-materialize a FRESH clean room for every attempt so
+                # recovery rounds always verify the latest captured change.
+                if clean_room_root is not None:
+                    head = checkpoint.original_head
+                    assert head is not None  # checked during clean-room setup
+                    room = clean_room_root / f"attempt-{attempt:02d}"
+                    try:
+                        materialize_clean_room(
+                            self.project_dir, head, audit.dir,
+                            self._effective_verification_clean_room_copy(
+                                mission),
+                            room)
+                    except CleanRoomError as e:
+                        raise _CleanRoomError(str(e)) from e
+                    verify_dir = room
+                else:
+                    verify_dir = self.project_dir
                 verification_results = run_verification(
-                    commands, self.project_dir,
+                    commands, verify_dir,
                     timeout_seconds=timeout,
                     dry_run=dry_run,
                 )
@@ -1292,7 +1367,7 @@ class Orchestrator:
                             ]
                         else:
                             artifact_results = check_artifacts(
-                                artifact_patterns, self.project_dir)
+                                artifact_patterns, verify_dir)
                     # Structural content assertions (dogfood-19): deeper than
                     # existence checks — run on otherwise-green attempts right
                     # after artifact checks pass their gate; a failing
@@ -1308,7 +1383,7 @@ class Orchestrator:
                             ]
                         else:
                             assertion_results = check_assertions(
-                                assertion_specs, self.project_dir)
+                                assertion_specs, verify_dir)
                 artifacts_passed, missing_output = summarize_artifacts(artifact_results)
                 if not artifacts_passed:
                     log.warning("%s", missing_output)
@@ -1335,7 +1410,7 @@ class Orchestrator:
                             ]
                         else:
                             probe_results = run_probes(
-                                probe_specs, self.project_dir,
+                                probe_specs, verify_dir,
                                 timeout_seconds=timeout)
                         probes_passed, probe_output = \
                             summarize_probes(probe_results)
@@ -1366,7 +1441,8 @@ class Orchestrator:
                             "reason": "dry-run"})
                     else:
                         mutation_summary, mutants = self._run_mutation_check(
-                            audit, mission, mutation_spec, changed, timeout)
+                            audit, mission, mutation_spec, changed, timeout,
+                            project_dir=verify_dir)
                         survivors = sorted({
                             m.operator for m in mutants
                             if m.status == "survived"})
@@ -1539,6 +1615,14 @@ class Orchestrator:
                     f"were skipped. Roll back with: tether rollback "
                     f"{self.session_id} --project-dir {self.project_dir}"
                 )
+            elif isinstance(e, _CleanRoomError):
+                audit.log_event("clean_room_error", {"error": str(e)})
+                next_steps.append(
+                    "Clean-room verification failed; the change was NOT "
+                    f"verified and the mission failed closed: {e}. Roll back "
+                    f"with: tether rollback {self.session_id} --project-dir "
+                    f"{self.project_dir}"
+                )
             log.error("%s", e)
         except Exception as e:
             status = "failed"
@@ -1560,6 +1644,11 @@ class Orchestrator:
                 f"--project-dir {self.project_dir}"
             )
             log.warning("Interrupted; adapter cancelled, report marked 'cancelled'.")
+
+        finally:
+            # The clean room is throwaway: always removed, on every exit path.
+            if clean_room_root is not None:
+                shutil.rmtree(clean_room_root, ignore_errors=True)
 
         finished_at = utcnow()
         if checkpoint.is_git_repo:

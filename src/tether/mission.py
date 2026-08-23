@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict
 
@@ -197,6 +198,31 @@ def load_mission(path: str | Path) -> MissionContract:
             mutation_kwargs["fail_below"] = float(fail_below)
         mutation = MutationSpec(**mutation_kwargs)
 
+    # Structural validation only (dogfood-23): whether a checkpoint ref can
+    # actually be materialized into a clean room is a run-time concern
+    # (tether.cleanroom); here we only enforce the contract shape.
+    clean_room = verification.get("clean_room")
+    if clean_room is not None and not isinstance(clean_room, bool):
+        raise MissionError("'verification.clean_room' must be a boolean")
+    raw_clean_room_copy = verification.get("clean_room_copy")
+    clean_room_copy: list[str] | None = None
+    if raw_clean_room_copy is not None:
+        if not isinstance(raw_clean_room_copy, list) or not all(
+                isinstance(c, str) for c in raw_clean_room_copy):
+            raise MissionError(
+                "'verification.clean_room_copy' must be a list of strings")
+        for idx, entry in enumerate(raw_clean_room_copy):
+            candidate = Path(entry)
+            if not entry.strip() \
+                    or candidate.is_absolute() \
+                    or entry.replace("\\", "/").startswith("/") \
+                    or ".." in Path(os.path.normpath(candidate)).parts:
+                raise MissionError(
+                    f"'verification.clean_room_copy[{idx}]' must be a "
+                    "non-empty relative path without '..' components; got "
+                    f"{entry!r}")
+        clean_room_copy = list(raw_clean_room_copy)
+
     recovery = data.get("recovery") or {}
     if not isinstance(recovery, dict):
         raise MissionError("'recovery' must be a mapping")
@@ -332,6 +358,8 @@ def load_mission(path: str | Path) -> MissionContract:
                 assertions=assertions,
                 probes=probes,
                 mutation=mutation,
+                clean_room=clean_room,
+                clean_room_copy=clean_room_copy,
             ),
             recovery=RecoverySpec(max_attempts=max_attempts),
             review=review,
