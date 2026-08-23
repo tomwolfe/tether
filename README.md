@@ -40,7 +40,7 @@ tether logs <session-id>                           # event log of a session
 tether rollback <session-id-or-prefix>             # restore the git checkpoint
 ```
 
-`tether sessions stats` aggregates cross-session analytics from every session's `report.json`, including a `review_gate` block that counts reviewed sessions, `approve`/`request_changes` verdicts, and rejections that caused failures. When at least one session reports adapter `usage`, it also totals every numeric usage metric across those sessions (shown in human output and the `--json` block). For every mission with at least two recorded sessions it also prints per-mission baselines: success rate, median/max verification attempts, and a trend that compares the latest session's attempt count to the trailing median of prior sessions (`stable`, `regression`, or `improvement`).
+`tether sessions stats` aggregates cross-session analytics from every session's `report.json`, including a `review_gate` block that counts reviewed sessions, `approve`/`request_changes` verdicts, and rejections that caused failures. It also counts sessions that breached a mission budget (a `Budgets:` line in human output when at least one exists; always in the `--json` block). When at least one session reports adapter `usage`, it also totals every numeric usage metric across those sessions (shown in human output and the `--json` block). For every mission with at least two recorded sessions it also prints per-mission baselines: success rate, median/max verification attempts, and a trend that compares the latest session's attempt count to the trailing median of prior sessions (`stable`, `regression`, or `improvement`).
 
 Useful `run` flags: `--adapter`, `--project-dir`, `--dry-run/--no-dry-run`, `--max-attempts`, `--allow-dirty/--no-allow-dirty`, `--auto-rollback/--no-auto-rollback`, `--strict`, `--verbose`. The boolean flags are tri-state: when omitted they do not override project config; when given they always do.
 
@@ -161,6 +161,23 @@ A mission reports `success` **only** if the final agent step completed *and* ver
 
 Repair-prompt outputs are bounded; audit records keep full output. Note that prompts, responses, and logs are stored unredacted — avoid pointing Tether at projects where agents may echo secrets into output, or scrub `.tether/` afterwards.
 
+## Budgets
+
+Missions can enforce hard caps via an optional top-level `budget:` block. Tether accumulates usage across EVERY adapter send (the initial execution and every recovery attempt) into `report["cumulative_usage"]` — merged numeric metrics plus always-tracked `wall_seconds` (monotonic since mission start) and `send_count` — and aborts the mission the moment a limit is breached, skipping remaining sends and verification:
+
+```yaml
+budget:
+  max_wall_seconds: 3600   # hard wall-clock deadline for the whole mission
+  max_sends: 6             # cap on adapter sends (planning + execution + recoveries)
+  max_usage:               # cumulative usage-metric ceilings (metric -> cap)
+    tokens: 200000
+    cost: 10.0
+```
+
+- `max_wall_seconds` and `max_sends` are ALWAYS enforceable; consuming exactly the allowed sends and passing is not a breach.
+- A `max_usage` ceiling applies only once that metric has appeared in the cumulative usage — a configured metric the adapter never reports never false-triggers.
+- On breach the report carries `status: failed` plus a `budget_exceeded` payload (`limit`, `threshold`, `observed`) naming the breach in `next_steps`, and `tether run` exits with code 5 (`EXIT_BUDGET_EXCEEDED`). The existing last-send `report["usage"]` field is unchanged.
+
 ## Process containment
 
 Adapter commands run via `subprocess` with `shell=False` in their own process group/session: on POSIX the child gets `start_new_session=True`; on Windows it gets `CREATE_NEW_PROCESS_GROUP`. Timeouts and `cancel()` therefore terminate the **whole process tree**, not just the immediate child — termination is graceful first (SIGTERM to the group on POSIX, `taskkill /T` on Windows), then forceful (`SIGKILL` / `taskkill /T /F`) after a short grace period. Stdlib only; no third-party dependencies. Ctrl-C during an adapter call cancels the running command tree through the same path.
@@ -245,6 +262,7 @@ Tests use only temp directories, git temp repos with local identity, and the Moc
 - Non-git changed-file detection is best-effort: files smaller than 1 MiB (`manifest.HASH_SIZE_LIMIT`) are fingerprinted by sha256 content hash, larger files fall back to size+mtime; there is no content diff. `manifest_diff.json` carries those fingerprints, not file contents.
 - Process-tree containment is best-effort: descendants that escape the process group (e.g. by double-forking into a new session on POSIX) or survive `taskkill /T /F` on Windows cannot be force-killed by Tether.
 - Token/cost usage is only reported if an adapter provides it (Mock provides none; Command reports elapsed time and exit code, plus any metrics extracted from the agent's own output via the per-adapter `usage_patterns` config — regexes over stdout+stderr — so extraction is config-driven, not guaranteed).
+- `budget.max_usage` caps are only enforceable for metrics the adapter actually reports: a metric the adapter never reports cannot trigger its cap (it never false-triggers either). `max_wall_seconds` and `max_sends` always enforce.
 - the `pi` preset is an unverified assumption; override its command template in config (opencode is verified).
 - The review gate is a heuristic single-pass judgment of the captured diff, not proof of correctness; without `review.adapter` configured it reviews with the same adapter as the worker (self-review), and `retry_on_rejection` recovery is bounded by `recovery.max_attempts`, not guaranteed to converge.
 - Ctrl-C during adapter interaction is handled gracefully: the adapter's `cancel()` terminates the running command tree best-effort, the report is finalized with status `cancelled` (CLI exit code 2), and the rollback hint is printed — but a second interrupt or one outside the agent loop still aborts hard.

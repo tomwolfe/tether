@@ -138,6 +138,54 @@ class _SandboxViolationError(RuntimeError):
         super().__init__(message)
         self.violations = violations
 
+
+class _BudgetExceededError(RuntimeError):
+    """Mission-budget breach carrying the ``budget_exceeded`` payload.
+
+    Raised by the pre-send / pre-verification budget checks so remaining
+    sends and verification are skipped and the report records the breach.
+    """
+
+    def __init__(self, message: str, breach: Dict[str, Any]) -> None:
+        super().__init__(message)
+        self.breach = breach
+
+
+def _budget_breach(budget: Any, cumulative: Dict[str, float],
+                   wall_seconds: float, send_count: int,
+                   include_sends: bool) -> Optional[Dict[str, Any]]:
+    """First breached budget limit as a ``budget_exceeded`` payload, or None.
+
+    Wall-clock and usage-metric ceilings are checked at every call site; the
+    send-count cap is checked only where another send would be attempted
+    (``include_sends``), so consuming exactly the allowed number of sends is
+    not itself a breach. Usage-metric caps apply only once that metric has
+    appeared in the cumulative totals: configured-but-never-reported metrics
+    never false-trigger. No budget (None) means no breach, ever.
+    """
+    if budget is None:
+        return None
+    max_wall = getattr(budget, "max_wall_seconds", None)
+    if max_wall is not None and wall_seconds >= float(max_wall):
+        return {"limit": "max_wall_seconds", "threshold": max_wall,
+                "observed": round(wall_seconds, 6)}
+    max_sends = getattr(budget, "max_sends", None)
+    if include_sends and max_sends is not None and send_count >= max_sends:
+        return {"limit": "max_sends", "threshold": max_sends,
+                "observed": send_count}
+    for metric, ceiling in sorted((getattr(budget, "max_usage", None)
+                                   or {}).items()):
+        if metric in cumulative and cumulative[metric] >= ceiling:
+            return {"limit": f"max_usage[{metric}]", "threshold": ceiling,
+                    "observed": cumulative[metric]}
+    return None
+
+
+def _budget_message(breach: Dict[str, Any]) -> str:
+    return (f"mission budget exceeded: {breach['limit']} "
+            f"(threshold {breach['threshold']}, observed {breach['observed']})")
+
+
 # Single-writer lock: taken under <project_dir>/.tether/ for the duration of
 # each run so two Tether sessions never mutate the same project concurrently.
 WRITER_LOCK_RELPATH = Path(".tether") / "tether.lock"
@@ -763,6 +811,9 @@ class Orchestrator:
 
     def _run_locked(self, mission: Any, allow_dirty: bool, dry_run: bool,
                     started_at: str) -> Dict[str, Any]:
+        # Budget guardrails (dogfood-21): wall clock runs from mission start;
+        # cumulative usage and the send counter fill in across every send.
+        t_start = time.monotonic()
         # Fail fast when the adapter cannot run (library callers may skip the
         # CLI-level availability guard).
         if not dry_run:
@@ -830,6 +881,35 @@ class Orchestrator:
         # Review gate outcome (dogfood-15); None unless review is enabled, so
         # reports of existing missions stay byte-for-byte unchanged.
         review_result: Optional[Dict[str, Any]] = None
+        # Budget breach payload (dogfood-21); None unless a limit is breached,
+        # so the "budget_exceeded" report key only appears on real breaches.
+        budget_exceeded: Optional[Dict[str, Any]] = None
+
+        # Cumulative usage tracking (dogfood-21): every adapter send merges
+        # its numeric usage metrics into running totals; budgets are checked
+        # before each send and around verification/recovery.
+        cumulative_usage: Dict[str, float] = {}
+        send_count = 0
+
+        def _track_send(sent: AgentState) -> None:
+            nonlocal send_count
+            send_count += 1
+            usage = sent.usage if sent is not None else None
+            if not isinstance(usage, dict):
+                return
+            for key, value in usage.items():
+                if isinstance(value, bool) \
+                        or not isinstance(value, (int, float)):
+                    continue
+                cumulative_usage[key] = \
+                    cumulative_usage.get(key, 0.0) + float(value)
+
+        def _require_budget(include_sends: bool) -> None:
+            breach = _budget_breach(
+                getattr(mission, "budget", None), cumulative_usage,
+                time.monotonic() - t_start, send_count, include_sends)
+            if breach is not None:
+                raise _BudgetExceededError(_budget_message(breach), breach)
 
         # Crash-recovery detection (advisory): prior session directories
         # whose event log never reached session_end were interrupted
@@ -1035,7 +1115,9 @@ class Orchestrator:
                 state = AgentState(status="completed", logs="[dry-run] skipped")
             else:
                 assert session is not None
+                _require_budget(True)
                 state = self.adapter.send(plan_prompt, session)
+                _track_send(state)
                 audit.save_response("plan", state.model_dump())
                 log.info("Planning step status: %s", state.status)
                 if state.status != "completed":
@@ -1063,7 +1145,9 @@ class Orchestrator:
                 state = AgentState(status="completed", logs="[dry-run] skipped")
             else:
                 assert session is not None
+                _require_budget(True)
                 state = self.adapter.send(exec_prompt, session)
+                _track_send(state)
                 audit.save_response("execute", state.model_dump())
                 log.info("Execution step status: %s", state.status)
 
@@ -1085,6 +1169,12 @@ class Orchestrator:
             probe_specs = self._effective_verification_probes(mission)
             prev_changed: Optional[list[str]] = None
             while True:
+                # Budget check around the verification/recovery loop
+                # (dogfood-21): wall clock and usage metrics keep growing
+                # during sends and verification. The send-count cap is not
+                # re-checked here: consuming exactly the allowed sends and
+                # passing is not a breach.
+                _require_budget(False)
                 attempt += 1
                 log.info("Verification attempt %d/%d", attempt, max_attempts)
                 verification_results = run_verification(
@@ -1277,7 +1367,9 @@ class Orchestrator:
                     state = AgentState(status="completed", logs="[dry-run] skipped")
                 else:
                     assert session is not None
+                    _require_budget(True)
                     state = self.adapter.send(repair_prompt, session)
+                    _track_send(state)
                     audit.save_response(f"repair-{attempt}", state.model_dump())
                     log.info("Recovery attempt %d status: %s", attempt, state.status)
                     # Re-gate and refresh forensic evidence after EVERY send:
@@ -1299,6 +1391,17 @@ class Orchestrator:
                 next_steps.append(
                     "Write sandbox violated by: " + names + ". Verification "
                     f"was skipped. Roll back with: tether rollback "
+                    f"{self.session_id} --project-dir {self.project_dir}"
+                )
+            elif isinstance(e, _BudgetExceededError):
+                budget_exceeded = e.breach
+                audit.log_event("budget_exceeded", e.breach)
+                breach = e.breach
+                next_steps.append(
+                    f"Mission budget exceeded: {breach['limit']} "
+                    f"(threshold {breach['threshold']}, observed "
+                    f"{breach['observed']}). Remaining sends and verification "
+                    f"were skipped. Roll back with: tether rollback "
                     f"{self.session_id} --project-dir {self.project_dir}"
                 )
             log.error("%s", e)
@@ -1346,6 +1449,13 @@ class Orchestrator:
             merged = set(changed_files) | set(state.changed_files)
             changed_files = sorted(merged)
 
+        # Cumulative usage telemetry (dogfood-21): merged numeric metrics
+        # across every send plus always-tracked wall clock and send count.
+        cumulative_report: Dict[str, Any] = dict(cumulative_usage)
+        cumulative_report["wall_seconds"] = round(
+            time.monotonic() - t_start, 6)
+        cumulative_report["send_count"] = send_count
+
         report = {
             "session_id": self.session_id,
             "mission_name": mission.name,
@@ -1361,6 +1471,7 @@ class Orchestrator:
             "changed_files": changed_files,
             "sandbox_violations": sandbox_violations,
             "usage": state.usage if state is not None else None,
+            "cumulative_usage": cumulative_report,
             "checkpoint_info": checkpoint.model_dump(),
             "plan": plan_text[:2000],
             "next_steps": next_steps,
@@ -1368,6 +1479,8 @@ class Orchestrator:
         }
         if review_result is not None:
             report["review"] = review_result
+        if budget_exceeded is not None:
+            report["budget_exceeded"] = budget_exceeded
         report_path = audit.write_report(report)
 
         # Opt-in automatic rollback: only for failed/cancelled outcomes, never

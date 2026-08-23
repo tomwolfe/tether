@@ -592,6 +592,8 @@ def test_run_exit_code_constants():
     assert cli.EXIT_CANCELLED == 2
     assert cli.EXIT_REJECTED == 3
     assert cli.EXIT_SANDBOX_VIOLATION == 4
+    # dogfood-21: mission budget breaches get their own exit code.
+    assert cli.EXIT_BUDGET_EXCEEDED == 5
 
 
 def test_cli_exit_success_and_failed(tmp_path):

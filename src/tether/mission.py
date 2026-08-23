@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from tether.models import (
     AssertionSpec,
+    BudgetSpec,
     MissionContract,
     ProbeSpec,
     RecoverySpec,
@@ -186,6 +187,50 @@ def load_mission(path: str | Path) -> MissionContract:
     if adapter is not None and not isinstance(adapter, str):
         raise MissionError("'adapter' must be a string")
 
+    # Structural validation only (dogfood-21): budgets are enforced at run
+    # time by the orchestrator against cumulative usage telemetry.
+    raw_budget = data.get("budget")
+    budget: BudgetSpec | None = None
+    if raw_budget is not None:
+        if not isinstance(raw_budget, dict):
+            raise MissionError("'budget' must be a mapping")
+        unknown = set(raw_budget) - {"max_wall_seconds", "max_sends",
+                                     "max_usage"}
+        if unknown:
+            raise MissionError(
+                "'budget' accepts only 'max_wall_seconds', 'max_sends', "
+                "and 'max_usage'; got: " + ", ".join(sorted(unknown)))
+        for key in ("max_wall_seconds", "max_sends"):
+            value = raw_budget.get(key)
+            if value is not None and (
+                not isinstance(value, int) or isinstance(value, bool)
+                or value <= 0
+            ):
+                raise MissionError(f"'budget.{key}' must be a positive integer")
+        raw_max_usage = raw_budget.get("max_usage")
+        max_usage: Dict[str, float] | None = None
+        if raw_max_usage is not None:
+            if not isinstance(raw_max_usage, dict):
+                raise MissionError(
+                    "'budget.max_usage' must be a mapping of metric name "
+                    "to number")
+            for metric, ceiling in raw_max_usage.items():
+                if not isinstance(metric, str) or not metric:
+                    raise MissionError(
+                        "'budget.max_usage' keys must be non-empty strings")
+                if (isinstance(ceiling, bool)
+                        or not isinstance(ceiling, (int, float))
+                        or ceiling <= 0):
+                    raise MissionError(
+                        f"'budget.max_usage.{metric}' must be a positive "
+                        "number")
+            max_usage = {str(k): float(v) for k, v in raw_max_usage.items()}
+        budget = BudgetSpec(
+            max_wall_seconds=raw_budget.get("max_wall_seconds"),
+            max_sends=raw_budget.get("max_sends"),
+            max_usage=max_usage,
+        )
+
     for field in ("context", "constraints"):
         value = data.get(field, [])
         if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
@@ -230,6 +275,7 @@ def load_mission(path: str | Path) -> MissionContract:
             ),
             recovery=RecoverySpec(max_attempts=max_attempts),
             review=review,
+            budget=budget,
             adapter=adapter,
             adapters=adapters_block,
             allowed_paths=sandbox_globs.get("allowed_paths"),

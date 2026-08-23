@@ -69,6 +69,18 @@ class ReviewSpec(BaseModel):
     context: str = "excerpt"
 
 
+class BudgetSpec(BaseModel):
+    """Optional mission-level budgets (dogfood-21): hard caps enforced by the
+    core loop at run time. All fields default to None (unset); a budget with
+    no limits set behaves like no budget at all."""
+    max_wall_seconds: Optional[int] = Field(default=None, gt=0)
+    max_sends: Optional[int] = Field(default=None, gt=0)
+    # Cumulative usage-metric ceilings (metric name -> cap). Enforced only
+    # while that metric has appeared in the session's cumulative usage, so a
+    # configured-but-never-reported metric never false-triggers.
+    max_usage: Optional[Dict[str, float]] = None
+
+
 class MissionContract(BaseModel):
     mission: Dict[str, Any]
     name: str
@@ -79,6 +91,9 @@ class MissionContract(BaseModel):
     recovery: RecoverySpec = Field(default_factory=RecoverySpec)
     # Optional review gate; None (absent) keeps existing missions unchanged.
     review: Optional[ReviewSpec] = None
+    # Optional mission-level budgets (dogfood-21); None (absent) keeps
+    # existing missions unchanged.
+    budget: Optional[BudgetSpec] = None
     adapter: Optional[str] = None
     adapters: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     # Optional write sandbox (post-execution gate): fnmatch globs relative to

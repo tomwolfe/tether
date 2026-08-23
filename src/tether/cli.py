@@ -41,6 +41,7 @@ EXIT_FAILED = 1
 EXIT_CANCELLED = 2
 EXIT_REJECTED = 3
 EXIT_SANDBOX_VIOLATION = 4
+EXIT_BUDGET_EXCEEDED = 5
 
 DEFAULT_CONFIG_TEMPLATE = """\
 # Tether project configuration.
@@ -402,6 +403,8 @@ def run(
     if report["status"] != "success":
         if report.get("sandbox_violations"):
             raise typer.Exit(code=EXIT_SANDBOX_VIOLATION)
+        if report.get("budget_exceeded"):
+            raise typer.Exit(code=EXIT_BUDGET_EXCEEDED)
         raise typer.Exit(code=EXIT_FAILED)
 
 
@@ -739,6 +742,9 @@ def sessions_stats(
     # across sessions whose report carries usage data.
     usage_totals: Dict[str, float] = {}
     usage_sessions = 0
+    # Budget telemetry (dogfood-21): sessions whose run breached a mission
+    # budget (report carries "budget_exceeded").
+    budget_exceeded_sessions = 0
     for d, data in entries:
         status = str(data.get("status", "?"))
         status_counts[status] = status_counts.get(status, 0) + 1
@@ -773,6 +779,8 @@ def sessions_stats(
             if (isinstance(r, dict) and r.get("passed") is False
                     and r.get("command")):
                 failing_commands[str(r["command"])] += 1
+        if data.get("budget_exceeded"):
+            budget_exceeded_sessions += 1
         report_usage = data.get("usage")
         if isinstance(report_usage, dict):
             reported_numeric = False
@@ -852,6 +860,8 @@ def sessions_stats(
             },
             "rejections_caused_failures": review_rejections_caused_failures,
         },
+        # Budget breaches (dogfood-21): always present in --json output.
+        "budgets": {"sessions_exceeded": budget_exceeded_sessions},
     }
     if missions_stats:
         stats["missions"] = missions_stats
@@ -908,6 +918,10 @@ def sessions_stats(
             for key in sorted(usage_totals))
         typer.echo(
             f"Usage: {usage_sessions} session(s) reporting; {totals_text}")
+    if budget_exceeded_sessions:
+        typer.echo(
+            f"Budgets: {budget_exceeded_sessions} session(s) exceeded "
+            f"a mission budget")
 
 
 _DURATION_RE = re.compile(r"^(\d+)([mhd])$")

@@ -55,6 +55,24 @@ def test_readme_recommends_enforce_for_allowed_paths():
     assert "prefer `sandbox_mode: enforce`" in sandbox
 
 
+# ------------------- documentation truth (dogfood-21 task 5)
+
+
+def test_readme_documents_budgets():
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "budget" in readme.lower()
+    budgets = readme.split("## Budgets", 1)[1].split("\n## ", 1)[0]
+    assert "max_wall_seconds" in budgets
+    assert "max_sends" in budgets
+    assert "max_usage" in budgets
+    assert "cumulative_usage" in budgets
+    assert "EXIT_BUDGET_EXCEEDED" in budgets
+    # limitation: metric caps need the adapter to report the metric
+    limitations = readme.split("## Current limitations", 1)[1]
+    assert "budget" in limitations.lower()
+    assert "never reports" in limitations
+
+
 def test_security_doc_says_scrub_is_not_erasure():
     security = (REPO_ROOT / "docs" / "SECURITY.md").read_text(encoding="utf-8")
     leakage = security.split("### Secret leakage", 1)[1].split("### Verification", 1)[0]
