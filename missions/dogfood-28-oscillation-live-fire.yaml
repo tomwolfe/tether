@@ -31,10 +31,12 @@ verification:
   artifacts:
     - "src/tether/_oscillation_fixture.py"
   probes:
-    - command: "python -c \"import ast; tree = ast.parse(open('src/tether/_oscillation_fixture.py').read()); assert not any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)) for n in ast.walk(tree)), 'data-only fixture required'; print('data-only: ok')\""
-      contains: "data-only: ok"
-    - command: "python -c \"from tether import _oscillation_fixture as f; v = f.MODE; assert type(v) is str, repr(v); print('resolved:', v)\""
-      contains: "resolved:"
+    # NOTE: markers are assembled from fragments so a failing assert's
+    # traceback (which echoes the -c source) can never contain them.
+    - command: "python -c \"import ast; tree = ast.parse(open('src/tether/_oscillation_fixture.py').read()); bad = any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)) for n in ast.walk(tree)); assert not bad, 'fixture must be data-only'; print('data', '-', 'only', ':', 'ok')\""
+      contains: "data - only : ok"
+    - command: "python -c \"from tether import _oscillation_fixture as f; v = f.MODE; assert type(v) is str, repr(v); print('resolved', ':', v)\""
+      contains: "resolved : "
 
 recovery:
   strategy: cumulative
