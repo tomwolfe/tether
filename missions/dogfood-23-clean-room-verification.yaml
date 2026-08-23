@@ -1,0 +1,166 @@
+mission:
+  name: dogfood-23-clean-room-verification
+  goal: |
+    Close Tether's false-green verification surface: today verification runs
+    IN THE AGENT'S WORKING TREE, so an agent can game it — e.g. a gitignored
+    conftest.py or sitecustomize.py that patches a failing test makes in-tree
+    pytest pass while the actual change is broken. Add CLEAN-ROOM VERIFICATION:
+    when `verification.clean_room: true`, after sandbox checks pass Tether
+    materializes a THROWAWAY CHECKOUT of the checkpoint ref, applies ONLY the
+    session's captured change (patch.diff plus captured untracked files;
+    gitignored paths and anything outside the project dir do NOT carry over),
+    and runs the ENTIRE battery — commands, artifacts, assertions, probes,
+    mutation — THERE, never in the agent's tree. Each task proven by tests
+    that fail before and pass after. All existing tests keep passing. Change
+    NOTHING outside scope.
+
+    Tasks (implement in order; minimal, typed, scoped):
+    1. CONTRACT MODEL:
+       - In src/tether/models.py extend VerificationSpec with Optional
+         `clean_room: Optional[bool] = None` (None/absent => OFF, existing
+         missions byte-for-byte unchanged) and
+         `clean_room_copy: Optional[List[str]] = None` (relative paths copied
+         from the working tree into the clean room after checkout, for things
+         like `.venv`; never copy .tether/, .git/, or sandbox-forbidden paths).
+       - In src/tether/mission.py structurally validate both keys
+         (clean_room bool-or-null; clean_room_copy list of relative strings,
+         no absolute paths, no `..`). Raise MissionError otherwise.
+    2. MATERIALIZATION (new module src/tether/cleanroom.py):
+       - `def materialize_clean_room(project_dir, checkpoint_ref,
+         session_dir, copies, dest: Path) -> None` raising
+         CleanRoomError(message) on ANY failure (fail-closed, like backup
+         failure):
+         * `git archive <checkpoint_ref> | tar -x -C dest` (or equivalent
+           subprocess, shell=False) to get a pristine checkout of the ref;
+         * apply session_dir/patch.diff via `git apply --unsafe-paths`-free
+           plain `git apply` run with cwd=dest (fall back to `patch -p1` if
+           git apply refuses); apply untracked files listed in
+           session_dir/untracked.txt by copying their current bytes from the
+           project tree into dest — BUT skip any untracked path that is
+           gitignored in the project (checked via `git check-ignore`) and any
+           path outside project_dir (defensive; they are relative anyway);
+         * copy each entry in `copies` if it exists in the project dir
+           (missing entries are skipped silently).
+    3. ORCHESTRATION:
+       - In src/tether/orchestrator.py: when effective clean_room is True and
+         not dry-run and verification would otherwise run (i.e. we reach the
+         attempt loop), materialize a fresh temp directory (tempfile.mkdtemp,
+         always cleaned up in finally) from checkpoint.original_head +
+         session_dir change artifacts + clean_room_copy, then run the ENTIRE
+         battery against THAT directory instead of self.project_dir:
+         run_verification commands, check_artifacts, check_assertions,
+         run_probes, and mutation testing all take the clean-room path as
+         their project dir. The review gate still reads the captured patch.diff
+         as today. Materialization failure fails the attempt AND the mission
+         immediately (fail-closed): status failed, clear next_steps naming the
+         reason, audit event `clean_room_error`.
+       - Dry-run records clean_room as skipped without executing anything.
+       - Unset/False => behavior byte-for-byte identical to today.
+    4. ACCEPTANCE TEST (must exist, tests/test_cleanroom.py):
+       A scripted fake adapter "fixes" a failing test by writing a GITIGNORED
+       sitecustomize.py (or conftest.py) helper into the project tree. Assert:
+       in-tree verification (clean_room unset) PASSES the mission while
+       clean_room: true FAILS it — proving the false-green is closed. Also
+       cover: materialize failure (corrupt patch.diff) fails closed; gitignored
+       helper absent in clean room; clean_room_copy brings .venv-like dirs;
+       dry-run skips; default-off unchanged; mutation runs against the clean
+       room when enabled together.
+    5. DOCS:
+       - README.md: new "Clean-room verification" subsection under Verification
+         explaining what carries over (patch + non-gitignored untracked files)
+         and what does not (gitignored paths, outside-project paths), plus
+         fail-closed semantics; add a Current limitations line that clean-room
+         narrows but does not eliminate the false-green surface.
+       - docs/SECURITY.md: honest update under "What Tether does NOT protect
+         against": in-tree verification was gameable via gitignored helpers;
+         clean-room narrows that specific surface; detection not containment.
+       - docs/ARCHITECTURE.md: note the clean-room tier in the core-loop steps.
+
+context:
+  - >-
+    Read docs/ARCHITECTURE.md, docs/SECURITY.md, README.md first, then
+    src/tether/orchestrator.py (the attempt loop and where verification runs),
+    src/tether/verification.py, src/tether/git_safety.py (checkpoint refs,
+    changed_files_since), src/tether/manifest.py, src/tether/models.py,
+    src/tether/mission.py, and tests/test_safety.py + tests/test_core.py for
+    how scripted fake adapters drive end-to-end runs in tests.
+  - >-
+    dogfood-19 added assertions, dogfood-20 probes, dogfood-21 budgets,
+    dogfood-22 mutation. Build on all; do not regress. The clean room must
+    reuse the SAME verification helpers (run_verification / check_artifacts /
+    check_assertions / run_probes / run_mutation_testing) with only the
+    project-dir argument swapped — no duplicated logic.
+  - >-
+    Threat model: the agent controls its working tree, including gitignored
+    files that influence verification tools (conftest.py, sitecustomize.py,
+    tox.ini overrides). The clean room is built ONLY from the checkpoint ref
+    plus the session's captured change artifact, so anything the agent planted
+    outside its tracked diff does not exist there. This is why gitignored
+    untracked files are deliberately excluded from carry-over.
+  - >-
+    Core loop stays adapter-agnostic; no AgentAdapter signature changes;
+    subprocess stays shell=False; stdlib only; minimal typed scoped changes;
+    every behavior gets a failing-then-passing test; features unset =>
+    byte-for-byte identical behavior.
+constraints:
+  - do not change AgentAdapter method signatures
+  - do not weaken existing tests; all current tests must keep passing
+  - subprocess usage stays shell=False
+  - no new third-party dependencies (stdlib only)
+  - keep changes minimal, typed, and scoped to the five tasks
+  - clean_room unset or False => byte-for-byte identical behavior
+  - materialization failure must fail the mission (fail-closed), never fall back to in-tree
+  - gitignored untracked files and outside-project paths must NOT carry into the clean room
+  - the clean-room battery must reuse the existing verification helpers, not duplicate them
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+    - ".venv/bin/tether adapters conformance mock"
+  artifacts:
+    - "README.md"
+    - "docs/SECURITY.md"
+    - "src/tether/cleanroom.py"
+  assertions:
+    - path: src/tether/cleanroom.py
+      contains: CleanRoomError
+    - path: src/tether/cleanroom.py
+      contains: materialize_clean_room
+    - path: src/tether/models.py
+      contains: clean_room
+    - path: src/tether/orchestrator.py
+      contains: clean_room
+    - path: tests/test_cleanroom.py
+      contains: sitecustomize
+    - path: README.md
+      contains: Clean-room
+    - path: docs/SECURITY.md
+      contains: clean-room
+  probes:
+    - command: "python -c \"import ast,sys; ast.parse(open('src/tether/cleanroom.py').read()); print('parse ok')\""
+      contains: "parse ok"
+recovery:
+  max_attempts: 4
+review:
+  enabled: true
+  required: true
+  adapter: opencode
+  retry_on_rejection: true
+budget:
+  max_sends: 6
+  max_wall_seconds: 3600
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 1800
+allowed_paths:
+  - src/**
+  - tests/**
+  - docs/**
+  - README.md
+forbidden_paths:
+  - .git/**
+  - .tether/**
+  - missions/**
