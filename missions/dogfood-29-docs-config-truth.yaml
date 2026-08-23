@@ -1,0 +1,90 @@
+# Mission: dogfood-29-docs-config-truth
+# Finding: docs have drifted behind features shipped in dogfood-15..28.
+# In particular, the live-fire field notes (probe marker self-match,
+# equality-operator loopholes) and the oscillation fixture workflow are
+# undocumented outside ARCHITECTURE.md, and several config defaults are
+# only stated in code.
+mission:
+  name: dogfood-29-docs-config-truth
+  goal: |
+    Audit every piece of Tether documentation against actual code
+    behavior and fix all discrepancies, so that any documented default,
+    limitation, or behavior claim is provably true.
+
+tasks:
+  - |
+    README AUDIT:
+    Verify README.md describes review gates (context excerpt/full,
+    credibility probes), budgets (max_sends/max_wall_seconds/max_usage),
+    mutation testing (fail_below semantics, advisory mode), clean-room
+    verification (limitations: gitignored/outside-project files
+    excluded), sandbox modes (warn vs enforce), recovery strategies
+    (cumulative vs reset_to_checkpoint), and oscillation detection.
+    Fix stale claims; add missing limitation notes.
+  - |
+    CONFIG DEFAULTS AUDIT:
+    For every field in src/tether/config.py and every mission-block key
+    parsed in src/tether/mission.py, confirm the documented default
+    matches the code default. Document any undocumented keys with their
+    true defaults.
+  - |
+    SECURITY/ADAPTERS AUDIT:
+    Verify docs/SECURITY.md threat model mentions the write sandbox's
+    best-effort nature and the new violation message formats; verify
+    docs/ADAPTERS.md capability table and promotion criteria match
+    certify.py behavior.
+  - |
+    DOC-TRUTH TESTS:
+    Extend tests/test_docs.py with assertions pinning any newly checked
+    claims (e.g., README states the probe-marker self-match pitfall for
+    python -c one-liners; README documents fail_below advisory mode).
+
+constraints:
+  - documentation and tests only; no src/tether changes
+  - keep changes minimal and truthful
+
+verification:
+  commands:
+    - "python -m pytest -q tests/test_docs.py"
+    - "python -m pytest -q"
+    - "ruff check src tests"
+  artifacts:
+    - "README.md"
+    - "docs/"
+  assertions:
+    - path: tests/test_docs.py
+      contains: self-match
+  probes:
+    - command: "python -m pytest -q tests/test_docs.py"
+      contains: "passed"
+
+recovery:
+  max_attempts: 4
+
+review:
+  enabled: true
+  required: true
+  context: full
+  adapter: opencode
+  retry_on_rejection: true
+
+budget:
+  max_sends: 8
+  max_wall_seconds: 3600
+
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 1800
+
+allowed_paths:
+  - README.md
+  - docs/**
+  - tests/test_docs.py
+  - missions/dogfood-29-docs-config-truth.yaml
+  - "**/.DS_Store"
+
+forbidden_paths:
+  - .git/**
+  - .tether/**
