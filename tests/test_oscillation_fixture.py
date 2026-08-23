@@ -3,8 +3,12 @@ from tether import _oscillation_fixture
 
 
 def test_alpha_mode() -> None:
-    assert _oscillation_fixture.MODE == "alpha"
+    value = _oscillation_fixture.MODE
+    assert type(value) is str
+    assert value == "alpha"
 
 
 def test_beta_mode() -> None:
-    assert _oscillation_fixture.MODE == "beta"
+    value = _oscillation_fixture.MODE
+    assert type(value) is str
+    assert value == "beta"
