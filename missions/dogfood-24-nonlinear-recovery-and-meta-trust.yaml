@@ -1,0 +1,127 @@
+# Mission: dogfood-24-nonlinear-recovery-and-meta-trust
+# Goal: Close Tether's deepest recovery and meta-trust gaps by adding
+# reset-to-checkpoint recovery strategy, oscillation detection, and
+# reviewer credibility checks. Each task proven by failing-then-passing tests.
+mission:
+  name: dogfood-24-nonlinear-recovery-and-meta-trust
+  goal: |
+    Harden Tether's recovery loop and meta-trust layer:
+    1. Add configurable recovery strategy (cumulative vs reset_to_checkpoint)
+       so agents can escape compounding-error spirals.
+    2. Add oscillation detection to automatically trigger reset when the
+       agent enters a fix-A-breaks-B / fix-B-breaks-A loop.
+    3. Add reviewer credibility probing so independent reviewers are
+       validated before their verdicts are trusted.
+    Each task proven by tests that fail before and pass after. All existing
+    tests must keep passing. Change NOTHING outside scope.
+
+  tasks:
+    - |
+      RECOVERY STRATEGY OPTION:
+      In src/tether/models.py extend RecoverySpec with:
+        strategy: Literal["cumulative", "reset_to_checkpoint"] = "cumulative"
+      In src/tether/mission.py validate strategy (raise MissionError on
+      invalid value). In src/tether/orchestrator.py recovery loop: when
+      strategy == "reset_to_checkpoint", perform scoped clean rollback to
+      checkpoint BEFORE sending the repair prompt (reuse git_rollback with
+      clean=True / restore_from_backup), then re-run _gate_and_capture.
+      Log a "recovery_reset" audit event. Default "cumulative" must remain
+      byte-for-byte identical to current behavior. Add tests proving reset
+      wipes intermediate dirty state and cumulative preserves it.
+    - |
+      OSCILLATION DETECTION:
+      In src/tether/orchestrator.py track per-attempt failure signatures
+      (normalized failing_output hash + changed_files set). When the same
+      signature appears >= 2 times within a recovery loop AND strategy is
+      "cumulative", automatically switch to reset_to_checkpoint behavior
+      for subsequent attempts and log "oscillation_detected" audit event.
+      When strategy is already "reset_to_checkpoint" and oscillation persists
+      for 2 more attempts, abort early with status "failed",
+      failure_class "oscillation_detected". Add tests proving auto-switch
+      and early abort.
+    - |
+      REVIEWER CREDIBILITY CHECK:
+      In src/tether/models.py add ReviewSpec.credibility_probe: Optional[str]
+      (a command whose output validates the reviewer adapter's format).
+      In orchestrator._run_review_gate, when set, run the probe against the
+      reviewer's response BEFORE parsing verdict. Probe failure => treat as
+      request_changes with reason "reviewer credibility check failed".
+      Add tests: valid reviewer passes; malformed output fails safe; unset
+      preserves current behavior.
+    - |
+      DOCS & TESTS:
+      Update README.md, docs/ARCHITECTURE.md, docs/SECURITY.md. All new
+      behavior covered by tests. Every existing test keeps passing.
+
+  context_files:
+    - docs/ARCHITECTURE.md
+    - docs/SECURITY.md
+    - README.md
+    - src/tether/orchestrator.py
+    - src/tether/models.py
+    - src/tether/mission.py
+    - src/tether/git_safety.py
+
+  constraints:
+    - do not change AgentAdapter method signatures
+    - do not weaken existing tests
+    - subprocess stays shell=False
+    - no new third-party dependencies
+    - keep changes minimal, typed, scoped
+    - reset_to_checkpoint must reuse existing rollback machinery exactly
+    - oscillation detection memory must be O(attempts), not unbounded
+    - reviewer credibility failure must fail safe (never approve)
+    - default cumulative strategy must be byte-for-byte unchanged
+
+verification:
+    commands:
+      - "python -m pytest -q"
+      - "ruff check src tests"
+      - "mypy src/tether"
+      - ".venv/bin/tether adapters conformance mock"
+    artifacts:
+      - "README.md"
+      - "docs/ARCHITECTURE.md"
+    assertions:
+      - path: src/tether/models.py
+        contains: reset_to_checkpoint
+      - path: src/tether/orchestrator.py
+        contains: oscillation_detected
+      - path: src/tether/orchestrator.py
+        contains: recovery_reset
+      - path: src/tether/models.py
+        contains: credibility_probe
+    probes:
+      - command: "python -c \"import ast; ast.parse(open('src/tether/orchestrator.py').read()); print('ok')\""
+        contains: "ok"
+
+recovery:
+    max_attempts: 4
+    strategy: cumulative
+
+review:
+    enabled: true
+    required: true
+    adapter: opencode
+    retry_on_rejection: true
+
+budget:
+    max_sends: 8
+    max_wall_seconds: 7200
+
+adapter: opencode
+adapters:
+    opencode:
+      command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+      timeout_seconds: 1800
+
+allowed_paths:
+    - src/**
+    - tests/**
+    - docs/**
+    - README.md
+    - missions/dogfood-24-nonlinear-recovery-and-meta-trust.yaml
+forbidden_paths:
+    - .git/**
+    - .tether/**
+    - src/tether/adapters/**

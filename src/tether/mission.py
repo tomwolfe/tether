@@ -232,6 +232,14 @@ def load_mission(path: str | Path) -> MissionContract:
         or not (1 <= max_attempts <= 20)
     ):
         raise MissionError("'recovery.max_attempts' must be an integer between 1 and 20")
+    # Recovery strategy (dogfood-24): how repair rounds treat the working
+    # tree. Structural check here; the reset itself runs at mission runtime.
+    recovery_strategy = recovery.get("strategy")
+    if recovery_strategy is not None and recovery_strategy not in (
+            "cumulative", "reset_to_checkpoint"):
+        raise MissionError(
+            "'recovery.strategy' must be 'cumulative' or "
+            "'reset_to_checkpoint'")
 
     # Structural validation only: the review gate itself runs at mission
     # runtime (orchestrator), never during validate-mission. Registry
@@ -248,24 +256,37 @@ def load_mission(path: str | Path) -> MissionContract:
         review_adapter = review_block.get("adapter")
         if review_adapter is not None and not isinstance(review_adapter, str):
             raise MissionError("'review.adapter' must be a string")
+        # Reviewer credibility probe (dogfood-24): structural string check
+        # only; the probe itself runs at mission runtime against the
+        # reviewer's raw response.
+        credibility_probe = review_block.get("credibility_probe")
+        if credibility_probe is not None and (
+                not isinstance(credibility_probe, str)
+                or not credibility_probe.strip()):
+            raise MissionError(
+                "'review.credibility_probe' must be a non-empty string")
+        credibility_probe = (
+            credibility_probe.strip() if credibility_probe is not None
+            else None)
         review_context = review_block.get("context", "excerpt")
         if review_context not in ("excerpt", "full"):
             raise MissionError(
                 "'review.context' must be 'excerpt' or 'full'")
         unknown = set(review_block) - {
             "enabled", "required", "adapter", "retry_on_rejection",
-            "context"}
+            "context", "credibility_probe"}
         if unknown:
             raise MissionError(
                 "'review' accepts only 'enabled', 'required', 'adapter', "
-                "'retry_on_rejection', and 'context'; got: "
-                + ", ".join(sorted(unknown)))
+                "'retry_on_rejection', 'context', and 'credibility_probe'; "
+                "got: " + ", ".join(sorted(unknown)))
         review = ReviewSpec(
             enabled=review_block.get("enabled", False),
             required=review_block.get("required", True),
             adapter=review_adapter,
             retry_on_rejection=review_block.get("retry_on_rejection", False),
             context=review_context,
+            credibility_probe=credibility_probe,
         )
 
     adapter = data.get("adapter")
@@ -361,7 +382,12 @@ def load_mission(path: str | Path) -> MissionContract:
                 clean_room=clean_room,
                 clean_room_copy=clean_room_copy,
             ),
-            recovery=RecoverySpec(max_attempts=max_attempts),
+            recovery=(
+                RecoverySpec(max_attempts=max_attempts)
+                if recovery_strategy is None else
+                RecoverySpec(max_attempts=max_attempts,
+                             strategy=recovery_strategy)
+            ),
             review=review,
             budget=budget,
             adapter=adapter,

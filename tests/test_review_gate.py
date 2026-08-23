@@ -676,3 +676,96 @@ def test_review_both_modes_fail_safe_on_garbage_output(
         tmp_path, review_block, "looks good to me, ship it")
     assert report["status"] == "failed"
     assert report["review"]["verdict"] == "request_changes"
+
+
+# --------------------- reviewer credibility probing (dogfood-24 task 3)
+
+# Probe asserting the reviewer's raw response arrives on stdin and contains
+# an approval marker; exit 0 marks the reviewer credible.
+CRED_PROBE_STDIN = (
+    f"{sys.executable} -c \"import sys; data=sys.stdin.read(); "
+    "sys.exit(0 if 'REVIEW: APPROVE' in data else 3)\""
+)
+CRED_PROBE_REJECT = f"{sys.executable} -c 'import sys; sys.exit(7)'"
+
+
+def _probe_review_block(command):
+    return ("review:\n"
+            "  enabled: true\n"
+            "  credibility_probe: |\n"
+            f"    {command}\n")
+
+
+def test_credibility_probe_unset_keeps_payload_and_verdict_unchanged(
+        tmp_path):
+    # Regression pin: without a probe, review behavior (payload keys
+    # included) is byte-for-byte today's.
+    report, _ = _review_run(tmp_path, "review:\n  enabled: true\n",
+                            REVIEW_APPROVED)
+    assert report["status"] == "success"
+    assert set(report["review"]) == {"enabled", "adapter", "verdict", "reason"}
+    events, _d = _events(tmp_path, report)
+    assert not any(e.get("kind") == "reviewer_credibility" for e in events)
+
+
+def test_credibility_probe_passing_validates_reviewer_approval(tmp_path):
+    report, adapter = _review_run(tmp_path,
+                                  _probe_review_block(CRED_PROBE_STDIN),
+                                  REVIEW_APPROVED)
+    assert report["status"] == "success"
+    assert report["review"]["verdict"] == "approve"
+    assert report["review"]["reason"] == \
+        "the change accomplishes the goal"
+    # probe outcome is audited when configured
+    events, _d = _events(tmp_path, report)
+    probes = [e for e in events if e.get("kind") == "reviewer_credibility"]
+    assert len(probes) == 1 and probes[0]["ok"] is True
+
+
+def test_credibility_probe_rejection_forces_request_changes(tmp_path):
+    # The raw output contains a valid approval verdict, but the probe does
+    # not trust this reviewer: fail-safe forces request_changes.
+    report, _ = _review_run(tmp_path,
+                            _probe_review_block(CRED_PROBE_REJECT),
+                            REVIEW_APPROVED)
+    assert report["status"] == "failed"
+    assert report["review"]["verdict"] == "request_changes"
+    assert report["review"]["reason"] == "reviewer credibility check failed"
+    assert any("Review gate rejected the change" in s for s in
+               report["next_steps"])
+
+
+def test_credibility_probe_crash_fails_safe_never_approves(tmp_path):
+    report, _ = _review_run(
+        tmp_path, _probe_review_block("/nonexistent/credibility-probe-xyz"),
+        REVIEW_APPROVED)
+    assert report["status"] == "failed"
+    assert report["review"]["verdict"] == "request_changes"
+    assert report["review"]["reason"] == "reviewer credibility check failed"
+
+
+def test_credibility_probe_rejection_of_rejection_still_rejects(tmp_path):
+    # Fail-safe direction: a rejected probe never turns a rejection into an
+    # approval either.
+    report, _ = _review_run(tmp_path,
+                            _probe_review_block(CRED_PROBE_REJECT),
+                            REVIEW_REJECTED)
+    assert report["status"] == "failed"
+    assert report["review"]["verdict"] == "request_changes"
+
+
+def test_credibility_probe_must_be_a_string(tmp_path):
+    p = tmp_path / "bad.yaml"
+    p.write_text("mission:\n  name: x\n  goal: y\n"
+                 "review:\n  enabled: true\n  credibility_probe: [true]\n")
+    with pytest.raises(MissionError):
+        load_mission(p)
+
+
+def test_credibility_probe_accepted_in_contract(tmp_path):
+    p = tmp_path / "ok.yaml"
+    p.write_text("mission:\n  name: x\n  goal: y\n"
+                 "review:\n  enabled: true\n  credibility_probe: true-probe\n")
+    m = load_mission(p)
+    assert m.review is not None
+    assert m.review.credibility_probe == "true-probe"

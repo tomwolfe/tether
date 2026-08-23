@@ -1,9 +1,11 @@
 """Core orchestration loop. Adapter-agnostic: depends only on AgentAdapter."""
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -114,6 +116,66 @@ def _parse_review_verdict(logs: str) -> tuple[str, str]:
     lines = logs.splitlines()
     reason = lines[idx + 1].strip() if idx + 1 < len(lines) else ""
     return verdict, clip_output(reason, REVIEW_REASON_BUDGET)
+
+
+# Meta-trust (dogfood-24): a reviewer's verdict is only trusted after an
+# optional credibility probe passes over the raw response. Any probe
+# failure — nonzero exit, crash, timeout — forces this exact rejection.
+REVIEWER_CREDIBILITY_FAILURE = "reviewer credibility check failed"
+
+
+def _run_credibility_probe(command: str, response: str,
+                           project_dir: Path,
+                           timeout_seconds: int) -> tuple[bool, str]:
+    """Run a reviewer credibility probe over the raw response (dogfood-24).
+
+    The command is tokenized with shlex and executed WITHOUT a shell in the
+    project directory; the reviewer's full response is piped to stdin. Exit
+    0 marks the reviewer credible; every other outcome (nonzero exit,
+    spawn/OS error, timeout) fails closed. Never raises.
+    """
+    argv = shlex.split(command)
+    if not argv:
+        return False, "empty credibility probe command"
+    try:
+        proc = subprocess.run(
+            argv,
+            input=response.encode("utf-8"),
+            cwd=str(project_dir),
+            capture_output=True,
+            timeout=timeout_seconds,
+        )
+    except (OSError, ValueError, subprocess.TimeoutExpired) as e:
+        return False, repr(e)
+    detail = (proc.stdout + proc.stderr).decode("utf-8", errors="replace")
+    return proc.returncode == 0, clip_output(detail.strip(), 200)
+
+
+# Oscillation detection (dogfood-24): a failed attempt whose normalized
+# failing output plus changed-file set repeats is a fix-A-breaks-B /
+# fix-B-breaks-A loop; repeated even under reset-to-checkpoint recovery it
+# means the strategy cannot converge, so the loop aborts early instead of
+# burning the remaining attempt budget.
+
+def _failure_signature(reason: str, changed: list[str]) -> str:
+    """Stable hash of one failed attempt: whitespace-normalized failing
+    output plus the sorted distinct changed-file set."""
+    normalized = "\n".join(
+        line.strip() for line in reason.splitlines() if line.strip())
+    digest_input = normalized + "\n\x00" + ",".join(sorted(set(changed)))
+    return hashlib.sha256(digest_input.encode("utf-8")).hexdigest()
+
+
+class _OscillationDetector:
+    """Counts failure signatures across recovery attempts (O(attempts)
+    memory). ``record`` returns True only for signatures already seen."""
+
+    def __init__(self) -> None:
+        self.counts: Dict[str, int] = {}
+
+    def record(self, signature: str) -> bool:
+        self.counts[signature] = self.counts.get(signature, 0) + 1
+        return self.counts[signature] >= 2
 
 # Tailored recovery guidance per verification failure class (dogfood-14);
 # emitted as the header of every repair prompt after a failed attempt.
@@ -457,6 +519,15 @@ class Orchestrator:
         if mission.recovery.max_attempts is not None:
             return mission.recovery.max_attempts
         return self.config.max_attempts
+
+    def _effective_recovery_strategy(self, mission: Any) -> str:
+        """Cumulative (default) vs reset_to_checkpoint recovery posture.
+
+        getattr-guarded so hand-built mission objects without the field
+        keep today's behavior.
+        """
+        return getattr(getattr(mission, "recovery", None),
+                       "strategy", None) or "cumulative"
 
     def _effective_verification_commands(self, mission: Any) -> list[str]:
         if mission.verification.commands is not None:
@@ -812,7 +883,23 @@ class Orchestrator:
             reviewer_session = self.reviewer.start_session(
                 str(self.project_dir), f"{self.session_id}-review")
             state = self.reviewer.send(prompt, reviewer_session)
-            verdict, reason = _parse_review_verdict(state.logs)
+            # Reviewer credibility probe (dogfood-24): an independent
+            # reviewer's verdict is trusted only after its raw response
+            # passes the configured check; anything else fails safe.
+            probe_cmd = getattr(review_spec, "credibility_probe", None)
+            if probe_cmd:
+                ok, detail = _run_credibility_probe(
+                    probe_cmd, state.logs, self.project_dir,
+                    timeout_seconds=self.config.command_timeout_seconds)
+                audit.log_event("reviewer_credibility", {
+                    "ok": ok, "detail": detail})
+                if not ok:
+                    verdict, reason = (
+                        "request_changes", REVIEWER_CREDIBILITY_FAILURE)
+                else:
+                    verdict, reason = _parse_review_verdict(state.logs)
+            else:
+                verdict, reason = _parse_review_verdict(state.logs)
             state_json = state.model_dump()
         except Exception as e:  # noqa: BLE001 - gate must fail safe
             log.warning("Reviewer interaction failed: %r", e)
@@ -1317,6 +1404,13 @@ class Orchestrator:
             assertion_specs = self._effective_verification_assertions(mission)
             probe_specs = self._effective_verification_probes(mission)
             prev_changed: Optional[list[str]] = None
+            # Nonlinear-recovery state (dogfood-24): failure-signature
+            # tracking across attempts, plus an effective strategy that can
+            # auto-escalate from cumulative to reset_to_checkpoint when the
+            # agent starts oscillating. Purely observational unless a
+            # repeat actually fires, so default missions are unchanged.
+            oscillation = _OscillationDetector()
+            effective_strategy = self._effective_recovery_strategy(mission)
             while True:
                 # Budget check around the verification/recovery loop
                 # (dogfood-21): wall clock and usage metrics keep growing
@@ -1552,6 +1646,51 @@ class Orchestrator:
                               or assertion_output or probe_output
                               or mutation_output
                               or (state.error or "agent reported failure"))
+                # Oscillation detection (dogfood-24): a repeated failure
+                # signature (normalized failing output + changed-file set)
+                # means the loop is cycling fix-A-breaks-B /
+                # fix-B-breaks-A. The first repeat escalates cumulative
+                # mode into reset_to_checkpoint; a second recurrence even
+                # under reset means more attempts cannot converge, so the
+                # mission aborts early instead of burning the budget.
+                signature = _failure_signature(reason, list(changed))
+                oscillation.record(signature)
+                seen = oscillation.counts[signature]
+                if seen >= 2:
+                    audit.log_event("oscillation_detected", {
+                        "attempt": attempt,
+                        "signature": signature,
+                        "occurrences": seen,
+                        "escalated": seen >= 3,
+                    })
+                    if seen >= 3:
+                        recovery_attempts.append({
+                            "attempt": attempt,
+                            "failure_class": "oscillation_detected",
+                            "failing_output": reason[:4000],
+                            "changed_files_at_attempt": list(changed),
+                            "oscillation_signature": signature,
+                        })
+                        status = "failed"
+                        next_steps.append(
+                            "Oscillation detected: the same failure "
+                            "recurred even after reset-to-checkpoint "
+                            "recovery, so further attempts cannot "
+                            "converge. Address the root cause manually, "
+                            f"then roll back with: tether rollback "
+                            f"{self.session_id} --project-dir "
+                            f"{self.project_dir}"
+                        )
+                        log.warning(
+                            "Oscillation detected at attempt %d/%d; "
+                            "aborting recovery loop", attempt, max_attempts)
+                        break
+                    if effective_strategy != "reset_to_checkpoint":
+                        log.warning(
+                            "Oscillation detected at attempt %d/%d; "
+                            "escalating recovery to reset_to_checkpoint",
+                            attempt, max_attempts)
+                        effective_strategy = "reset_to_checkpoint"
                 recovery_attempt: Dict[str, Any] = {
                     "attempt": attempt,
                     "failure_class": failure_class,
@@ -1559,6 +1698,43 @@ class Orchestrator:
                     "changed_files_at_attempt": list(changed),
                 }
                 recovery_attempts.append(recovery_attempt)
+                # Configurable recovery strategy (dogfood-24): before the
+                # repair send, restore the tree to its checkpoint state so
+                # this round starts clean instead of compounding earlier
+                # damage. Reuses the exact scoped-rollback machinery;
+                # best-effort: a failed reset is recorded and the round
+                # proceeds (mirrors _auto_rollback tolerance).
+                if effective_strategy == "reset_to_checkpoint" \
+                        and not dry_run:
+                    if checkpoint.is_git_repo:
+                        ok, message = git_rollback(
+                            self.project_dir, self.session_id,
+                            audit_dir=self.config.audit_dir, clean=True,
+                            preserve=pre_existing_untracked)
+                    else:
+                        ok, message = restore_from_backup(
+                            self.project_dir, self.session_id,
+                            backup_dir=self.config.backup_dir,
+                            audit_dir=self.config.audit_dir)
+                    audit.log_event("recovery_reset", {
+                        "attempt": attempt,
+                        "method": ("git_rollback" if checkpoint.is_git_repo
+                                   else "backup_restore"),
+                        "ok": ok,
+                    })
+                    if ok:
+                        log.info(
+                            "Recovery reset to checkpoint before repair "
+                            "attempt %d", attempt)
+                    else:
+                        log.warning(
+                            "Recovery reset did not succeed: %s",
+                            message.splitlines()[0] if message else "")
+                        recovery_attempt["reset_error"] = message[:500]
+                    # Refresh change detection and forensic evidence so the
+                    # repair prompt reflects the actual post-reset tree.
+                    changed = self._gate_and_capture(
+                        audit, mission, checkpoint, manifest_before, dry_run)
                 # Recovery intelligence: classification header + tailored
                 # guidance, then fold a bounded forensic context (current
                 # changed files, latest change-artifact excerpt, previous

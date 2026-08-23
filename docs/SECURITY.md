@@ -88,6 +88,25 @@ and still executes with your privileges.
   if restore succeeds; a failed checksum refuses restore rather than restoring
   a truncated archive.
 - Auto-rollback is opt-in, conservative, and scoped to reported changed files.
+- Mid-run recovery resets (`recovery.strategy: reset_to_checkpoint`, dogfood-24)
+  reuse exactly this machinery between repair rounds, with the same limits:
+  pre-existing untracked files and files invisible to the report-based scoping
+  can survive a reset, so treat a post-reset tree as *reduced*, not pristine.
+
+## Reviewer credibility probing
+
+The review gate's verdict parser is already fail-safe (no parseable verdict
+counts as a rejection). The optional `review.credibility_probe` (dogfood-24)
+narrows a further trust surface: an independent reviewer whose output looks
+authoritative but who cannot demonstrate credibility — for example a reviewer
+adapter replaying canned approvals. The probe command runs shell-free
+(`shell=False`, shlex-tokenized) in the project directory with the reviewer's
+raw response on stdin; only exit code 0 lets the parsed verdict stand. Every
+other outcome forces `request_changes`. The probe is one-directional BY
+CONSTRUCTION: it can turn an approval into a rejection, never the reverse —
+so a compromised or misconfigured probe degrades to stricter review, not
+weaker. It is still operator-configured tooling running with your privileges:
+only configure probes you would be willing to run on reviewer output.
 
 ## Local lock scope
 

@@ -74,6 +74,12 @@ class AssertionSpec(BaseModel):
 
 class RecoverySpec(BaseModel):
     max_attempts: Optional[int] = Field(default=None, ge=1, le=20)
+    # Recovery strategy (dogfood-24): "cumulative" (default) keeps the
+    # working tree as-is across repair rounds; "reset_to_checkpoint"
+    # restores the tree to the checkpoint before every repair send so a
+    # fresh round cannot compound earlier damage. Default keeps existing
+    # missions byte-for-byte unchanged.
+    strategy: Literal["cumulative", "reset_to_checkpoint"] = "cumulative"
 
 
 class ReviewSpec(BaseModel):
@@ -94,6 +100,12 @@ class ReviewSpec(BaseModel):
     # with an instruction to cite specific hunks/lines). Default keeps
     # existing review behavior unchanged.
     context: str = "excerpt"
+    # Reviewer credibility probe (dogfood-24): when set, the command is run
+    # (shell-free, reviewer response piped to stdin, cwd = project dir)
+    # BEFORE the verdict is trusted; exit 0 marks the reviewer credible.
+    # Any other outcome forces request_changes. Default None keeps existing
+    # review behavior unchanged.
+    credibility_probe: Optional[str] = None
 
 
 class BudgetSpec(BaseModel):
