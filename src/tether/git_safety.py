@@ -15,12 +15,52 @@ session ran); those are never removed.
 """
 from __future__ import annotations
 import subprocess
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Optional
 
 from tether.models import CheckpointInfo
 
 REF_PREFIX = "refs/tether/checkpoint"
+
+
+def sandbox_write_violation(
+    path: str, allowed: list[str], forbidden: list[str],
+) -> Optional[dict[str, str]]:
+    """Classify one changed path against the write-sandbox contract.
+
+    Returns ``None`` when the write is permitted. Otherwise returns a
+    ``{"path", "rule"}`` dict whose ``rule`` states the rejection cause:
+
+    - a ``forbidden_paths`` glob match wins over everything and yields
+      ``forbidden_paths: <glob>`` (forbidden by contract);
+    - otherwise, when ``allowed_paths`` is non-empty (it is an allowlist:
+      any write outside it violates even if not forbidden) and matches no
+      glob, the rule names the miss and lists the allowlist globs:
+      ``outside allowed_paths (allowed_paths: <g1>, <g2>)``.
+
+    Both lists empty (the default) means no sandbox: always ``None``.
+    """
+    hit = next((g for g in forbidden if fnmatch(path, g)), None)
+    if hit is not None:
+        return {"path": path, "rule": f"forbidden_paths: {hit}"}
+    if allowed and not any(fnmatch(path, g) for g in allowed):
+        return {
+            "path": path,
+            "rule": "outside allowed_paths (allowed_paths: "
+                    + ", ".join(allowed) + ")",
+        }
+    return None
+
+
+def describe_sandbox_violation(violation: dict[str, str]) -> str:
+    """Human-readable, self-explanatory phrasing of one violation dict."""
+    rule = violation["rule"]
+    if rule.startswith("forbidden_paths:"):
+        glob = rule.split(":", 1)[1].strip()
+        return (f"{violation['path']} is forbidden by contract "
+                f"(matches forbidden_paths glob '{glob}')")
+    return f"{violation['path']} is {rule}"
 
 
 def _git(project_dir: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:

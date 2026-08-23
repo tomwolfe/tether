@@ -15,10 +15,12 @@ from tether.cli import EXIT_FAILED, app
 from tether.config import resolve_config
 from tether.git_safety import (
     create_checkpoint,
+    describe_sandbox_violation,
     head_sha,
     list_checkpoint_refs,
     make_file_backup,
     rollback,
+    sandbox_write_violation,
 )
 from tether.mission import MissionError, load_mission
 from tether.models import AgentState, TetherConfig
@@ -971,7 +973,12 @@ def test_sandbox_allowed_path_rejects_outside_writes(tmp_path):
     report = Orchestrator(adapter, cfg, tmp_path).run(load_mission(mp))
     assert report["status"] == "failed"
     assert {"path": "README.md",
-            "rule": "not matched by allowed_paths"} in report["sandbox_violations"]
+            "rule": "outside allowed_paths (allowed_paths: src/**)"} in \
+        report["sandbox_violations"]
+    # the surfaced failure names the allowlist cause and the contract globs
+    assert any(
+        "README.md is outside allowed_paths (allowed_paths: src/**)" in s
+        for s in report["next_steps"])
     assert report["verification_results"] == []
 
 
@@ -999,6 +1006,55 @@ def test_sandbox_allowed_path_permits_matching_writes(tmp_path):
     report = Orchestrator(adapter, cfg, tmp_path).run(load_mission(mp))
     assert report["status"] == "success"
     assert report["sandbox_violations"] == []
+
+
+# --------------------- dogfood-26: self-explanatory sandbox violations
+
+
+def test_sandbox_write_violation_classifies_all_causes():
+    # default contract: no lists at all -> never a violation
+    assert sandbox_write_violation("anything.txt", [], []) is None
+    # clean: matches an allowed glob
+    assert sandbox_write_violation("src/a.py", ["src/**"], []) is None
+    # outside the allowlist: names the miss and shows the contract globs
+    assert sandbox_write_violation(
+        "README.md", ["src/**", "tests/**"], []) == {
+        "path": "README.md",
+        "rule": "outside allowed_paths (allowed_paths: src/**, tests/**)"}
+    # forbidden match wins even when also inside the allowlist
+    assert sandbox_write_violation(
+        "src/leak.secret", ["src/**"], ["*.secret"]) == {
+        "path": "src/leak.secret", "rule": "forbidden_paths: *.secret"}
+
+
+def test_describe_sandbox_violation_phrases_both_causes():
+    assert describe_sandbox_violation(
+        {"path": "c.secret", "rule": "forbidden_paths: *.secret"}) == (
+        "c.secret is forbidden by contract "
+        "(matches forbidden_paths glob '*.secret')")
+    assert describe_sandbox_violation(
+        {"path": "README.md",
+         "rule": "outside allowed_paths (allowed_paths: src/**)"}) == (
+        "README.md is outside allowed_paths (allowed_paths: src/**)")
+
+
+def test_sandbox_both_match_forbidden_wins(tmp_path):
+    _git_repo(tmp_path)
+    (tmp_path / "src").mkdir()
+    mp = _committed_mission(tmp_path, body=(
+        "mission:\n  name: sbx-both\n  goal: g\n"
+        "allowed_paths:\n  - 'src/**'\n"
+        "forbidden_paths:\n  - '*.secret'\n"
+        f"verification:\n  commands:\n    - {PASS_CMD}\nadapter: mock\n"
+    ))
+    adapter = _WritingAdapter("src/leak.secret")  # matches BOTH lists
+    cfg = TetherConfig(audit_dir=".tether/sessions")
+    report = Orchestrator(adapter, cfg, tmp_path).run(load_mission(mp))
+    assert report["status"] == "failed"
+    assert {"path": "src/leak.secret",
+            "rule": "forbidden_paths: *.secret"} in \
+        report["sandbox_violations"]
+    assert any("forbidden by contract" in s for s in report["next_steps"])
 
 
 @pytest.mark.parametrize("bad", [
@@ -1117,6 +1173,31 @@ def test_sandbox_mode_advisory_fires_exactly_when_allowed_paths_and_warn(
         assert advisories[0]["sandbox_mode"] == "warn"
     else:
         assert warnings == [] and advisories == []
+
+
+# --------------------- dogfood-26: warn-mode hint on detected violations
+
+
+def test_warn_mode_violation_hints_enforce_would_fail_immediately(
+        tmp_path, caplog):
+    import logging
+    _git_repo(tmp_path)
+    (tmp_path / "src").mkdir()
+    mp = _committed_mission(tmp_path, body=(
+        "mission:\n  name: sbx-hint\n  goal: g\n"
+        "allowed_paths:\n  - 'src/**'\n"
+        f"verification:\n  commands:\n    - {PASS_CMD}\nadapter: mock\n"
+    ))
+    adapter = _WritingAdapter("README.md")  # violation under warn mode
+    cfg = TetherConfig(audit_dir=".tether/sessions", sandbox_mode="warn")
+    with caplog.at_level(logging.WARNING, logger="tether"):
+        report = Orchestrator(adapter, cfg, tmp_path).run(load_mission(mp))
+    assert report["status"] == "failed"
+    hints = [r for r in caplog.records
+             if r.getMessage() ==
+             "sandbox_mode is 'warn'; 'sandbox_mode: enforce' would have "
+             "failed this attempt immediately"]
+    assert len(hints) == 1
 
 
 # --------------------------------------------- dogfood-06: audit redaction

@@ -10,7 +10,6 @@ import shutil
 import subprocess
 import tempfile
 import time
-from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -26,8 +25,10 @@ from tether.context_files import (
 from tether.git_safety import (
     changed_files_since,
     create_checkpoint,
+    describe_sandbox_violation,
     make_file_backup,
     restore_from_backup,
+    sandbox_write_violation,
 )
 from tether.git_safety import rollback as git_rollback
 from tether.manifest import diff_manifests, snapshot_manifest
@@ -574,20 +575,17 @@ class Orchestrator:
         """Post-execution write-sandbox check over detected changed files.
 
         A violation is a changed file matching a forbidden glob, or (when
-        allowed_paths is non-empty) matching no allowed glob.
+        allowed_paths is non-empty) matching no allowed glob. Each rule
+        states the cause and, for allowlist misses, the contract's globs
+        (see ``sandbox_write_violation``).
         """
         allowed = list(getattr(mission, "allowed_paths", None) or [])
         forbidden = list(getattr(mission, "forbidden_paths", None) or [])
         violations: list[Dict[str, str]] = []
         for path in changed:
-            hit = next((g for g in forbidden if fnmatch(path, g)), None)
-            if hit is not None:
-                violations.append({"path": path, "rule": f"forbidden_paths: {hit}"})
-                continue
-            if allowed and not any(fnmatch(path, g) for g in allowed):
-                violations.append(
-                    {"path": path, "rule": "not matched by allowed_paths"}
-                )
+            violation = sandbox_write_violation(path, allowed, forbidden)
+            if violation is not None:
+                violations.append(violation)
         return violations
 
     def _persist_change_artifact(
@@ -687,11 +685,16 @@ class Orchestrator:
         # touch. On violation, fail the mission and skip verification.
         violations = self._sandbox_violations(mission, changed)
         if violations:
-            names = ", ".join(v["path"] for v in violations)
+            detail = "; ".join(describe_sandbox_violation(v)
+                               for v in violations)
+            if self.config.sandbox_mode == "warn":
+                log.warning(
+                    "sandbox_mode is 'warn'; 'sandbox_mode: enforce' would "
+                    "have failed this attempt immediately")
             audit.log_event("sandbox_violations",
                             {"violations": violations})
             raise _SandboxViolationError(
-                f"write sandbox violated by: {names}", violations)
+                f"write sandbox violated: {detail}", violations)
         return changed
 
     def _save_attempt_patch(self, audit: AuditTrail, checkpoint: CheckpointInfo,
@@ -760,9 +763,7 @@ class Orchestrator:
             posix = Path(rel).as_posix()
             if not posix.endswith(".py"):
                 continue
-            if next((g for g in forbidden if fnmatch(posix, g)), None) is not None:
-                continue
-            if allowed and not any(fnmatch(posix, g) for g in allowed):
+            if sandbox_write_violation(posix, allowed, forbidden) is not None:
                 continue
             targets.append(posix)
         return targets
@@ -1786,9 +1787,10 @@ class Orchestrator:
             status = "failed"
             if isinstance(e, _SandboxViolationError):
                 sandbox_violations = e.violations
-                names = ", ".join(v["path"] for v in sandbox_violations)
+                detail = "; ".join(describe_sandbox_violation(v)
+                                   for v in sandbox_violations)
                 next_steps.append(
-                    "Write sandbox violated by: " + names + ". Verification "
+                    "Write sandbox violated: " + detail + ". Verification "
                     f"was skipped. Roll back with: tether rollback "
                     f"{self.session_id} --project-dir {self.project_dir}"
                 )

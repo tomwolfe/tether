@@ -265,12 +265,17 @@ Adapter commands run via `subprocess` with `shell=False` in their own process gr
 
 ## Sandbox modes
 
-Missions can restrict agent writes with the contract's `allowed_paths` / `forbidden_paths` fnmatch globs (relative to the project dir; a forbidden match or — when `allowed_paths` is set — no allowed match is a violation). The config key `sandbox_mode` controls how violations are detected:
+Missions can restrict agent writes with the contract's `allowed_paths` / `forbidden_paths` fnmatch globs (relative to the project dir; a forbidden match or — when `allowed_paths` is set — no allowed match is a violation). Note that `allowed_paths` is an **allowlist**: once it is set, *any* write outside its globs violates the contract even if `forbidden_paths` never lists that path (a path matching both lists counts as forbidden). Violations are self-explanatory; each names its cause and, for allowlist misses, the contract's globs:
+
+- forbidden match: `X is forbidden by contract (matches forbidden_paths glob '<glob>')`
+- allowlist miss: `X is outside allowed_paths (allowed_paths: <glob1>, <glob2>)`
+
+These clauses appear in the failure message, the report's `next_steps`, and the `sandbox_violations` audit event. The config key `sandbox_mode` controls how violations are detected:
 
 - `warn` (default): post-send detection. After every agent send — the initial execution and each recovery attempt — every detected changed file (git diff vs checkpoint HEAD plus untracked files; non-git projects use a before/after manifest) is checked against the globs. Violations fail the mission immediately, skip verification entirely, and point at rollback.
 - `enforce`: additionally snapshots the project tree before execution (the same file manifest used for non-git projects) and unions filesystem-metadata diffs into the post-send check. Untracked git files are already checked in both modes; the metadata diff additionally catches writes that content-based detection can miss, e.g. new files under `.gitignore`d paths in git repos.
 
-If your mission sets `allowed_paths`, prefer `sandbox_mode: enforce`. Warn mode relies solely on content-based change detection and can miss writes invisible to diffing (gitignored paths, metadata-only changes); when Tether sees `allowed_paths` combined with warn mode it logs an advisory warning (`sandbox_mode_advisory` event) suggesting enforce.
+If your mission sets `allowed_paths`, prefer `sandbox_mode: enforce`. Warn mode relies solely on content-based change detection and can miss writes invisible to diffing (gitignored paths, metadata-only changes); when Tether sees `allowed_paths` combined with warn mode it logs an advisory warning (`sandbox_mode_advisory` event) suggesting enforce. When a violation is detected while in warn mode, the warning additionally notes that `sandbox_mode: enforce` would have failed the attempt immediately.
 
 Be honest about the limit: enforce mode narrows but does **not** eliminate risk. It is best-effort detection layered onto post-hoc analysis — **not OS-level containment** (see docs/SECURITY.md). Use containers, VMs, or separate users when isolating untrusted agents.
 

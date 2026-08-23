@@ -31,6 +31,21 @@ writes invisible to diffing (e.g. gitignored paths), which is exactly why
 Tether logs an advisory warning for that combination.
 Use OS-level isolation (containers, VMs, separate users) for untrusted agents.
 
+### Write-sandbox semantics
+
+`allowed_paths` is an **allowlist**: once set, any write outside its globs is
+a violation even if `forbidden_paths` never lists the path; a path matching
+both lists counts as forbidden. Violations state their cause so operators can
+fix the mission contract in one step:
+
+- forbidden match: `X is forbidden by contract (matches forbidden_paths glob '<glob>')`
+- allowlist miss: `X is outside allowed_paths (allowed_paths: <glob1>, <glob2>)`
+
+The clauses appear in the failure message, the report's `next_steps`, and the
+`sandbox_violations` audit event. When a violation is detected under
+`sandbox_mode: warn`, the warning notes that `enforce` would have failed the
+attempt immediately.
+
 ### Prompt injection
 
 Repository content read into agent context can carry instructions that hijack
