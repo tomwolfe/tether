@@ -1395,6 +1395,18 @@ class Orchestrator:
                 log.info("Clean-room verification active; staging under %s",
                          clean_room_root)
 
+            # Zero-command visibility (dogfood-25): a mission whose resolved
+            # verification battery has no commands succeeds without
+            # exercising any checks. Not an error (smoke missions may
+            # legitimately declare none) but never silent.
+            if not commands and not dry_run:
+                log.warning(
+                    "mission declares no verification commands; success "
+                    "will not exercise any checks")
+                next_steps.append(
+                    "mission declares no verification commands; success "
+                    "will not exercise any checks")
+
             # Verification + recovery loop
             attempt = 0
             # Any non-completed agent state counts as failure: a mission must

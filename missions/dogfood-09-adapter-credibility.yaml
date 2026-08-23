@@ -68,26 +68,26 @@ mission:
 
     Change NOTHING outside this scope.
 
-  context:
-    - Read src/tether/adapters/base.py, command.py, experimental.py, mock.py,
-      src/tether/smoke.py (existing smoke-test pattern), src/tether/cli.py
-      adapters subcommands, docs/ADAPTERS.md, and tests/test_adapter_harness.py
-      first.
-    - dogfood-07 made CommandAdapter Popen-based with process-group kill and a
-      real cancel(); the conformance timeout/cancel checks should reuse those
-      behaviors and their test patterns.
-    - The 'tether adapters smoke' command and smoke.py show the established
-      pattern for
-      throwaway-directory adapter exercises; follow its style.
-    - tests use stub Python scripts and temp dirs; keep that approach.
 
-  constraints:
-    - do not change AgentAdapter method signatures (new class attributes are fine)
-    - do not weaken existing tests; all current tests must keep passing
-    - subprocess usage stays shell=False
-    - no new third-party dependencies
-    - keep changes minimal, typed, and scoped
 
+context:
+  - Read src/tether/adapters/base.py, command.py, experimental.py, mock.py,
+    src/tether/smoke.py (existing smoke-test pattern), src/tether/cli.py
+    adapters subcommands, docs/ADAPTERS.md, and tests/test_adapter_harness.py
+    first.
+  - dogfood-07 made CommandAdapter Popen-based with process-group kill and a
+    real cancel(); the conformance timeout/cancel checks should reuse those
+    behaviors and their test patterns.
+  - The 'tether adapters smoke' command and smoke.py show the established
+    pattern for
+    throwaway-directory adapter exercises; follow its style.
+  - tests use stub Python scripts and temp dirs; keep that approach.
+constraints:
+  - do not change AgentAdapter method signatures (new class attributes are fine)
+  - do not weaken existing tests; all current tests must keep passing
+  - subprocess usage stays shell=False
+  - no new third-party dependencies
+  - keep changes minimal, typed, and scoped
 verification:
   commands:
     - "python -m pytest -q"

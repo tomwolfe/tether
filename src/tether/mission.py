@@ -51,6 +51,23 @@ def load_mission(path: str | Path) -> MissionContract:
     mission_block = data.get("mission")
     if not isinstance(mission_block, dict):
         raise MissionError("Mission file must contain a 'mission:' block with name and goal")
+    # Strict schema (dogfood-25): unknown keys inside the 'mission:' block
+    # used to be silently ignored, so a mis-nested file (e.g. 'verification:'
+    # indented under 'mission:') validated OK and ran with all defaults.
+    # The allowlist is exactly what the parser honors here; anything else
+    # (task lists, context, constraints, contract blocks) must live at the
+    # top level of the mission file.
+    unknown = set(mission_block) - {"name", "goal"}
+    if unknown:
+        raise MissionError(
+            "'mission' accepts only 'name' and 'goal'; got: "
+            + ", ".join(sorted(str(k) for k in unknown))
+            + ". Every other key belongs at the top level of the mission "
+            "file: contract-level blocks ('verification', 'recovery', "
+            "'review', 'budget', 'adapter', 'adapters', 'allowed_paths', "
+            "'forbidden_paths') and free-form content ('tasks', 'context', "
+            "'constraints', 'context_files'), never nested inside "
+            "'mission:'.")
     name = mission_block.get("name")
     goal = mission_block.get("goal")
     if not isinstance(name, str) or not name.strip():

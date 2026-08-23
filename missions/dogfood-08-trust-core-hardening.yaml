@@ -81,25 +81,25 @@ mission:
 
     Change NOTHING outside this scope. All current tests must keep passing.
 
-  context:
-    - Read src/tether/git_safety.py, src/tether/cli.py, src/tether/orchestrator.py,
-      README.md, and existing tests before changing code.
-    - The single-writer lock currently uses a non-atomic create-then-check pattern.
-    - Non-git backups are tar archives created in git_safety.py; there is no
-      checksum or restore verification today.
-    - Rollback logic and scoped clean rollback live in git_safety.py; the CLI
-      rollback command is in cli.py.
-    - Session reports contain changed_files usable for preview plans.
-    - dogfood-07 added patch.diff/untracked.txt/manifest_diff.json capture and
-      auto_rollback; do not regress those features or tests.
 
-  constraints:
-    - do not change AgentAdapter interface signatures
-    - do not weaken existing tests; all current tests must keep passing
-    - subprocess usage stays shell=False
-    - no new third-party dependencies
-    - keep changes minimal, typed, and scoped
 
+context:
+  - Read src/tether/git_safety.py, src/tether/cli.py, src/tether/orchestrator.py,
+    README.md, and existing tests before changing code.
+  - The single-writer lock currently uses a non-atomic create-then-check pattern.
+  - Non-git backups are tar archives created in git_safety.py; there is no
+    checksum or restore verification today.
+  - Rollback logic and scoped clean rollback live in git_safety.py; the CLI
+    rollback command is in cli.py.
+  - Session reports contain changed_files usable for preview plans.
+  - dogfood-07 added patch.diff/untracked.txt/manifest_diff.json capture and
+    auto_rollback; do not regress those features or tests.
+constraints:
+  - do not change AgentAdapter interface signatures
+  - do not weaken existing tests; all current tests must keep passing
+  - subprocess usage stays shell=False
+  - no new third-party dependencies
+  - keep changes minimal, typed, and scoped
 verification:
   commands:
     - "python -m pytest -q"

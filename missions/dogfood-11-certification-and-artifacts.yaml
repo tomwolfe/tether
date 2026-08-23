@@ -63,25 +63,25 @@ mission:
 
     Change NOTHING outside this scope.
 
-  context:
-    - Read src/tether/mission.py (verification parsing), models.py
-      (VerificationSpec), orchestrator.py verification loop, cli.py
-      (adapters subcommands), smoke.py, conformance.py first.
-    - VerificationSpec currently carries commands and timeout_seconds; add
-      artifacts there.
-    - The verification loop lives in orchestrator.run(); each attempt's
-      results append to report['verification_results'].
-    - smoke.build_smoke_adapter / smoke.run_smoke implement the throwaway-dir
-      probe; reuse them for the live stage.
-    - dogfood-10 added context_files and sandbox enforce; do not regress.
 
-  constraints:
-    - do not change AgentAdapter method signatures
-    - do not weaken existing tests; all current tests must keep passing
-    - subprocess usage stays shell=False
-    - no new third-party dependencies
-    - keep changes minimal, typed, and scoped
 
+context:
+  - Read src/tether/mission.py (verification parsing), models.py
+    (VerificationSpec), orchestrator.py verification loop, cli.py
+    (adapters subcommands), smoke.py, conformance.py first.
+  - VerificationSpec currently carries commands and timeout_seconds; add
+    artifacts there.
+  - The verification loop lives in orchestrator.run(); each attempt's
+    results append to report['verification_results'].
+  - smoke.build_smoke_adapter / smoke.run_smoke implement the throwaway-dir
+    probe; reuse them for the live stage.
+  - dogfood-10 added context_files and sandbox enforce; do not regress.
+constraints:
+  - do not change AgentAdapter method signatures
+  - do not weaken existing tests; all current tests must keep passing
+  - subprocess usage stays shell=False
+  - no new third-party dependencies
+  - keep changes minimal, typed, and scoped
 verification:
   commands:
     - "python -m pytest -q"

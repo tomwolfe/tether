@@ -52,94 +52,94 @@ mission:
          that metric). docs/ARCHITECTURE.md: note enforcement in core loop.
        - Tests: assert README mentions "budget" and "max_wall_seconds".
 
-  context:
-    - >-
-      Read docs/ARCHITECTURE.md, docs/SECURITY.md, README.md,
-      src/tether/orchestrator.py (run loop + report assembly),
-      src/tether/models.py, src/tether/mission.py, src/tether/cli.py
-      (EXIT_* constants + sessions_stats), src/tether/adapters/command.py
-      (usage/usage_patterns), tests/test_core.py + tests/test_adapters_cli.py.
-    - >-
-      CRITICAL: report["usage"] currently holds only the LAST send's usage
-      ("usage": state.usage in orchestrator). It is never accumulated and
-      never enforced. This mission closes that hole.
-    - >-
-      MockAdapter reports no usage. Metric-budget tests MUST use a scripted
-      adapter returning AgentState(usage={...}) — see _ScriptedAdapter /
-      RichAdapter patterns in tests/test_core.py. Wall-clock and send-count
-      budgets are testable with any adapter.
-    - >-
-      dogfood-13 added usage plumbing, dogfood-14 added classify_failure,
-      dogfood-18 added review telemetry, dogfood-19 added per-mission
-      baselines, dogfood-20 added usage_patterns extraction. Build on all;
-      do not regress.
-    - >-
-      Core loop stays adapter-agnostic (AgentAdapter interface only).
-      No signature changes. subprocess stays shell=False. stdlib only.
 
-  context_files:
-    - docs/ARCHITECTURE.md
-    - README.md
-    - src/tether/orchestrator.py
-    - src/tether/models.py
-    - src/tether/mission.py
-    - src/tether/cli.py
-    - src/tether/adapters/command.py
-    - tests/test_core.py
 
-  constraints:
-    - do not change AgentAdapter method signatures
-    - do not weaken existing tests; all current tests must keep passing
-    - subprocess usage stays shell=False
-    - no new third-party dependencies (stdlib only)
-    - keep changes minimal, typed, scoped to five tasks
-    - budget defaults to None so existing missions behave byte-identically
-    - configured max_usage metric never reported must not false-trigger
-    - keep existing last-send report["usage"] semantics unchanged
 
-  verification:
-    commands:
-      - "python -m pytest -q"
-      - "ruff check src tests"
-      - "mypy src/tether"
-      - ".venv/bin/tether adapters conformance mock"
-    artifacts:
-      - "README.md"
-      - "docs/ARCHITECTURE.md"
-    assertions:
-      - path: src/tether/models.py
-        contains: BudgetSpec
-      - path: src/tether/orchestrator.py
-        contains: budget_exceeded
-      - path: src/tether/orchestrator.py
-        contains: cumulative_usage
-      - path: src/tether/cli.py
-        contains: EXIT_BUDGET_EXCEEDED
-      - path: README.md
-        contains: max_wall_seconds
-    timeout_seconds: 900
 
-  recovery:
-    max_attempts: 4
 
-  review:
-    enabled: true
-    required: true
-    adapter: opencode
-    retry_on_rejection: true
 
+
+context:
+  - >-
+    Read docs/ARCHITECTURE.md, docs/SECURITY.md, README.md,
+    src/tether/orchestrator.py (run loop + report assembly),
+    src/tether/models.py, src/tether/mission.py, src/tether/cli.py
+    (EXIT_* constants + sessions_stats), src/tether/adapters/command.py
+    (usage/usage_patterns), tests/test_core.py + tests/test_adapters_cli.py.
+  - >-
+    CRITICAL: report["usage"] currently holds only the LAST send's usage
+    ("usage": state.usage in orchestrator). It is never accumulated and
+    never enforced. This mission closes that hole.
+  - >-
+    MockAdapter reports no usage. Metric-budget tests MUST use a scripted
+    adapter returning AgentState(usage={...}) — see _ScriptedAdapter /
+    RichAdapter patterns in tests/test_core.py. Wall-clock and send-count
+    budgets are testable with any adapter.
+  - >-
+    dogfood-13 added usage plumbing, dogfood-14 added classify_failure,
+    dogfood-18 added review telemetry, dogfood-19 added per-mission
+    baselines, dogfood-20 added usage_patterns extraction. Build on all;
+    do not regress.
+  - >-
+    Core loop stays adapter-agnostic (AgentAdapter interface only).
+    No signature changes. subprocess stays shell=False. stdlib only.
+context_files:
+  - docs/ARCHITECTURE.md
+  - README.md
+  - src/tether/orchestrator.py
+  - src/tether/models.py
+  - src/tether/mission.py
+  - src/tether/cli.py
+  - src/tether/adapters/command.py
+  - tests/test_core.py
+constraints:
+  - do not change AgentAdapter method signatures
+  - do not weaken existing tests; all current tests must keep passing
+  - subprocess usage stays shell=False
+  - no new third-party dependencies (stdlib only)
+  - keep changes minimal, typed, scoped to five tasks
+  - budget defaults to None so existing missions behave byte-identically
+  - configured max_usage metric never reported must not false-trigger
+  - keep existing last-send report["usage"] semantics unchanged
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+    - ".venv/bin/tether adapters conformance mock"
+  artifacts:
+    - "README.md"
+    - "docs/ARCHITECTURE.md"
+  assertions:
+    - path: src/tether/models.py
+      contains: BudgetSpec
+    - path: src/tether/orchestrator.py
+      contains: budget_exceeded
+    - path: src/tether/orchestrator.py
+      contains: cumulative_usage
+    - path: src/tether/cli.py
+      contains: EXIT_BUDGET_EXCEEDED
+    - path: README.md
+      contains: max_wall_seconds
+  timeout_seconds: 900
+recovery:
+  max_attempts: 4
+review:
+  enabled: true
+  required: true
   adapter: opencode
-  adapters:
-    opencode:
-      command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
-      timeout_seconds: 1800
-
-  allowed_paths:
-    - src/**
-    - tests/**
-    - docs/**
-    - README.md
-  forbidden_paths:
-    - .git/**
-    - .tether/**
-    - missions/**
+  retry_on_rejection: true
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 1800
+allowed_paths:
+  - src/**
+  - tests/**
+  - docs/**
+  - README.md
+forbidden_paths:
+  - .git/**
+  - .tether/**
+  - missions/**

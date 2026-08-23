@@ -45,20 +45,20 @@ mission:
        Pick exactly one approach.
 
     Change NOTHING outside this scope.
-  context:
-    - Read docs/ARCHITECTURE.md first; the core loop must stay adapter-agnostic.
-    - resolve_checkpoint_ref() in src/tether/git_safety.py already demonstrates
-      the report.json-based resolution pattern to copy for task 1.
-    - find_session_dir() in src/tether/audit.py resolves session-id prefixes
-      to session directories.
-    - Scripted/spy adapter patterns in tests/test_core.py and tests/test_safety.py
-      show how to assert adapter (non-)invocation and capture prompts.
-  constraints:
-    - do not change AgentAdapter interface signatures
-    - do not weaken existing tests; all current tests must keep passing
-    - subprocess usage stays shell=False
-    - no new third-party dependencies (stdlib hashlib etc. are fine)
-    - keep changes minimal and focused on the five tasks
+context:
+  - Read docs/ARCHITECTURE.md first; the core loop must stay adapter-agnostic.
+  - resolve_checkpoint_ref() in src/tether/git_safety.py already demonstrates
+    the report.json-based resolution pattern to copy for task 1.
+  - find_session_dir() in src/tether/audit.py resolves session-id prefixes
+    to session directories.
+  - Scripted/spy adapter patterns in tests/test_core.py and tests/test_safety.py
+    show how to assert adapter (non-)invocation and capture prompts.
+constraints:
+  - do not change AgentAdapter interface signatures
+  - do not weaken existing tests; all current tests must keep passing
+  - subprocess usage stays shell=False
+  - no new third-party dependencies (stdlib hashlib etc. are fine)
+  - keep changes minimal and focused on the five tasks
 verification:
   commands:
     - "python -m pytest -q"

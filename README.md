@@ -99,6 +99,35 @@ Mission values that are **unset** (absent) fall back to the project config; only
 
 Config keys: `default_adapter`, `audit_dir`, `backup_dir`, `dry_run`, `log_level`, `command_timeout_seconds`, `verification_timeout_seconds`, `max_attempts`, `allow_dirty`, `auto_rollback`, `sandbox_mode`, `retention_days` (used by `sessions clean` when `--older-than` is omitted), `secret_denylist`, `secret_allowlist`, `adapters` (per-adapter settings), `verification.commands`.
 
+## Mission file schema
+
+A mission file has one required `mission:` block plus optional top-level contract blocks:
+
+```yaml
+mission:            # REQUIRED — strictly validated, see below
+  name: my-mission
+  goal: do a thing
+verification:       # commands / artifacts / assertions / probes / mutation / clean_room
+recovery:           # max_attempts, strategy
+review:             # adversarial review gate (enabled, adapter, ...)
+budget:             # max_wall_seconds / max_sends / max_usage
+adapter: opencode   # default adapter for this mission
+adapters: {}        # per-adapter settings overrides
+allowed_paths: []   # write-sandbox globs
+forbidden_paths: []
+context_files: []   # bounded reference context embedded into prompts
+context: []         # free-form context lines shown to the agent
+constraints: []     # free-form constraints shown to the agent
+```
+
+### Strict `mission:` block
+
+The `mission:` block accepts ONLY `name` and `goal` — exactly the keys the parser honors. Any other key fails validation with a `MissionError` naming the offending key(s). This is deliberate (dogfood-25): unknown keys used to be silently ignored, so a mis-indented file that nested `verification:` under `mission:` validated as OK and ran with all defaults — a no-op success. The error message hints that every other key belongs at the top level of the mission file: contract-level blocks (`verification`, `recovery`, `review`, `budget`, `adapter`, `adapters`, `allowed_paths`, `forbidden_paths`) and free-form content (`context`, `constraints`, `context_files`). `tether validate-mission` catches this before any run.
+
+### Missions without verification commands
+
+If neither the mission nor project config resolves any verification commands, the run still proceeds and can report success (smoke missions legitimately declare none), but Tether logs a prominent warning — "mission declares no verification commands; success will not exercise any checks" — and records it in `report["next_steps"]`, so a command-less success is never silent (dogfood-25).
+
 ## Context files (mission contracts)
 
 A mission may declare top-level `context_files`: relative paths that Tether reads at mission start (before planning) and embeds into the prompt context delivered to the adapter, each delimited with headers naming the file:

@@ -1,0 +1,109 @@
+# Mission: dogfood-25-strict-mission-schema
+# Finding: load_mission silently ignores unknown keys inside the `mission:`
+# block. A mis-nested mission file validated OK and ran as a no-op success.
+mission:
+  name: dogfood-25-strict-mission-schema
+  goal: |
+    Close the silent-misconfiguration gap in mission parsing: unknown keys
+    inside the top-level `mission:` block must be rejected with a clear
+    MissionError instead of being silently ignored. Today a mission file
+    that nests `verification:`, `review:`, `recovery:` etc. under
+    `mission:` validates as OK and runs with all defaults — a no-op
+    success. Make the parser strict so this class of mistake fails fast.
+
+tasks:
+  - |
+    STRICT MISSION BLOCK VALIDATION:
+    In src/tether/mission.py, after reading `mission_block`, collect its
+    keys and reject any key outside the allowed set:
+      {name, goal}
+    Raise MissionError with a message that lists the unknown key(s) and
+    hints that contract-level blocks (verification, recovery, review,
+    budget, adapter, adapters, allowed_paths, forbidden_paths, context)
+    belong at the TOP LEVEL of the mission file, not inside `mission:`.
+    Add tests: a mission with an unknown mission-block key raises
+    MissionError naming the key; a well-formed mission still loads;
+    the mis-nested example from the incident (verification nested under
+    mission:) now raises MissionError.
+  - |
+    RUN-TIME ZERO-COMMAND VISIBILITY:
+    In src/tether/orchestrator.py, right before the verification loop,
+    when the resolved verification command list is empty AND not
+    dry-run, emit a prominent log warning ("mission declares no
+    verification commands; success will not exercise any checks") and
+    record it in the report under next_steps. Do NOT fail the mission
+    (some smoke missions legitimately have no commands) — visibility
+    only. Add tests proving the warning/next_steps entry appears for a
+    command-less mission and does NOT appear when commands exist.
+  - |
+    REMEDIATE LEGACY MISSIONS:
+    Several existing missions/*.yaml files nest 'context:' and/or
+    'constraints:' under 'mission:' where the parser expects them at
+    the top level (silently ignored until now). Re-nest those blocks
+    correctly in ALL existing missions/*.yaml files so they parse with
+    their context/constraints actually applied. Verify each file still
+    passes 'tether validate-mission'.
+  - |
+    REMEDIATE LEGACY MISSIONS:
+    Several existing missions/*.yaml files nest 'context:' and/or
+    'constraints:' under 'mission:' where the parser expects them at
+    the top level (silently ignored until now). Re-nest those blocks
+    correctly in ALL existing missions/*.yaml files so they parse with
+    their context/constraints actually applied. Verify each file still
+    passes 'tether validate-mission'.
+  - |
+    DOCS & TESTS:
+    Update README.md and docs/ARCHITECTURE.md to document the strict
+    mission block schema. All existing tests keep passing.
+
+
+constraints:
+  - do not weaken existing tests
+  - keep changes minimal, typed, scoped
+  - error messages must name the offending key(s)
+  - command-less missions must still be allowed to run (warning only)
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+    - ".venv/bin/tether adapters conformance mock"
+  artifacts:
+    - "README.md"
+  assertions:
+    - path: src/tether/mission.py
+      contains: belongs at the top level
+  probes:
+    - command: "python -c \"import ast; ast.parse(open('src/tether/mission.py').read()); print('ok')\""
+      contains: "ok"
+
+recovery:
+  max_attempts: 4
+
+review:
+  enabled: true
+  required: true
+  adapter: opencode
+  retry_on_rejection: true
+
+budget:
+  max_sends: 8
+  max_wall_seconds: 7200
+
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 1800
+
+allowed_paths:
+  - src/**
+  - tests/**
+  - docs/**
+  - README.md
+  - missions/*.yaml
+  - missions/dogfood-26-sandbox-clarity.yaml
+
+forbidden_paths:
+  - .git/**
+  - .tether/**

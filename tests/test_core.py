@@ -72,6 +72,78 @@ def test_mission_validation_fails(tmp_path, bad):
         _write_mission(tmp_path, bad)
 
 
+def test_mission_block_unknown_key_rejected(tmp_path):
+    with pytest.raises(MissionError) as excinfo:
+        _write_mission(tmp_path, "mission:\n  name: m\n  goal: g\n  bogus_key: 1\n")
+    assert "bogus_key" in str(excinfo.value)
+
+
+def test_mission_block_misnested_verification_rejected(tmp_path):
+    # The dogfood-25 incident shape: a contract block indented under
+    # 'mission:' used to validate OK and run with all defaults.
+    with pytest.raises(MissionError) as excinfo:
+        _write_mission(
+            tmp_path,
+            "mission:\n  name: m\n  goal: g\n  verification:\n"
+            "    commands:\n      - 'true'\n")
+    message = str(excinfo.value)
+    assert "'verification'" in message
+    assert "belongs at the top level" in message
+
+
+def test_mission_block_name_and_goal_still_load(tmp_path):
+    m = _write_mission(tmp_path, "mission:\n  name: m\n  goal: g\n")
+    assert m.name == "m"
+
+
+@pytest.mark.parametrize("key", ["tasks", "context_files", "constraints"])
+def test_mission_block_unhonored_keys_rejected(tmp_path, key):
+    # dogfood-25 review: only 'name' and 'goal' are honored inside
+    # 'mission:', so anything else must fail loudly instead of silently
+    # re-creating the no-op-success shape (dogfood-14's original bug).
+    with pytest.raises(MissionError) as excinfo:
+        _write_mission(
+            tmp_path, f"mission:\n  name: m\n  goal: g\n  {key}: [x]\n")
+    assert f"'{key}'" in str(excinfo.value)
+
+
+MISSIONS_DIR = Path(__file__).resolve().parents[1] / "missions"
+
+
+def test_shipped_mission_corpus_validates():
+    # dogfood-25 guard: eight shipped missions (05/07/08/09/10/11/14/21)
+    # carried mis-nested contract blocks that were silently ignored. Keep
+    # the whole corpus valid under the strict 'mission:' schema.
+    files = sorted(MISSIONS_DIR.glob("*.yaml"))
+    assert len(files) >= 20, f"mission corpus missing: {MISSIONS_DIR}"
+    for path in files:
+        load_mission(path)
+
+
+def test_dogfood21_contract_blocks_survive_migration():
+    # dogfood-21 shipped with every contract block indented under
+    # 'mission:' and therefore ran entirely on defaults; the migrated
+    # asset must carry its contracts at the top level.
+    m = load_mission(MISSIONS_DIR / "dogfood-21-budget-guardrails.yaml")
+    assert m.name == "dogfood-21-budget-guardrails"
+    assert m.verification.commands
+    assert m.verification.timeout_seconds == 900
+    assert m.verification.artifacts
+    assert m.review is not None and m.review.enabled
+    assert m.recovery.max_attempts == 4
+    assert m.adapter == "opencode"
+    assert m.allowed_paths and m.forbidden_paths
+    assert m.context and m.constraints
+
+
+def test_dogfood14_context_and_constraints_not_empty():
+    # dogfood-14 held its real content under 'mission:' behind empty
+    # top-level placeholders; the merged lists must stay populated.
+    m = load_mission(
+        MISSIONS_DIR / "dogfood-14-real-adapter-and-operational-intelligence.yaml")
+    assert m.context and m.context_files and m.constraints
+
+
 def test_config_defaults_and_precedence(project_dir):
     cfg = resolve_config(project_dir)
     assert isinstance(cfg, TetherConfig)
@@ -128,6 +200,18 @@ def test_mock_always_fails_max_attempts(tmp_path):
     report = _orchestra(tmp_path, "always_fail", max_attempts=2)
     assert report["status"] == "failed"
     assert len(report["recovery_attempts"]) == 1  # attempts 1..2 -> one recovery between
+
+
+def test_zero_command_mission_warns_but_succeeds(tmp_path):
+    report = _orchestra(tmp_path, "success", commands=[])
+    assert report["status"] == "success"
+    assert any("no verification commands" in s for s in report["next_steps"])
+
+
+def test_commanded_mission_has_no_zero_command_warning(tmp_path):
+    report = _orchestra(tmp_path, "success", commands=[PASS_CMD])
+    assert report["status"] == "success"
+    assert not any("no verification commands" in s for s in report["next_steps"])
 
 
 def test_recovery_succeeds_after_retry(tmp_path):

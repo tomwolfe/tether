@@ -15,64 +15,64 @@ mission:
     Each task proven by tests that fail before and pass after. All existing
     tests must keep passing. Change NOTHING outside scope.
 
-  tasks:
-    - |
-      RECOVERY STRATEGY OPTION:
-      In src/tether/models.py extend RecoverySpec with:
-        strategy: Literal["cumulative", "reset_to_checkpoint"] = "cumulative"
-      In src/tether/mission.py validate strategy (raise MissionError on
-      invalid value). In src/tether/orchestrator.py recovery loop: when
-      strategy == "reset_to_checkpoint", perform scoped clean rollback to
-      checkpoint BEFORE sending the repair prompt (reuse git_rollback with
-      clean=True / restore_from_backup), then re-run _gate_and_capture.
-      Log a "recovery_reset" audit event. Default "cumulative" must remain
-      byte-for-byte identical to current behavior. Add tests proving reset
-      wipes intermediate dirty state and cumulative preserves it.
-    - |
-      OSCILLATION DETECTION:
-      In src/tether/orchestrator.py track per-attempt failure signatures
-      (normalized failing_output hash + changed_files set). When the same
-      signature appears >= 2 times within a recovery loop AND strategy is
-      "cumulative", automatically switch to reset_to_checkpoint behavior
-      for subsequent attempts and log "oscillation_detected" audit event.
-      When strategy is already "reset_to_checkpoint" and oscillation persists
-      for 2 more attempts, abort early with status "failed",
-      failure_class "oscillation_detected". Add tests proving auto-switch
-      and early abort.
-    - |
-      REVIEWER CREDIBILITY CHECK:
-      In src/tether/models.py add ReviewSpec.credibility_probe: Optional[str]
-      (a command whose output validates the reviewer adapter's format).
-      In orchestrator._run_review_gate, when set, run the probe against the
-      reviewer's response BEFORE parsing verdict. Probe failure => treat as
-      request_changes with reason "reviewer credibility check failed".
-      Add tests: valid reviewer passes; malformed output fails safe; unset
-      preserves current behavior.
-    - |
-      DOCS & TESTS:
-      Update README.md, docs/ARCHITECTURE.md, docs/SECURITY.md. All new
-      behavior covered by tests. Every existing test keeps passing.
+tasks:
+  - |
+    RECOVERY STRATEGY OPTION:
+    In src/tether/models.py extend RecoverySpec with:
+      strategy: Literal["cumulative", "reset_to_checkpoint"] = "cumulative"
+    In src/tether/mission.py validate strategy (raise MissionError on
+    invalid value). In src/tether/orchestrator.py recovery loop: when
+    strategy == "reset_to_checkpoint", perform scoped clean rollback to
+    checkpoint BEFORE sending the repair prompt (reuse git_rollback with
+    clean=True / restore_from_backup), then re-run _gate_and_capture.
+    Log a "recovery_reset" audit event. Default "cumulative" must remain
+    byte-for-byte identical to current behavior. Add tests proving reset
+    wipes intermediate dirty state and cumulative preserves it.
+  - |
+    OSCILLATION DETECTION:
+    In src/tether/orchestrator.py track per-attempt failure signatures
+    (normalized failing_output hash + changed_files set). When the same
+    signature appears >= 2 times within a recovery loop AND strategy is
+    "cumulative", automatically switch to reset_to_checkpoint behavior
+    for subsequent attempts and log "oscillation_detected" audit event.
+    When strategy is already "reset_to_checkpoint" and oscillation persists
+    for 2 more attempts, abort early with status "failed",
+    failure_class "oscillation_detected". Add tests proving auto-switch
+    and early abort.
+  - |
+    REVIEWER CREDIBILITY CHECK:
+    In src/tether/models.py add ReviewSpec.credibility_probe: Optional[str]
+    (a command whose output validates the reviewer adapter's format).
+    In orchestrator._run_review_gate, when set, run the probe against the
+    reviewer's response BEFORE parsing verdict. Probe failure => treat as
+    request_changes with reason "reviewer credibility check failed".
+    Add tests: valid reviewer passes; malformed output fails safe; unset
+    preserves current behavior.
+  - |
+    DOCS & TESTS:
+    Update README.md, docs/ARCHITECTURE.md, docs/SECURITY.md. All new
+    behavior covered by tests. Every existing test keeps passing.
 
-  context_files:
-    - docs/ARCHITECTURE.md
-    - docs/SECURITY.md
-    - README.md
-    - src/tether/orchestrator.py
-    - src/tether/models.py
-    - src/tether/mission.py
-    - src/tether/git_safety.py
 
-  constraints:
-    - do not change AgentAdapter method signatures
-    - do not weaken existing tests
-    - subprocess stays shell=False
-    - no new third-party dependencies
-    - keep changes minimal, typed, scoped
-    - reset_to_checkpoint must reuse existing rollback machinery exactly
-    - oscillation detection memory must be O(attempts), not unbounded
-    - reviewer credibility failure must fail safe (never approve)
-    - default cumulative strategy must be byte-for-byte unchanged
 
+context_files:
+  - docs/ARCHITECTURE.md
+  - docs/SECURITY.md
+  - README.md
+  - src/tether/orchestrator.py
+  - src/tether/models.py
+  - src/tether/mission.py
+  - src/tether/git_safety.py
+constraints:
+  - do not change AgentAdapter method signatures
+  - do not weaken existing tests
+  - subprocess stays shell=False
+  - no new third-party dependencies
+  - keep changes minimal, typed, scoped
+  - reset_to_checkpoint must reuse existing rollback machinery exactly
+  - oscillation detection memory must be O(attempts), not unbounded
+  - reviewer credibility failure must fail safe (never approve)
+  - default cumulative strategy must be byte-for-byte unchanged
 verification:
     commands:
       - "python -m pytest -q"

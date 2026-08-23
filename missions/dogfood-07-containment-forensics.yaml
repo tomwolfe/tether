@@ -76,24 +76,24 @@ mission:
 
     Change NOTHING outside this scope.
 
-  context:
-    - Read docs/ARCHITECTURE.md, docs/ADAPTERS.md, README.md, and existing tests
-      before changing code.
-    - CommandAdapter currently uses subprocess.run and cancel() is a no-op.
-    - The orchestrator already computes changed_files before verification.
-    - The audit session directory is available as audit.dir.
-    - The rollback implementation lives in src/tether/git_safety.py and already
-      supports scoped clean rollback using session-report changed_files.
-    - subprocess must remain shell=False.
 
-  constraints:
-    - do not change AgentAdapter interface signatures
-    - do not weaken existing tests; all current tests must keep passing
-    - subprocess usage stays shell=False
-    - no new third-party dependencies
-    - auto_rollback must default to false
-    - keep changes minimal, typed, and scoped
 
+context:
+  - Read docs/ARCHITECTURE.md, docs/ADAPTERS.md, README.md, and existing tests
+    before changing code.
+  - CommandAdapter currently uses subprocess.run and cancel() is a no-op.
+  - The orchestrator already computes changed_files before verification.
+  - The audit session directory is available as audit.dir.
+  - The rollback implementation lives in src/tether/git_safety.py and already
+    supports scoped clean rollback using session-report changed_files.
+  - subprocess must remain shell=False.
+constraints:
+  - do not change AgentAdapter interface signatures
+  - do not weaken existing tests; all current tests must keep passing
+  - subprocess usage stays shell=False
+  - no new third-party dependencies
+  - auto_rollback must default to false
+  - keep changes minimal, typed, and scoped
 verification:
   commands:
     - "python -m pytest -q"

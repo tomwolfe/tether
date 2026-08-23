@@ -1,0 +1,89 @@
+# Mission: dogfood-26-sandbox-clarity
+# Finding: allowed_paths is an allowlist, but with sandbox_mode 'warn' the
+# only signal was an advisory warning; a write outside allowed_paths then
+# failed the mission late with a bare "write sandbox violated by: X" and
+# no explanation that allowlist membership (not just forbidden_paths)
+# drives the check.
+mission:
+  name: dogfood-26-sandbox-clarity
+  goal: |
+    Make sandbox write violations self-explanatory. When a write is
+    rejected because the path is not matched by allowed_paths (as opposed
+    to being explicitly forbidden), the violation message must say so and
+    show the matching allowlist state, so operators can fix the mission
+    contract in one step instead of debugging two dead sessions.
+
+tasks:
+  - |
+    EXPLAIN ALLOWLIST VIOLATIONS:
+    In src/tether/git_safety.py (and wherever the write-sandbox check
+    builds its message), distinguish two rejection causes:
+      (a) path matches a forbidden_paths glob -> message says
+          "forbidden by contract"
+      (b) path matches neither allowed_paths nor forbidden_paths ->
+          message says "outside allowed_paths" and lists the
+          allowed_paths globs from the contract.
+    Propagate the reason through the sandbox_violations audit event and
+    the orchestrator's failure next_steps line. Add tests covering both
+    causes plus the both-match case (forbidden wins).
+  - |
+    WARN-MODE ADVICE:
+    When sandbox_mode is 'warn' and a violation is detected, append to
+    the advisory log line a hint that 'sandbox_mode: enforce' would have
+    failed the attempt immediately. Add a test pinning the hint text.
+  - |
+    DOCS:
+    Update docs/SECURITY.md and README.md: document that allowed_paths
+    is an allowlist (any write outside it is a violation even if not in
+    forbidden_paths) and the new violation message formats.
+
+
+constraints:
+  - do not change AgentAdapter method signatures
+  - subprocess stays shell=False
+  - keep changes minimal, typed, scoped
+  - default (no allowed/forbidden lists) behavior unchanged
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+    - ".venv/bin/tether adapters conformance mock"
+  artifacts:
+    - "docs/SECURITY.md"
+  assertions:
+    - path: src/tether/git_safety.py
+      contains: outside allowed_paths
+  probes:
+    - command: "python -c \"import ast; ast.parse(open('src/tether/git_safety.py').read()); print('ok')\""
+      contains: "ok"
+
+recovery:
+  max_attempts: 4
+
+review:
+  enabled: true
+  required: true
+  adapter: opencode
+  retry_on_rejection: true
+
+budget:
+  max_sends: 8
+  max_wall_seconds: 7200
+
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 1800
+
+allowed_paths:
+  - src/**
+  - tests/**
+  - docs/**
+  - README.md
+  - missions/dogfood-26-sandbox-clarity.yaml
+
+forbidden_paths:
+  - .git/**
+  - .tether/**

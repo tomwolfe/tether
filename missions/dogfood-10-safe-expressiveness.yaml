@@ -66,27 +66,27 @@ mission:
 
     Change NOTHING outside this scope.
 
-  context:
-    - Read src/tether/orchestrator.py (prompt construction and execution flow),
-      src/tether/mission.py (mission parsing), src/tether/models.py
-      (TetherConfig), src/tether/audit.py, and tests/test_core.py +
-      tests/test_safety.py first.
-    - Prompt redaction exists already; find how prompts are redacted and reuse
-      that path for context files.
-    - The manifest snapshot/diff helpers live in src/tether/manifest.py and are
-      used for non-git change detection; reuse them for enforce-mode checks.
-    - The post-execution sandbox gate is _sandbox_violations in
-      orchestrator.py operating over detected changed files.
-    - dogfood sessions 07-09 added patch capture, auto_rollback, atomic lock,
-      conformance harness; do not regress them.
 
-  constraints:
-    - do not change AgentAdapter method signatures
-    - do not weaken existing tests; all current tests must keep passing
-    - subprocess usage stays shell=False
-    - no new third-party dependencies
-    - keep changes minimal, typed, and scoped
 
+context:
+  - Read src/tether/orchestrator.py (prompt construction and execution flow),
+    src/tether/mission.py (mission parsing), src/tether/models.py
+    (TetherConfig), src/tether/audit.py, and tests/test_core.py +
+    tests/test_safety.py first.
+  - Prompt redaction exists already; find how prompts are redacted and reuse
+    that path for context files.
+  - The manifest snapshot/diff helpers live in src/tether/manifest.py and are
+    used for non-git change detection; reuse them for enforce-mode checks.
+  - The post-execution sandbox gate is _sandbox_violations in
+    orchestrator.py operating over detected changed files.
+  - dogfood sessions 07-09 added patch capture, auto_rollback, atomic lock,
+    conformance harness; do not regress them.
+constraints:
+  - do not change AgentAdapter method signatures
+  - do not weaken existing tests; all current tests must keep passing
+  - subprocess usage stays shell=False
+  - no new third-party dependencies
+  - keep changes minimal, typed, and scoped
 verification:
   commands:
     - "python -m pytest -q"
