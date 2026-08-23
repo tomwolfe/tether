@@ -29,8 +29,8 @@ verification:
   artifacts:
     - "src/tether/_oscillation_fixture.py"
   probes:
-    - command: "python -c \"from tether import _oscillation_fixture; print(_oscillation_fixture.MODE)\""
-      contains: "MODE"
+    - command: "python -c \"from tether import _oscillation_fixture as f; v = f.MODE; assert type(v) is str, repr(v); print('resolved:', v)\""
+      contains: "resolved:"
 
 recovery:
   strategy: cumulative
