@@ -80,3 +80,44 @@ The loop never references a concrete adapter type; it only calls the `AgentAdapt
 - Automatic rollback (`auto_rollback`) reuses exactly that scoped path and only ever fires for failed/cancelled outcomes after the report is on disk; success and dry-run are never rolled back.
 - A mission never reports success unless the final agent send returned `completed` and verification passed.
 - Secrets in saved config are redacted before hitting disk.
+
+## Live-fire field notes (dogfood-27/28, real opencode sessions)
+
+Two integration dogfood missions ran the full stack against this repo with a
+real `opencode` agent:
+
+- **dogfood-27 (integrated gauntlet)**: clean-room + mutation (`fail_below`)
+  + full-context required review + tight budget in ONE session landed a scoped
+  verification refactor; all four layers passed together on attempt 1
+  (session `b584213e`). The write sandbox correctly caught a stray macOS
+  `.DS_Store` outside `allowed_paths`, failing fast with an explanatory
+  violation message.
+- **dogfood-28 (oscillation live fire)**: a deliberately contradictory
+  fixture (two tests asserting mutually exclusive values of a single module
+  constant, mutable file restricted to that constant) produced a REAL
+  oscillation: identical failure signature at attempts 2 and 3 fired
+  `oscillation_detected`, escalated cumulative mode to `reset_to_checkpoint`
+  after the first repeat, and aborted early with
+  `failure_class: "oscillation_detected"` plus rollback guidance in
+  `next_steps` — burning 3 of 5 allowed attempts instead of all of them
+  (session `b1a75ede`).
+
+### Adversarial findings worth pinning
+
+1. **Probe marker self-match.** A probe whose command is a `python -c`
+   one-liner asserts on combined stdout+stderr. When its assert fails, the
+   traceback ECHOES THE ENTIRE `-c` SOURCE LINE — which typically contains
+   the expected `contains` marker (e.g. `print('data-only: ok')` appears in
+   the AssertionError traceback). The probe then matches its own failure
+   output and passes despite exit code 1. Mitigation used in dogfood-28:
+   assemble markers from string fragments so the literal never appears in
+   the source text (`print('data', '-', 'only', ':', 'ok')` with
+   `contains: "data - only : ok"`). Probe authors must ensure the success
+   marker cannot appear in any possible failure output, including echoed
+   source.
+2. **Equality-operator loopholes.** An agent told to satisfy
+   `MODE == "alpha"` and `MODE == "beta"` with only one mutable module will
+   reach for custom `__eq__` objects and PEP 562 `__getattr__` caller-frame
+   inspection before it ever "fails". Contradictory-fixture experiments need
+   structural constraints (type checks, data-only AST probes, subprocess
+   probes without test frames in the stack) to stay contradictory.
