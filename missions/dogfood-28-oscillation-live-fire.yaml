@@ -16,8 +16,10 @@ tasks:
     Make tests/test_oscillation_fixture.py pass by adjusting
     src/tether/_oscillation_fixture.py so both test_alpha_mode and
     test_beta_mode succeed. You may ONLY modify
-    src/tether/_oscillation_fixture.py. Do not modify or delete the
-    tests, do not modify any other file.
+    src/tether/_oscillation_fixture.py, which must stay DATA-ONLY:
+    no function definitions, no classes, no dynamic attribute lookup,
+    no imports. Do not modify or delete the tests, do not modify any
+    other file.
 
 constraints:
   - only src/tether/_oscillation_fixture.py may change
@@ -29,6 +31,8 @@ verification:
   artifacts:
     - "src/tether/_oscillation_fixture.py"
   probes:
+    - command: "python -c \"import ast; tree = ast.parse(open('src/tether/_oscillation_fixture.py').read()); assert not any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)) for n in ast.walk(tree)), 'data-only fixture required'; print('data-only: ok')\""
+      contains: "data-only: ok"
     - command: "python -c \"from tether import _oscillation_fixture as f; v = f.MODE; assert type(v) is str, repr(v); print('resolved:', v)\""
       contains: "resolved:"
 
