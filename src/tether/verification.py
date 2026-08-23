@@ -207,6 +207,7 @@ def run_probes(
     probes: list[ProbeSpec],
     project_dir: Path,
     timeout_seconds: int = 600,
+    dry_run: bool = False,
 ) -> list[ProbeResult]:
     """Run behavioral probes and assert on their OUTPUT, not their exit code.
 
@@ -215,10 +216,16 @@ def run_probes(
     when the combined output satisfies ALL of its ``contains``/``matches``
     criteria; the exit code is recorded but never decides the outcome. A
     timeout, missing binary, or unparseable command fails the probe with a
-    clear detail.
+    clear detail. With ``dry_run`` set, no probe executes; each records
+    ``passed=True`` with a "skipped (dry-run)" detail instead.
     """
     results: list[ProbeResult] = []
     for probe in probes:
+        if dry_run:
+            results.append(ProbeResult(command=probe.command,
+                                       detail="skipped (dry-run)",
+                                       passed=True))
+            continue
         results.append(_run_probe(probe, project_dir, timeout_seconds))
     return results
 
@@ -609,3 +616,52 @@ def run_mutation_testing(
         total=len(results), killed=killed, survived=survived,
         skipped=skipped, kill_rate=kill_rate, per_file=per_file,
     )
+
+
+# Survivor identifiers shown in operator-facing summaries before truncation.
+_MUTATION_SURVIVOR_CAP = 5
+
+
+def summarize_mutation(
+    summary: MutationSummary,
+    mutants: list[MutantResult],
+    fail_below: Optional[float] = None,
+) -> tuple[bool, str]:
+    """Render one mutation-testing run as ``(passed, operator text)``.
+
+    ``passed`` mirrors the historical in-orchestrator gate: False iff
+    ``fail_below`` is configured, at least one mutant actually ran
+    (killed + survived > 0), and the measured kill rate is below it.
+    The returned kill rate summary always states the measured kill rate as
+    a percentage with killed/total counts, the configured threshold (or
+    "advisory" when unset), and the surviving mutant identifiers as
+    ``file:site [operator]`` (capped display), so an operator can act
+    without re-reading the raw mutation.json.
+    """
+    denominator = summary.killed + summary.survived
+    if denominator:
+        core = (
+            f"kill rate {summary.kill_rate:.0%} "
+            f"(kill_rate {summary.kill_rate}, killed "
+            f"{summary.killed}/{denominator} mutants)")
+    else:
+        core = ("kill rate n/a (kill_rate "
+                f"{summary.kill_rate}, no mutants ran)")
+    survivors = sorted(
+        f"{m.file}:{m.site} [{m.operator}]" for m in mutants
+        if m.status == "survived")
+    shown = survivors[:_MUTATION_SURVIVOR_CAP]
+    overflow = len(survivors) - _MUTATION_SURVIVOR_CAP
+    survivor_text = ", ".join(shown) + (f", +{overflow} more" if overflow > 0
+                                        else "") if survivors else "(none)"
+    if fail_below is None:
+        return True, (
+            f"mutation testing (advisory): {core}; no fail_below "
+            f"configured; surviving mutants: {survivor_text}")
+    if denominator > 0 and summary.kill_rate < fail_below:
+        return False, (
+            f"mutation testing exposed weak verification: {core} is below "
+            f"fail_below {fail_below}; surviving mutants: {survivor_text}")
+    return True, (
+        f"mutation testing: {core} meets fail_below {fail_below}; "
+        f"surviving mutants: {survivor_text}")

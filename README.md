@@ -191,7 +191,7 @@ verification:
     fail_below: 0.5                          # kill-rate gate; omit for advisory-only mode
 ```
 
-A mutant the suite still passes has **survived** — hard evidence the declared verification is gameable; one that makes it fail is **killed**. The aggregate lands in `report["mutation"]` (`total`, `killed`, `survived`, `skipped`, `kill_rate`, per-file counts) with per-mutant detail in the session's `verification/mutation.json`, and `tether sessions stats` aggregates kill rates across sessions. With `fail_below` set, a `kill_rate` below the gate fails the attempt and recovery proceeds normally; when `fail_below` is unset mutation testing is **advisory only** and never fails an attempt.
+A mutant the suite still passes has **survived** — hard evidence the declared verification is gameable; one that makes it fail is **killed**. The aggregate lands in `report["mutation"]` (`total`, `killed`, `survived`, `skipped`, `kill_rate`, per-file counts) with per-mutant detail in the session's `verification/mutation.json`, and `tether sessions stats` aggregates kill rates across sessions. With `fail_below` set, a `kill_rate` below the gate fails the attempt and recovery proceeds normally; when `fail_below` is unset mutation testing is **advisory only** and never fails an attempt. Either way the surfaced summary spells out the measured kill rate as a percentage (with killed/total counts), the configured threshold (`fail_below` or "advisory"), and the surviving mutant identifiers (`file:site [operator]`, capped display) so operators can act without re-reading the raw JSON.
 
 ### Clean-room verification
 

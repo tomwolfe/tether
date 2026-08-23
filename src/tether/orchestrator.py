@@ -58,6 +58,7 @@ from tether.verification import (
     summarize,
     summarize_artifacts,
     summarize_assertions,
+    summarize_mutation,
     summarize_probes,
 )
 
@@ -1508,17 +1509,9 @@ class Orchestrator:
                 if commands_passed and not agent_failed \
                         and artifacts_passed and assertions_passed:
                     if probe_specs:
-                        if dry_run:
-                            probe_results = [
-                                ProbeResult(command=p.command,
-                                            detail="skipped (dry-run)",
-                                            passed=True)
-                                for p in probe_specs
-                            ]
-                        else:
-                            probe_results = run_probes(
-                                probe_specs, verify_dir,
-                                timeout_seconds=timeout)
+                        probe_results = run_probes(
+                            probe_specs, verify_dir,
+                            timeout_seconds=timeout, dry_run=dry_run)
                         probes_passed, probe_output = \
                             summarize_probes(probe_results)
                         if not probes_passed:
@@ -1550,29 +1543,11 @@ class Orchestrator:
                         mutation_summary, mutants = self._run_mutation_check(
                             audit, mission, mutation_spec, changed, timeout,
                             project_dir=verify_dir)
-                        survivors = sorted({
-                            m.operator for m in mutants
-                            if m.status == "survived"})
-                        denominator = (mutation_summary.killed
-                                       + mutation_summary.survived)
-                        if (mutation_spec.fail_below is not None
-                                and denominator > 0
-                                and mutation_summary.kill_rate
-                                < mutation_spec.fail_below):
-                            mutation_passed = False
-                            mutation_output = (
-                                "mutation testing exposed weak verification: "
-                                f"kill_rate {mutation_summary.kill_rate} is "
-                                "below fail_below "
-                                f"{mutation_spec.fail_below}; surviving "
-                                "operators: "
-                                + (", ".join(survivors) or "(none)"))
-                            log.warning("%s", mutation_output)
-                        else:
-                            log.warning(
-                                "Mutation testing (advisory): kill_rate %s "
-                                "over %d mutant(s)",
-                                mutation_summary.kill_rate, denominator)
+                        mutation_passed, mutation_output = \
+                            summarize_mutation(
+                                mutation_summary, mutants,
+                                fail_below=mutation_spec.fail_below)
+                        log.warning("%s", mutation_output)
                 passed = commands_passed and artifacts_passed \
                     and assertions_passed and probes_passed \
                     and mutation_passed

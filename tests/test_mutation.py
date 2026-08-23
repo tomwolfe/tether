@@ -11,13 +11,20 @@ import pytest
 from tether.adapters.base import AgentAdapter, SessionInfo
 from tether.audit import find_session_dir
 from tether.mission import MissionError, load_mission
-from tether.models import AgentState, MutationSpec, TetherConfig
+from tether.models import (
+    AgentState,
+    MutationSpec,
+    MutationSummary,
+    MutantResult,
+    TetherConfig,
+)
 from tether.orchestrator import Orchestrator
 from tether.verification import (
     MUTATION_OPERATORS,
     Mutant,
     generate_mutants,
     run_mutation_testing,
+    summarize_mutation,
 )
 
 
@@ -206,6 +213,73 @@ def test_unparseable_py_file_is_skipped(tmp_path):
     assert summary.kill_rate == 0.0
 
 
+# --------------------------------- task: operator-facing mutation telemetry
+
+
+def _survivor(file: str, operator: str, site: str) -> MutantResult:
+    return MutantResult(file=file, operator=operator, site=site,
+                        status="survived")
+
+
+def test_summarize_mutation_states_percentage_threshold_and_survivors():
+    summary = MutationSummary(
+        total=3, killed=1, survived=2,
+        kill_rate=round(1 / 3, 4),
+        per_file={"mod.py": {"killed": 1, "survived": 2}})
+    mutants = [
+        _survivor("mod.py", "flip_bool", "1:6"),
+        _survivor("mod.py", "negate_compare", "3:8"),
+        MutantResult(file="mod.py", operator="arithmetic", site="5:10",
+                     status="killed"),
+    ]
+    passed, text = summarize_mutation(summary, mutants, fail_below=0.5)
+    assert passed is False
+    assert "33%" in text                      # (a) measured kill rate as pct
+    assert "1/3" in text                      #     with killed/total counts
+    assert "kill_rate" in text                #     exact metric preserved
+    assert "fail_below 0.5" in text           # (b) configured threshold
+    assert "mod.py:1:6 [flip_bool]" in text   # (c) surviving identifiers
+    assert "mod.py:3:8 [negate_compare]" in text
+    assert "mod.py:5:10 [arithmetic]" not in text  # killed ones not listed
+
+
+def test_summarize_mutation_advisory_when_fail_below_unset():
+    summary = MutationSummary(total=2, survived=2, kill_rate=0.0)
+    passed, text = summarize_mutation(summary, [
+        _survivor("m.py", "flip_bool", "1:6")])
+    assert passed is True                     # advisory never gates
+    assert "advisory" in text.lower()
+    assert "no fail_below configured" in text
+    assert "0%" in text
+    assert "m.py:1:6 [flip_bool]" in text
+
+
+def test_summarize_mutation_caps_survivor_display():
+    summary = MutationSummary(total=7, survived=7, kill_rate=0.0)
+    mutants = [_survivor(f"f{i}.py", "flip_bool", f"{i}:0")
+               for i in range(7)]
+    _, text = summarize_mutation(summary, mutants, fail_below=0.9)
+    assert "+2 more" in text
+    assert all(f"f{i}.py" in text for i in range(5))   # first five shown
+    assert "f5.py" not in text and "f6.py" not in text # rest truncated
+
+
+def test_summarize_mutation_passes_when_meeting_gate():
+    summary = MutationSummary(total=4, killed=4, kill_rate=1.0)
+    passed, text = summarize_mutation(summary, [], fail_below=0.9)
+    assert passed is True
+    assert "100%" in text
+    assert "fail_below 0.9" in text
+    assert "(none)" in text                   # no survivors to act on
+
+
+def test_summarize_mutation_zero_denominator_never_gates():
+    summary = MutationSummary(total=1, skipped=1, kill_rate=0.0)
+    passed, text = summarize_mutation(summary, [], fail_below=0.5)
+    assert passed is True
+    assert "no mutants ran" in text
+
+
 # ------------------------------------------- task 1: mission validation
 
 
@@ -326,11 +400,17 @@ def test_fail_below_gate_fails_attempt_on_zero_kill_rate(tmp_path):
     assert summary["kill_rate"] == 0.0
     assert any("kill_rate" in s and "fail_below" in s
                for s in report["next_steps"])
+    gate_step = next(s for s in report["next_steps"]
+                     if "kill_rate" in s and "fail_below" in s)
+    assert "0%" in gate_step                  # measured kill rate as pct
     session = find_session_dir(
         tmp_path, ".tether/sessions", report["session_id"])
     detail = json.loads(
         (session / "verification" / "mutation.json").read_text("utf-8"))
     assert detail and all(d["status"] == "survived" for d in detail)
+    first = detail[0]
+    assert (f"{first['file']}:{first['site']} [{first['operator']}]"
+            in gate_step)                     # surviving mutant identified
     events = [json.loads(line) for line
               in (session / "events.jsonl").read_text("utf-8").splitlines()]
     assert any(e.get("kind") == "mutation" for e in events)

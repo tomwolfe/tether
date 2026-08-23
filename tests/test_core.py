@@ -1842,6 +1842,22 @@ def test_run_probes_missing_binary_fails(tmp_path):
     assert "binary not found" in results[0].detail
 
 
+def test_run_probes_dry_run_skips_without_executing(tmp_path):
+    # dry_run fabricates skipped-but-passing ProbeResults; the command is
+    # never spawned (an invalid binary proves no execution happened).
+    probes = [ProbeSpec(command=py_cmd('print("BEHAVIOR-OK")'),
+                        contains="BEHAVIOR-OK"),
+              ProbeSpec(command="no-such-binary-xyz --version",
+                        contains="v1")]
+    results = run_probes(probes, tmp_path, dry_run=True)
+    assert [r.passed for r in results] == [True, True]
+    assert all(r.detail == "skipped (dry-run)" for r in results)
+    assert all(r.exit_code is None and r.matched is False
+               for r in results)
+    ok, reason = summarize_probes(results)
+    assert ok and reason == ""                # skipped probes never gate
+
+
 def test_run_probes_timeout_fails(tmp_path):
     results = run_probes(
         [ProbeSpec(command=py_cmd("import time; time.sleep(5)"),
