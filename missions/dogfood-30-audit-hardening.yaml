@@ -38,7 +38,9 @@ constraints:
 
 verification:
   commands:
-    - "python -m pytest -q"
+    # Exclude the deliberately-contradictory dogfood-28 oscillation
+    # fixture (mutually exclusive MODE assertions); same as dogfood-29.
+    - "python -m pytest -q --ignore=tests/test_oscillation_fixture.py"
     - "ruff check src tests"
     - "mypy src/tether"
   artifacts:

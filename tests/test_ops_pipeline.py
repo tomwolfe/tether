@@ -1,0 +1,348 @@
+"""Operational intelligence pipeline on realistic session data (dogfood-30).
+
+Integration tests over a seeded ``.tether/sessions/`` tree whose sessions are
+built with the real :class:`AuditTrail` helpers (auto-chained events, real
+verification attempt files) and report payloads modeled on the dogfood-14..30
+live runs: a reviewed success with nonlinear recovery, an aborted oscillation
+failure, and a budget-breach abort.
+"""
+import hashlib
+import json
+import os
+import time
+
+from typer.testing import CliRunner
+
+from tether.audit import AuditTrail, event_hash
+from tether.cli import app
+from tether.models import VerificationResult
+
+runner = CliRunner()
+
+AUDIT_DIR = ".tether/sessions"
+SID_SUCCESS = "aaa11111aaaa"
+SID_OSCILLATION = "bbb22222bbbb"
+SID_BUDGET = "ccc33333cccc"
+FAIL_CMD = "pytest -q tests/test_feature.py"
+SECRET = "sk-live-0123456789abcdef0123"
+PROMPT_BODY = f'roll out config with api_key = "{SECRET}" tonight\n'
+
+
+def _new_session(tmp_path, *, stamp, sid, mission):
+    """AuditTrail session under a deterministic chronological dir name.
+
+    Directory order drives the stats pipeline (mission "latest" attempts),
+    so the auto-generated wall-clock stamp is replaced by a fixed one.
+    """
+    audit = AuditTrail(tmp_path, AUDIT_DIR, mission, sid)
+    safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in mission)
+    target = tmp_path / AUDIT_DIR / f"{stamp}-{safe}-{sid[:8]}"
+    if audit.dir != target:
+        audit.dir.rename(target)
+        audit.dir = target
+    return audit
+
+
+def _reviewed_success_session(tmp_path):
+    """Reviewed success that needed one failed verification + recovery."""
+    audit = _new_session(tmp_path, stamp="20260820-100000",
+                         sid=SID_SUCCESS, mission="dogfood-real")
+    audit.log_event("session_start", {"session_id": SID_SUCCESS})
+    audit.log_event("plan", {"summary": "add feature, verify, review"})
+    audit.save_response("execute", {
+        "status": "failed", "logs": f"pytest failed: {FAIL_CMD}"})
+    audit.save_verification(1, [
+        VerificationResult(command=FAIL_CMD, exit_code=1,
+                           stderr="1 failed", passed=False)])
+    audit.log_event("recovery_started", {"attempt": 2, "strategy": "retry"})
+    audit.save_prompt("recovery-plan", PROMPT_BODY)
+    audit.save_response("execute-recovery", {
+        "status": "completed",
+        "logs": f"deployed using token {SECRET} successfully"})
+    audit.save_verification(2, [
+        VerificationResult(command=FAIL_CMD, exit_code=0, passed=True)])
+    audit.log_event("review", {"verdict": "approve", "reason": "solid work"})
+    report = {
+        "session_id": SID_SUCCESS,
+        "mission_name": "dogfood-real",
+        "adapter": "mock",
+        "status": "success",
+        "verification_results": [
+            {"command": FAIL_CMD, "exit_code": 0, "passed": True}],
+        "recovery_attempts": [{
+            "attempt": 1,
+            "failure_class": "test_failure",
+            "failing_output": f"pytest failed: {FAIL_CMD}",
+            "changed_files_at_attempt": ["src/feature.py"],
+        }],
+        "changed_files": ["src/feature.py"],
+        "usage": {"tokens": 1600, "send_count": 4},
+        "cumulative_usage": {"wall_seconds": 41.5, "send_count": 4},
+        "next_steps": [],
+        "review": {"enabled": True, "adapter": "mock",
+                   "verdict": "approve", "reason": "solid work"},
+        "audit_dir": str(audit.dir),
+    }
+    audit.write_report(report)
+    audit.log_event("session_end", {"status": "success"})
+    return audit.dir
+
+
+def _oscillation_failure_session(tmp_path):
+    """Aborted after the same failure recurred across reset-to-checkpoint."""
+    audit = _new_session(tmp_path, stamp="20260821-100000",
+                         sid=SID_OSCILLATION, mission="dogfood-real")
+    signature = "exit=1|pytest -q tests/test_feature.py"
+    audit.log_event("session_start", {"session_id": SID_OSCILLATION})
+    audit.log_event("plan", {"summary": "fix the flaky feature test"})
+    for attempt in (1, 2, 3):
+        audit.save_response(f"execute-{attempt}", {
+            "status": "failed",
+            "logs": f"attempt {attempt}: {FAIL_CMD} still red"})
+        audit.save_verification(attempt, [
+            VerificationResult(command=FAIL_CMD, exit_code=1,
+                               stderr="1 failed", passed=False)])
+    audit.log_event("oscillation_detected", {
+        "attempt": 3, "signature": signature,
+        "occurrences": 3, "escalated": True})
+    report = {
+        "session_id": SID_OSCILLATION,
+        "mission_name": "dogfood-real",
+        "adapter": "mock",
+        "status": "failed",
+        "verification_results": [
+            {"command": FAIL_CMD, "exit_code": 1, "passed": False}],
+        "recovery_attempts": [
+            {"attempt": 1, "failure_class": "test_failure",
+             "failing_output": FAIL_CMD, "changed_files_at_attempt": []},
+            {"attempt": 2, "failure_class": "test_failure",
+             "failing_output": FAIL_CMD,
+             "changed_files_at_attempt": ["src/feature.py"]},
+            {"attempt": 3, "failure_class": "oscillation_detected",
+             "failing_output": FAIL_CMD, "changed_files_at_attempt": [],
+             "oscillation_signature": signature},
+        ],
+        "changed_files": ["src/feature.py"],
+        "usage": {"tokens": 5400, "send_count": 9},
+        "cumulative_usage": {"wall_seconds": 180.25, "send_count": 9},
+        "next_steps": ["Oscillation detected: address the root cause "
+                       "manually, then roll back."],
+        "audit_dir": str(audit.dir),
+    }
+    audit.write_report(report)
+    audit.log_event("session_end", {"status": "failed"})
+    return audit.dir
+
+
+def _budget_breach_session(tmp_path):
+    """Aborted by max_sends before verification ever ran."""
+    audit = _new_session(tmp_path, stamp="20260822-100000",
+                         sid=SID_BUDGET, mission="dogfood-budgeted")
+    breach = {"limit": "max_sends", "threshold": 2, "observed": 3}
+    audit.log_event("session_start", {"session_id": SID_BUDGET})
+    audit.log_event("budget_exceeded", breach)
+    report = {
+        "session_id": SID_BUDGET,
+        "mission_name": "dogfood-budgeted",
+        "adapter": "mock",
+        "status": "failed",
+        "verification_results": [],
+        "recovery_attempts": [],
+        "changed_files": [],
+        "usage": {"tokens": 900, "send_count": 3},
+        "cumulative_usage": {"wall_seconds": 12.0, "send_count": 3},
+        "budget_exceeded": breach,
+        "next_steps": [],
+        "audit_dir": str(audit.dir),
+    }
+    audit.write_report(report)
+    audit.log_event("session_end", {"status": "failed"})
+    return audit.dir
+
+
+def _seed_project(tmp_path):
+    success = _reviewed_success_session(tmp_path)
+    osc = _oscillation_failure_session(tmp_path)
+    budget = _budget_breach_session(tmp_path)
+    # A file outside any session directory carrying the same secret.
+    outside = tmp_path / ".tether" / "operator-notes.txt"
+    outside.write_text(PROMPT_BODY, encoding="utf-8")
+    return success, osc, budget, outside
+
+
+def _snapshot(root):
+    """path -> bytes for every file below root (tamper check helper)."""
+    return {p: p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+# ------------------------------------------------------------- stats
+
+
+def test_stats_over_realistic_dogfood_sessions(tmp_path):
+    _seed_project(tmp_path)
+
+    rj = runner.invoke(app, ["sessions", "stats", "--json",
+                             "--project-dir", str(tmp_path)])
+    assert rj.exit_code == 0, rj.output
+    data = json.loads(rj.output)
+
+    assert data["total_sessions"] == 3
+    assert data["statuses"] == {
+        "cancelled": {"count": 0, "pct": 0.0},
+        "failed": {"count": 2, "pct": 66.7},
+        "success": {"count": 1, "pct": 33.3},
+    }
+    # attempts come from the real verification/attempt-*.json globs:
+    # success recovered on attempt 2, oscillation burned 3, budget
+    # breach aborted before any verification ran.
+    assert data["attempts"] == {"median": 2.0, "max": 3}
+    assert data["recovery"] == {
+        "sessions_with_recovery_attempts": 2,
+        "recoveries_ending_in_success": 1,
+        "success_rate_pct": 50.0,
+    }
+    assert data["top_failing_commands"] == [
+        {"command": FAIL_CMD, "count": 1}]
+    assert data["adapters"]["mock"] == {"count": 3, "success_rate_pct": 33.3}
+    assert data["review_gate"] == {
+        "sessions_reviewed": 1,
+        "verdicts": {"approve": 1, "request_changes": 0},
+        "rejections_caused_failures": 0,
+    }
+    assert data["budgets"] == {"sessions_exceeded": 1}
+    # Two dogfood-real sessions form a baseline; the budgeted solo does not.
+    assert set(data["missions"]) == {"dogfood-real"}
+    assert data["missions"]["dogfood-real"] == {
+        "count": 2,
+        "success_rate_pct": 50.0,
+        "median_attempts": 2.5,
+        "max_attempts": 3,
+        "latest_attempts": 3,
+        "trend": "stable",
+    }
+    assert data["usage"] == {
+        "sessions_reporting": 3,
+        "totals": {"tokens": 7900.0, "send_count": 16.0},
+    }
+
+    rh = runner.invoke(app, ["sessions", "stats",
+                             "--project-dir", str(tmp_path)])
+    assert rh.exit_code == 0, rh.output
+    out = rh.output
+    assert "Sessions: 3 total" in out
+    assert "success: 1 (33.3%)" in out
+    assert "failed: 2 (66.7%)" in out
+    assert "Verification attempts: median 2.0, max 3" in out
+    assert ("Recovery success rate: 50.0% "
+            "(1/2 with recovery attempts)") in out
+    assert f"1x {FAIL_CMD}" in out
+    assert "mock: 3 session(s), success rate 33.3%" in out
+    assert "Review gate: 1 reviewed session(s), approve 1, " \
+           "request_changes 0, rejections causing failures 0" in out
+    assert "Budgets: 1 session(s) exceeded a mission budget" in out
+    assert ("dogfood-real: 2 sessions, success 50.0%, median attempts 2.5, "
+            "latest: 3 attempts (stable)") in out
+    assert "Usage: 3 session(s) reporting;" in out
+
+
+# ------------------------------------------------- scrub + event chain
+
+
+def test_scrub_redacts_and_extends_audit_chain_end_to_end(tmp_path):
+    success, osc, budget, outside = _seed_project(tmp_path)
+    events_path = success / "events.jsonl"
+
+    def chain_ok():
+        rv = runner.invoke(app, ["logs", SID_SUCCESS, "--verify",
+                                 "--project-dir", str(tmp_path)])
+        return rv.exit_code == 0 and "OK" in rv.output, rv.output
+
+    # The AuditTrail-written chain verifies before anything is touched...
+    ok, out = chain_ok()
+    assert ok, out
+    events_before = [json.loads(ln) for ln in
+                     events_path.read_text(encoding="utf-8").splitlines()]
+    siblings_before = {
+        d.name: _snapshot(d) for d in (osc, budget)}
+
+    # ...dry run changes nothing and records no scrub event...
+    r = runner.invoke(app, ["sessions", "scrub", SID_SUCCESS,
+                            "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    assert "Would scrub" in r.output
+    assert "Dry run: nothing modified" in r.output
+    assert [json.loads(ln)["kind"] for ln in
+            events_path.read_text().splitlines()] == [
+        e["kind"] for e in events_before]
+
+    # ...and --confirm rewrites both seeded files to sha256 markers.
+    r = runner.invoke(app, ["sessions", "scrub", SID_SUCCESS, "--confirm",
+                            "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    assert "Scrubbed 2 file(s)" in r.output
+    digest = hashlib.sha256(SECRET.encode()).hexdigest()
+    marker = f"[REDACTED sha256={digest} len={len(SECRET)}]"
+    prompt_text = (success / "prompts" / "002-recovery-plan.txt").read_text()
+    response_text = next((success / "responses").glob("*execute-recovery*")
+                         ).read_text()
+    assert SECRET not in prompt_text and marker in prompt_text
+    assert SECRET not in response_text and marker in response_text
+
+    # Exactly one scrub event was appended, extending the existing chain.
+    lines = events_path.read_text(encoding="utf-8").splitlines()
+    events_after = [json.loads(ln) for ln in lines]
+    scrubs = [e for e in events_after if e["kind"] == "scrub"]
+    assert len(scrubs) == 1
+    assert scrubs[0]["files"] == 2 and scrubs[0]["ts"]
+    assert scrubs[0]["prev"] == event_hash(events_before[-1])
+    assert len(events_after) == len(events_before) + 1
+
+    # The tamper-evident chain still verifies through the CLI afterwards.
+    ok, out = chain_ok()
+    assert ok, out
+
+    # Sibling sessions and files outside the session dir are untouched.
+    for d, before in siblings_before.items():
+        assert _snapshot(tmp_path / AUDIT_DIR / d) == before
+    assert outside.read_text(encoding="utf-8") == PROMPT_BODY
+
+    # Scrubbing is bounded to prompts/responses/verification: report.json
+    # is intact, so the stats pipeline keeps working unchanged.
+    rj = runner.invoke(app, ["sessions", "stats", "--json",
+                             "--project-dir", str(tmp_path)])
+    assert rj.exit_code == 0, rj.output
+    assert json.loads(rj.output)["total_sessions"] == 3
+
+
+# ---------------------------------------------------------------- clean
+
+
+def test_clean_removes_only_backdated_session(tmp_path):
+    success, osc, budget, _outside = _seed_project(tmp_path)
+    now = time.time()
+    old_mtime = now - 40 * 86400
+    os.utime(budget, (old_mtime, old_mtime))
+
+    # Dry run: only the backdated session is a candidate; nothing deleted.
+    r = runner.invoke(app, ["sessions", "clean", "--older-than", "30d",
+                            "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    assert f"Would delete: {budget}" in r.output
+    rest = r.output.split("Would delete", 1)[1]
+    assert success.name not in rest and osc.name not in rest
+    assert "Dry run: nothing deleted" in r.output
+    assert budget.exists() and success.exists() and osc.exists()
+
+    # Confirm: exactly the backdated directory is removed.
+    r = runner.invoke(app, ["sessions", "clean", "--older-than", "30d",
+                            "--confirm", "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    assert "Deleted 1 session directory" in r.output
+    assert not budget.exists()
+    assert success.exists() and osc.exists()
+
+    # Surviving sessions remain fully usable.
+    rv = runner.invoke(app, ["logs", SID_OSCILLATION, "--verify",
+                             "--project-dir", str(tmp_path)])
+    assert rv.exit_code == 0, rv.output
+    assert "intact (4 events)" in rv.output
