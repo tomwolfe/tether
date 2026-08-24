@@ -45,6 +45,7 @@ from tether.models import (
     TetherConfig,
     VerificationResult,
 )
+from tether.reliability import send_with_transient_retry
 from tether.verification import (
     REPAIR_OUTPUT_BUDGET,
     ProbeResult,
@@ -1102,9 +1103,7 @@ class Orchestrator:
         cumulative_usage: Dict[str, float] = {}
         send_count = 0
 
-        def _track_send(sent: AgentState) -> None:
-            nonlocal send_count
-            send_count += 1
+        def _merge_usage(sent: Optional[AgentState]) -> None:
             usage = sent.usage if sent is not None else None
             if not isinstance(usage, dict):
                 return
@@ -1114,6 +1113,32 @@ class Orchestrator:
                     continue
                 cumulative_usage[key] = \
                     cumulative_usage.get(key, 0.0) + float(value)
+
+        def _send_with_retries(step_name: str, prompt: str) -> AgentState:
+            """Logical adapter send with transient-failure tolerance
+            (dogfood-31): TRANSIENT provider/infrastructure failures
+            ("network_error", rate limits, overloaded gateways, ...) are
+            retried with bounded backoff instead of aborting the mission
+            (planning) or burning a recovery attempt (execution/repair);
+            genuine agent failures keep their exact prior semantics. Every
+            physical send's usage merges into cumulative_usage IMMEDIATELY
+            (so the between-retry budget check never sees stale totals)
+            while send_count increments once per logical send; the budget
+            is re-checked before each retry's backoff so max_wall_seconds
+            still aborts promptly.
+            """
+            nonlocal send_count
+            retries = self.config.retries
+            state_out, _physical = send_with_transient_retry(
+                self.adapter.send, prompt, session,
+                step=step_name, audit=audit,
+                max_transient_retries=retries.max_transient_retries,
+                transient_backoff_seconds=retries.transient_backoff_seconds,
+                before_retry=lambda: _require_budget(True),
+                on_result=_merge_usage,
+            )
+            send_count += 1
+            return state_out
 
         def _require_budget(include_sends: bool) -> None:
             breach = _budget_breach(
@@ -1327,8 +1352,7 @@ class Orchestrator:
             else:
                 assert session is not None
                 _require_budget(True)
-                state = self.adapter.send(plan_prompt, session)
-                _track_send(state)
+                state = _send_with_retries("plan", plan_prompt)
                 audit.save_response("plan", state.model_dump())
                 log.info("Planning step status: %s", state.status)
                 if state.status != "completed":
@@ -1357,8 +1381,7 @@ class Orchestrator:
             else:
                 assert session is not None
                 _require_budget(True)
-                state = self.adapter.send(exec_prompt, session)
-                _track_send(state)
+                state = _send_with_retries("execute", exec_prompt)
                 audit.save_response("execute", state.model_dump())
                 log.info("Execution step status: %s", state.status)
 
@@ -1743,8 +1766,8 @@ class Orchestrator:
                 else:
                     assert session is not None
                     _require_budget(True)
-                    state = self.adapter.send(repair_prompt, session)
-                    _track_send(state)
+                    state = _send_with_retries(f"repair-{attempt}",
+                                               repair_prompt)
                     audit.save_response(f"repair-{attempt}", state.model_dump())
                     log.info("Recovery attempt %d status: %s", attempt, state.status)
                     # Re-gate and refresh forensic evidence after EVERY send:

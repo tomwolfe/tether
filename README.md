@@ -97,7 +97,7 @@ CLI flags > mission file > project config (`tether.yaml|yml|json|toml`) > defaul
 
 Mission values that are **unset** (absent) fall back to the project config; only explicit mission values override it. Adapter settings are deep-merged per adapter name: mission adapter settings override project adapter settings key-by-key.
 
-Config keys: `default_adapter`, `audit_dir`, `backup_dir`, `dry_run`, `log_level`, `command_timeout_seconds`, `verification_timeout_seconds`, `max_attempts`, `allow_dirty`, `auto_rollback`, `redact_prompts`, `sandbox_mode`, `writer_lock_stale_seconds`, `retention_days` (used by `sessions clean` when `--older-than` is omitted), `secret_denylist`, `secret_allowlist`, `adapters` (per-adapter settings), `verification` (e.g. `commands`; also `timeout_seconds`, `artifacts`, and the deeper tiers).
+Config keys: `default_adapter`, `audit_dir`, `backup_dir`, `dry_run`, `log_level`, `command_timeout_seconds`, `verification_timeout_seconds`, `max_attempts`, `allow_dirty`, `auto_rollback`, `redact_prompts`, `sandbox_mode`, `writer_lock_stale_seconds`, `retention_days` (used by `sessions clean` when `--older-than` is omitted), `secret_denylist`, `secret_allowlist`, `retries` (transient-failure tolerance: `max_transient_retries`, `transient_backoff_seconds`), `adapters` (per-adapter settings), `verification` (e.g. `commands`; also `timeout_seconds`, `artifacts`, and the deeper tiers).
 
 ## Mission file schema
 
@@ -239,6 +239,22 @@ With `reset_to_checkpoint`, Tether restores the tree to its checkpoint state bef
 ### Oscillation detection
 
 Repeating the same mistake is different from making progress: when two failed attempts produce the SAME failure signature (normalized failing output plus changed-file set), Tether logs an `oscillation_detected` audit event — the fix-A-breaks-B / fix-B-breaks-A loop. In cumulative mode the first repeat automatically escalates the effective strategy to `reset_to_checkpoint` for the remaining rounds. If the signature recurs AGAIN even under reset (three occurrences total), further attempts cannot converge: the mission aborts early with `status: failed`, the last `recovery_attempts` entry carries `failure_class: "oscillation_detected"`, and `next_steps` names the oscillation plus rollback guidance — instead of silently burning the remaining budget. Alternating distinct failures never trigger it.
+
+### Transient provider failures (`retries`)
+
+Provider/infrastructure flakes are not agent failures: a planning send that dies with `finish_reason: network_error`, a rate limit, an overloaded gateway (HTTP 502/503/504), or a connection reset is classified as TRANSIENT and the SAME send is retried with bounded backoff instead of failing the attempt. Each retry logs a warning and records a `transient_retry` audit event (`step`, `attempt`, clipped `reason`). Two project-config knobs control it:
+
+```yaml
+retries:
+  max_transient_retries: 2        # extra attempts after the first (2 => up to 3 total)
+  transient_backoff_seconds: 10   # flat wait between retries
+```
+
+- Planning sends retry instead of aborting; if all retries are exhausted, the mission fails exactly as before ("Planning step ended with status ...").
+- Execution and repair sends retry before counting as a failed attempt for recovery: transient retries never consume `recovery.max_attempts`.
+- Exhaustion falls into the existing failure paths unchanged; genuine agent failures are never retried.
+- Usage tracking stays honest: every physical send's metrics merge into `cumulative_usage` IMMEDIATELY (so the between-retry budget checks never see stale totals), while a retried step still counts as ONE logical send in `send_count`; `budget.max_usage` and `budget.max_wall_seconds` are re-checked between retries.
+- Dry-runs make no adapter calls and are unaffected. Classification reads ONLY the adapter-reported `error` field: captured agent/test output in `logs` NEVER triggers retries — a genuine crash whose output merely mentions "connection reset", "503", or "rate limit" is not an outage — and generic timeout wording ("timed out", bare "timeout") is no signature either, so Tether's own agent-timeout failure (`command timed out after ...s`) keeps its exact prior semantics. Only network-level timeout forms (`TimeoutError`, `socket.timeout`, `ETIMEDOUT`, "request timeout") count.
 
 A mission reports `success` **only** if the final agent step completed *and* verification passed. Non-completed agent states (`failed`, `unavailable`, `cancelled`, `needs_input`, `running`) always drive the failure/recovery path, and the orchestrator checks adapter availability itself before starting. A failed planning step aborts the mission before execution.
 

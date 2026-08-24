@@ -120,6 +120,16 @@ class BudgetSpec(BaseModel):
     max_usage: Optional[Dict[str, float]] = None
 
 
+class RetriesSpec(BaseModel):
+    """Transient-failure retry policy (dogfood-31): bounded backoff retries
+    for TRANSIENT provider/infrastructure failures during agent sends
+    (planning, execution, repair). Genuine agent failures are never retried;
+    dry-run behavior is unchanged."""
+    # Extra attempts AFTER the first physical send (2 => up to 3 total).
+    max_transient_retries: int = Field(default=2, ge=0)
+    transient_backoff_seconds: float = Field(default=10, ge=0)
+
+
 class MissionContract(BaseModel):
     mission: Dict[str, Any]
     name: str
@@ -192,6 +202,9 @@ class TetherConfig(BaseModel):
     retention_days: Optional[int] = Field(default=None, ge=0)
     adapters: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     verification: VerificationSpec = Field(default_factory=VerificationSpec)
+    # Transient-failure tolerance (dogfood-31): bounded retry policy for
+    # provider/infrastructure flakes during agent sends.
+    retries: RetriesSpec = Field(default_factory=RetriesSpec)
 
 
 AdapterStatus = Literal[
