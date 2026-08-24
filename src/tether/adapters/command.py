@@ -31,6 +31,7 @@ Windows the child gets CREATE_NEW_PROCESS_GROUP and the tree is terminated via
 """
 from __future__ import annotations
 
+import codecs
 import os
 import re
 import shlex
@@ -283,23 +284,38 @@ class CommandAdapter(AgentAdapter):
             if stream is None:
                 return
             source = getattr(stream, "raw", None) or stream
+            # Incremental UTF-8 decoding (dogfood-33 review fix): raw read
+            # chunks can split a multibyte character across the boundary;
+            # the decoder buffers the partial sequence instead of mangling
+            # it, so neither the logs nor the callback ever see a broken
+            # character. Decoded text is still emitted per read for
+            # real-time streaming.
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+            def _emit(text: str) -> None:
+                if not text:
+                    return
+                sink.append(text)
+                if callback is not None:
+                    # Streaming is best-effort observability: a
+                    # misbehaving callback never breaks the send itself.
+                    try:
+                        callback(text)
+                    except Exception:
+                        pass
+
             try:
                 while True:
                     data = source.read(8192)
                     if not data:
                         break
-                    text = data.decode("utf-8", errors="replace")
-                    sink.append(text)
-                    if callback is not None:
-                        # Streaming is best-effort observability: a
-                        # misbehaving callback never breaks the send itself.
-                        try:
-                            callback(text)
-                        except Exception:
-                            pass
+                    _emit(decoder.decode(data))
             except OSError:
                 pass
             finally:
+                # final=True flushes any truncated trailing sequence as
+                # U+FFFD so nothing buffered in the decoder is lost.
+                _emit(decoder.decode(b"", final=True))
                 try:
                     stream.close()
                 except OSError:

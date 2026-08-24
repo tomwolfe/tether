@@ -1,0 +1,113 @@
+# Mission: dogfood-34-reliability-gap-closure
+# Findings: during dogfood-33, the opencode provider flaked three times
+# with "Error from provider (Console): Upstream request failed: Endpoint
+# is unavailable." — and NONE of the flaked sends were retried, despite
+# dogfood-31 shipping a transient-error classifier with bounded backoff.
+# Root causes: (a) the classifier's signature list does not match this
+# phrasing; (b) only some steps apply the retry wrapper. The review gate
+# also documented that surviving descendants keep daemon reader threads
+# blocked on inherited pipes until they exit — an accepted-but-undocumented
+# resource leak.
+mission:
+  name: dogfood-34-reliability-gap-closure
+  goal: |
+    Close three reliability gaps found while Tether dogfooded itself:
+
+    GAP 1 - TRANSIENT CLASSIFIER COVERAGE:
+    In the transient-failure classifier (see src/tether/reliability.py or
+    wherever dogfood-31 placed it), add signatures so these real provider
+    messages are classified TRANSIENT (case-insensitive):
+      - "endpoint is unavailable"
+      - "upstream request failed"
+    Keep all existing signatures working. Add pure unit tests for the new
+    signatures, including mixed-case variants.
+
+    GAP 2 - APPLY RETRIES TO ALL AGENT SENDS:
+    dogfood-31's bounded-backoff retry must cover EVERY agent send step,
+    not just some. Verify by reading src/tether/orchestrator.py: the
+    planning send, execution send, repair sends, AND the review-gate send
+    (_run_review_gate / _consult_reviewer path) must all retry the same
+    send up to 3 times on a TRANSIENT classification, with short backoff,
+    logging a warning per retry and recording an audit event kind
+    "transient_retry" ({step, attempt, reason}). If retries are exhausted,
+    keep current abort/fail semantics exactly. Non-transient failures keep
+    current semantics byte-for-byte.
+    Tests: simulate a review-send that fails twice with a transient error
+    then succeeds -> review completes, two "transient_retry" audit events
+    recorded for the review step; a non-transient review failure still
+    rejects immediately with no retries.
+
+    GAP 3 - DOCUMENT THE READER STRAGGLER LIMITATION:
+    In docs/ADAPTERS.md, under CommandAdapter/streaming documentation, add
+    a "Current limitations" note: when the agent leaves a surviving
+    descendant holding stdout/stderr, send() returns promptly but the
+    daemon reader threads remain blocked on the inherited pipes (and the
+    fds stay open) until that descendant exits. State that this is
+    accepted-by-design and bounded in practice because readers are daemon
+    threads.
+
+    CONSTRAINTS:
+    - No interface changes: AgentAdapter.send() untouched.
+    - Single-reviewer missions behave exactly as today apart from retry.
+    - subprocess stays shell=False everywhere; no new dependencies.
+
+context_files:
+  - src/tether/reliability.py
+  - src/tether/orchestrator.py
+  - docs/ADAPTERS.md
+  - tests/test_review_gate.py
+
+constraints:
+  - DO NOT change AgentAdapter.send() signature (hard rule)
+  - Non-transient failure semantics unchanged everywhere
+  - subprocess stays shell=False everywhere
+  - No new third-party dependencies
+
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+    - ".venv/bin/tether adapters conformance mock"
+  artifacts:
+    - "docs/ADAPTERS.md"
+  assertions:
+    - path: src/tether/reliability.py
+      contains: endpoint is unavailable
+    - path: src/tether/orchestrator.py
+      contains: transient_retry
+    - path: docs/ADAPTERS.md
+      contains: Current limitations
+  probes:
+    - command: "python -c \"from tether.reliability import classify_transient as c; assert c('Error from provider: Endpoint is unavailable.'), 'endpoint-unavailable not transient'; assert c('Upstream request failed: boom'), 'upstream-failed not transient'; print('classifier - ok')\""
+      contains: "classifier - ok"
+
+recovery:
+  strategy: reset_to_checkpoint
+  max_attempts: 5
+
+review:
+  enabled: true
+  required: true
+  context: full
+  adapter: opencode
+
+budget:
+  max_sends: 10
+  max_wall_seconds: 5400
+
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 1800
+
+allowed_paths:
+  - src/**
+  - tests/**
+  - docs/**
+  - missions/dogfood-34-reliability-gap-closure.yaml
+
+forbidden_paths:
+  - .git/**
+  - .tether/**

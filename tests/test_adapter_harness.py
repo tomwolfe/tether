@@ -398,3 +398,36 @@ def test_timeout_with_inherited_pipes_returns_promptly_and_kills_tree(tmp_path):
     # ...and send() returned promptly instead of blocking on held pipes.
     assert elapsed < 20, (
         f"send() took {elapsed:.1f}s to return after timeout kill")
+
+
+def test_multibyte_char_split_across_read_chunks_survives(tmp_path):
+    # UTF-8 review fix: a multibyte character whose bytes straddle a raw
+    # read() boundary must not be mangled. The stub pads stdout to just
+    # under the adapter's 8192-byte read size, then emits the three bytes
+    # of "日" in two separate flushed writes with a pause between them, so
+    # the reader thread almost certainly sees the first byte alone.
+    # Per-chunk decoding would replace the split sequence with U+FFFD;
+    # incremental decoding reassembles it intact.
+    stub = _stub(tmp_path, "utf8-agent", """\
+        import sys, time
+        out = sys.stdout.buffer
+        out.write(b"x" * 8190)          # fill up to the read boundary...
+        out.write("日".encode("utf-8")[:1])  # ...then the FIRST byte only
+        out.flush()
+        time.sleep(0.3)                 # let the reader drain before the rest
+        out.write("日".encode("utf-8")[1:] + b"\\n")
+        out.flush()
+        """)
+    adapter = CommandAdapter({"command": [sys.executable, stub]})
+    chunks: list[str] = []
+    adapter.stream_callback = chunks.append
+    session = adapter.start_session(str(tmp_path), "s")
+    state = adapter.send("p", session)
+    assert state.status == "completed", state.error
+    # The character survived intact in the audit log...
+    assert "日" in state.logs
+    assert "\ufffd" not in state.logs
+    # ...and in what the streaming callback received.
+    joined = "".join(chunks)
+    assert "日" in joined
+    assert "\ufffd" not in joined
