@@ -44,9 +44,9 @@ verification:
     - "ruff check src tests"
     - "mypy src/tether"
   artifacts:
-    - "tests/"
+    - "tests/**"
   assertions:
-    - path: tests/test_scrub.py
+    - path: tests/test_ops_pipeline.py
       contains: stats
   probes:
     - command: "python -m pytest -q tests/test_scrub.py"
