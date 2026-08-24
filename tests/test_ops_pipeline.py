@@ -317,6 +317,145 @@ def test_stats_review_gate_rejection_accounting(tmp_path):
            "request_changes 1, rejections causing failures 1" in rh.output
 
 
+def _crashed_incomplete_dir(root):
+    """Crashed run: events only, died before any report was written."""
+    d = root / "20260815-000000-crashed-incomplete-9999abcd"
+    d.mkdir()
+    (d / "events.jsonl").write_text(json.dumps(
+        {"ts": "2026-08-15T00:00:00+00:00", "kind": "session_start",
+         "session_id": "9999abcd1234", "prev": ""}) + "\n",
+        encoding="utf-8")
+    return d
+
+
+def _corrupt_report_dir(root):
+    """Truncated write mid-run: report.json exists but is unparseable."""
+    d = root / "20260816-000000-corrupt-report-8888abcd"
+    d.mkdir()
+    (d / "report.json").write_text('{"status": "succ', encoding="utf-8")
+    return d
+
+
+def _legacy_success_dir(root):
+    """dogfood-14-era layout: minimal report plus one verification file;
+    predates review/usage/budget telemetry entirely."""
+    d = root / "20260817-000000-dogfood-v13-legacy-7777abcd"
+    (d / "verification").mkdir(parents=True)
+    (d / "verification" / "attempt-01.json").write_text(json.dumps([
+        {"command": FAIL_CMD, "exit_code": 0, "stdout": "", "stderr": "",
+         "timed_out": False, "skipped_dry_run": False, "passed": True}]),
+        encoding="utf-8")
+    report = {
+        "session_id": "7777abcd1234",
+        "mission_name": "dogfood-v13-legacy",
+        "adapter": "codex-classic",
+        "status": "success",
+        "changed_files": [],
+        "next_steps": [],
+        "audit_dir": str(d),
+    }
+    (d / "report.json").write_text(json.dumps(report, indent=2),
+                                   encoding="utf-8")
+    return d
+
+
+def test_stats_survives_malformed_and_legacy_session_dirs(tmp_path):
+    """Real trees mix eras and failures: dirs that crashed before writing
+    a report, reports truncated mid-write, and legacy minimal reports.
+    Stats must count exactly the readable reports and never crash;
+    sessions list keeps every directory visible. Corrupting one readable
+    report in place afterwards proves the aggregates are driven by the
+    fixture inputs: every count that depends on it moves, nothing else."""
+    _seed_project(tmp_path)
+    root = tmp_path / AUDIT_DIR
+    incomplete = _crashed_incomplete_dir(root)
+    corrupt = _corrupt_report_dir(root)
+    legacy = _legacy_success_dir(root)
+
+    rj = runner.invoke(app, ["sessions", "stats", "--json",
+                             "--project-dir", str(tmp_path)])
+    assert rj.exit_code == 0, rj.output
+    data = json.loads(rj.output)
+
+    # 3 readable seeded reports plus the legacy one; malformed dirs skipped.
+    assert data["total_sessions"] == 4
+    assert data["statuses"] == {
+        "cancelled": {"count": 0, "pct": 0.0},
+        "failed": {"count": 2, "pct": 50.0},
+        "success": {"count": 2, "pct": 50.0},
+    }
+    # verification files per dir: budget 0, legacy 1, success 2, osc 3.
+    assert data["attempts"] == {"median": 1.5, "max": 3}
+    assert data["recovery"] == {
+        "sessions_with_recovery_attempts": 2,
+        "recoveries_ending_in_success": 1,
+        "success_rate_pct": 50.0,
+    }
+    assert data["top_failing_commands"] == [
+        {"command": FAIL_CMD, "count": 1}]
+    assert data["adapters"] == {
+        "codex-classic": {"count": 1, "success_rate_pct": 100.0},
+        "mock": {"count": 3, "success_rate_pct": 33.3},
+    }
+    assert data["review_gate"] == {
+        "sessions_reviewed": 1,
+        "verdicts": {"approve": 1, "request_changes": 0},
+        "rejections_caused_failures": 0,
+    }
+    assert data["budgets"] == {"sessions_exceeded": 1}
+    # The solo legacy mission stays out of baselines; dogfood-real is
+    # untouched by its presence.
+    assert set(data["missions"]) == {"dogfood-real"}
+    assert data["missions"]["dogfood-real"]["count"] == 2
+    assert data["usage"] == {
+        "sessions_reporting": 3,
+        "totals": {"send_count": 16.0, "tokens": 7900.0},
+    }
+
+    rh = runner.invoke(app, ["sessions", "stats",
+                             "--project-dir", str(tmp_path)])
+    assert rh.exit_code == 0, rh.output
+    assert "Sessions: 4 total" in rh.output
+    assert "success: 2 (50.0%)" in rh.output
+    assert "failed: 2 (50.0%)" in rh.output
+    assert "Verification attempts: median 1.5, max 3" in rh.output
+    assert "codex-classic: 1 session(s), success rate 100.0%" in rh.output
+
+    rl = runner.invoke(app, ["sessions", "list",
+                             "--project-dir", str(tmp_path)])
+    assert rl.exit_code == 0, rl.output
+    rows = {}
+    for ln in rl.output.splitlines():
+        parts = ln.split()
+        if parts:
+            rows[parts[0]] = parts
+    assert rows[incomplete.name][1:] == ["?", "?"]
+    assert rows[corrupt.name][1:] == ["?", "?"]
+    assert rows[legacy.name][1:] == ["dogfood-v13-legacy", "success"]
+
+    # Sensitivity check inside the fixture tree: truncating the legacy
+    # report moves exactly the aggregates that read it -- total, statuses,
+    # adapters, attempts -- while usage/recovery (sourced from the seeded
+    # reports only) are untouched.
+    (legacy / "report.json").write_text('{"status": "succ', encoding="utf-8")
+    rj = runner.invoke(app, ["sessions", "stats", "--json",
+                             "--project-dir", str(tmp_path)])
+    assert rj.exit_code == 0, rj.output
+    data = json.loads(rj.output)
+    assert data["total_sessions"] == 3
+    assert data["statuses"] == {
+        "cancelled": {"count": 0, "pct": 0.0},
+        "failed": {"count": 2, "pct": 66.7},
+        "success": {"count": 1, "pct": 33.3},
+    }
+    assert data["adapters"] == {"mock": {"count": 3, "success_rate_pct": 33.3}}
+    assert data["attempts"] == {"median": 2.0, "max": 3}
+    assert data["usage"] == {
+        "sessions_reporting": 3,
+        "totals": {"send_count": 16.0, "tokens": 7900.0},
+    }
+
+
 # ------------------------------------------------- scrub + event chain
 
 
@@ -455,6 +594,57 @@ def test_scrub_oscillation_failure_session_end_to_end(tmp_path):
     data = json.loads(rj.output)
     assert data["total_sessions"] == 3
     assert data["statuses"]["failed"]["count"] == 2
+
+
+def test_tampered_chain_detected_while_pipeline_stays_healthy(tmp_path):
+    """Tamper-evidence on the realistic tree: a rewritten history is
+    caught at the next link, siblings stay verifiable, and the rest of
+    the ops pipeline keeps working (chain integrity is per session)."""
+    success, osc, _budget, _outside = _seed_project(tmp_path)
+    events_path = success / "events.jsonl"
+
+    def verify(sid):
+        return runner.invoke(app, ["logs", sid, "--verify",
+                                   "--project-dir", str(tmp_path)])
+
+    rv = verify(SID_SUCCESS)
+    assert rv.exit_code == 0 and "intact (5 events)" in rv.output
+
+    # Attack: rewrite a historical event's payload while keeping its
+    # recorded prev hash (hide the recovery step). The next link exposes it.
+    original = events_path.read_bytes()
+    events = [json.loads(ln) for ln in
+              events_path.read_text(encoding="utf-8").splitlines()]
+    events[1]["summary"] = "nothing happened here"
+    events_path.write_text(
+        "\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
+    rv = verify(SID_SUCCESS)
+    assert rv.exit_code == 1
+    assert "Event chain BROKEN" in rv.output
+    assert "event 3 (kind='recovery_started')" in rv.output
+
+    # Sibling sessions remain verifiable and stats still reads every
+    # report: a broken chain never takes the rest of the tree down.
+    rv = verify(SID_OSCILLATION)
+    assert rv.exit_code == 0 and "intact (4 events)" in rv.output
+    rj = runner.invoke(app, ["sessions", "stats", "--json",
+                             "--project-dir", str(tmp_path)])
+    assert rj.exit_code == 0, rj.output
+    assert json.loads(rj.output)["total_sessions"] == 3
+
+    # Restoring the original bytes heals the chain (no sticky state)...
+    events_path.write_bytes(original)
+    rv = verify(SID_SUCCESS)
+    assert rv.exit_code == 0 and "intact (5 events)" in rv.output
+
+    # ...and a forged appended event claiming a bogus prev is caught too.
+    with events_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"ts": "2026-08-23T00:00:00+00:00",
+                            "kind": "scrub", "files": 0,
+                            "prev": "f" * 64}) + "\n")
+    rv = verify(SID_SUCCESS)
+    assert rv.exit_code == 1
+    assert "event 6 (kind='scrub')" in rv.output
 
 
 # ---------------------------------------------------------------- clean
