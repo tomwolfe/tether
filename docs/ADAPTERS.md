@@ -34,12 +34,15 @@ Built-ins (`tether adapters list` shows these as the CAPABILITIES column):
 | Adapter | cancel | tree-kill | usage | streaming | one-shot | maturity |
 |---|---|---|---|---|---|---|
 | mock | no | no | no | no | yes | verified |
-| command | yes | yes | no | no | yes | verified |
-| opencode | yes* | yes* | no | no | yes | verified |
-| pi | yes* | yes* | no | no | yes | experimental |
+| command | yes | yes | no | opt-in | yes | verified |
+| opencode | yes* | yes* | no | opt-in* | yes | verified |
+| pi | yes* | yes* | no | opt-in* | yes | experimental |
 
 \* inherited from the generic command plumbing; it is the presets'
-*agent-level* behavior that remains unverified.
+*agent-level* behavior that remains unverified. Streaming is **opt-in**: it
+means the adapter CAN deliver output chunks to an installed
+`stream_callback`, not that sends became interactive (see CommandAdapter
+below).
 
 ## The conformance harness
 
@@ -119,7 +122,12 @@ change; the reviewer is just another `send()` — no extra interface. Setting
 `review.adapter` in the contract routes that session through a **different
 adapter** (resolved from the same adapters config; its availability is checked
 before the run), so independent review needs no core-loop changes — when
-unset, the gate remains self-review by the mission adapter.
+unset, the gate remains self-review by the mission adapter. Multi-reviewer
+consensus (`review.reviewers`, dogfood-32) consults EVERY named adapter —
+each resolved via the registry on its own fresh session — and aggregates the
+verdict per `review.consensus` (`"all"` = unanimous, `"majority"` = strictly
+more approvals than rejections, ties fail safe); per-reviewer outcomes are
+recorded in `report["review"]["reviewers"]`.
 
 ## Experimental vs verified (promotion criteria)
 
@@ -194,6 +202,30 @@ Every CommandAdapter child process receives standard Tether context variables
 - `TETHER_MISSION` — mission name, when known
 
 Behavior: runs once per `send`, captures stdout/stderr as logs, exit 0 => completed, nonzero => failed, spawn failure => unavailable, timeout => failed. The child is spawned via `subprocess.Popen` with `shell=False`. All of this is covered by tests using stub executables (`tests/test_adapter_harness.py`) — no real agent binaries required. The orchestrator also calls `is_available()` itself before starting a run and fails fast when the adapter is unavailable.
+
+### Opt-in output streaming (dogfood-32)
+
+`CommandAdapter.supports_streaming = True`, but streaming never happens
+unless a caller installs a callback on the instance:
+
+```python
+adapter.stream_callback = lambda chunk: print(chunk, end="")  # chunk: str
+```
+
+With a callback installed, `send()` drains stdout and stderr with background
+reader threads and hands every chunk to the callback as it arrives — live
+progress without changing the adapter contract. Guarantees:
+
+- The `send(prompt, session)` signature and one-shot semantics are untouched.
+- Without a `stream_callback` (the default `None`) behavior is identical to
+  before.
+- Logs still accumulate the FULL combined output for audit, and
+  `usage_patterns` extraction still runs over the complete output.
+- Process-tree containment is preserved: timeouts and `cancel()` terminate
+  the whole group (SIGTERM then SIGKILL on POSIX), and reader threads end
+  when the pipes close.
+- Callback exceptions are swallowed — streaming is best-effort observability,
+  never a way to fail a send.
 
 ## OpencodeAdapter / PiAdapter — thin CommandAdapter presets
 

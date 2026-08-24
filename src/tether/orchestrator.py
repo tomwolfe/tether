@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from tether.adapters import resolve_adapter
 from tether.adapters.base import AgentAdapter
 from tether.audit import AuditTrail, new_session_id, redact_body, redact_secrets, utcnow
 from tether.cleanroom import CleanRoomError, materialize_clean_room
@@ -830,25 +831,68 @@ class Orchestrator:
         })
         return summary, mutants
 
+    def _consult_reviewer(
+        self, audit: AuditTrail, review_spec: Any, adapter: AgentAdapter,
+        label: str, prompt: str,
+    ) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        """One reviewer pass plus its credibility probe; fail-safe verdict.
+
+        Opens a fresh ``<label>`` session on ``adapter``, sends ``prompt``,
+        applies the configured credibility probe (dogfood-24) to the raw
+        response when set, and parses the verdict fail-safe. Returns
+        ``(outcome, state_json)`` where outcome carries ``verdict`` and
+        ``reason``; any interaction failure counts as request_changes.
+        """
+        state_json: Dict[str, Any] = {"status": "unavailable", "logs": ""}
+        try:
+            session = adapter.start_session(
+                str(self.project_dir), f"{self.session_id}-{label}")
+            state = adapter.send(prompt, session)
+            state_json = state.model_dump()
+            probe_cmd = getattr(review_spec, "credibility_probe", None)
+            if probe_cmd:
+                ok, detail = _run_credibility_probe(
+                    probe_cmd, state.logs, self.project_dir,
+                    timeout_seconds=self.config.command_timeout_seconds)
+                audit.log_event("reviewer_credibility", {
+                    "adapter": adapter.name, "ok": ok, "detail": detail})
+                if not ok:
+                    return ({"verdict": "request_changes",
+                             "reason": REVIEWER_CREDIBILITY_FAILURE},
+                            state_json)
+            verdict, reason = _parse_review_verdict(state.logs)
+            return {"verdict": verdict, "reason": reason}, state_json
+        except Exception as e:  # noqa: BLE001 - gate must fail safe
+            log.warning("Reviewer interaction failed (%s): %r", adapter.name, e)
+            return ({"verdict": "request_changes",
+                     "reason": f"reviewer failed: {e!r}"}, state_json)
+
     def _run_review_gate(self, audit: AuditTrail, mission: Any,
                          checkpoint: CheckpointInfo) -> Dict[str, Any]:
         """Adversarial review gate over the captured change (dogfood-15).
 
-        Opens a FRESH reviewer session on ``self.reviewer`` — the mission's
-        adapter instance unless an independent reviewer adapter was injected
-        (dogfood-17) — and sends goal + a bounded excerpt of the
-        already-captured change artifact (``patch.diff`` for git,
-        ``manifest_diff.json`` otherwise; no re-diff). With
-        ``review.context: "full"`` (dogfood-20) the ENTIRE artifact is
-        embedded up to REVIEW_FULL_CONTEXT_BUDGET instead, with an
-        instruction to cite specific hunks/lines; the default "excerpt"
-        prompt stays byte-for-byte unchanged. The verdict is parsed
-        fail-safe from the reviewer's logs: the LAST line BEGINNING with
-        either marker decides (echoed prompts and diff hunks never begin a
-        line with the marker, even when they contain the token mid-line);
+        With no ``review.reviewers`` configured, consults the single
+        reviewer on ``self.reviewer`` exactly as before (dogfood-17):
+        the mission's adapter instance unless an independent reviewer
+        adapter was injected. With ``review.reviewers`` (dogfood-32),
+        every named reviewer is resolved via the registry and consulted
+        in order; the credibility probe runs per reviewer and the
+        aggregate verdict follows ``review.consensus`` ("all" requires
+        unanimous approval, "majority" strictly more approvals than
+        rejections — ties fail safe). Per-reviewer outcomes land in
+        ``report["review"]["reviewers"]``.
+
+        The prompt embeds a bounded excerpt of the already-captured
+        change artifact (``patch.diff`` for git, ``manifest_diff.json``
+        otherwise; no re-diff). With ``review.context: "full"``
+        (dogfood-20) the ENTIRE artifact is embedded up to
+        REVIEW_FULL_CONTEXT_BUDGET instead, with an instruction to cite
+        specific hunks/lines; the default "excerpt" prompt stays
+        byte-for-byte unchanged. Verdicts parse fail-safe from reviewer
+        logs: the LAST line BEGINNING with either marker decides;
         output with no such line counts as request_changes. Returns the
-        ``report["review"]`` payload, recording
-        the ACTUAL reviewer adapter name.
+        ``report["review"]`` payload recording the ACTUAL reviewer
+        adapter name(s).
         """
         name = "patch.diff" if checkpoint.is_git_repo else "manifest_diff.json"
         review_spec = getattr(mission, "review", None)
@@ -881,38 +925,71 @@ class Orchestrator:
             + verdict_instruction
         )
         audit.save_prompt("review", prompt)
-        state_json: Dict[str, Any] = {"status": "unavailable", "logs": ""}
-        try:
-            reviewer_session = self.reviewer.start_session(
-                str(self.project_dir), f"{self.session_id}-review")
-            state = self.reviewer.send(prompt, reviewer_session)
-            # Reviewer credibility probe (dogfood-24): an independent
-            # reviewer's verdict is trusted only after its raw response
-            # passes the configured check; anything else fails safe.
-            probe_cmd = getattr(review_spec, "credibility_probe", None)
-            if probe_cmd:
-                ok, detail = _run_credibility_probe(
-                    probe_cmd, state.logs, self.project_dir,
-                    timeout_seconds=self.config.command_timeout_seconds)
-                audit.log_event("reviewer_credibility", {
-                    "ok": ok, "detail": detail})
-                if not ok:
-                    verdict, reason = (
-                        "request_changes", REVIEWER_CREDIBILITY_FAILURE)
-                else:
-                    verdict, reason = _parse_review_verdict(state.logs)
-            else:
-                verdict, reason = _parse_review_verdict(state.logs)
-            state_json = state.model_dump()
-        except Exception as e:  # noqa: BLE001 - gate must fail safe
-            log.warning("Reviewer interaction failed: %r", e)
-            verdict, reason = "request_changes", f"reviewer failed: {e!r}"
-        audit.save_response("review", state_json)
-        info: Dict[str, Any] = {
+        reviewer_names = list(getattr(review_spec, "reviewers", None) or [])
+        if not reviewer_names:
+            # Single-reviewer path (dogfood-15/17/20/24): unchanged behavior
+            # and payload keys.
+            outcome, state_json = self._consult_reviewer(
+                audit, review_spec, self.reviewer, "review", prompt)
+            audit.save_response("review", state_json)
+            info: Dict[str, Any] = {
+                "enabled": True,
+                "adapter": self.reviewer.name,
+                **outcome,
+            }
+            audit.log_event("review", info)
+            return info
+
+        # Multi-reviewer consensus (dogfood-32): resolve every configured
+        # reviewer via the registry, consult each on its own fresh session,
+        # then aggregate per the consensus policy. Fail-safe at every step:
+        # unresolvable names and interaction failures count as rejections.
+        outcomes: list[Dict[str, Any]] = []
+        resolved_names: list[str] = []
+        for reviewer_name in reviewer_names:
+            try:
+                reviewer_adapter = resolve_adapter(
+                    reviewer_name, self.config.adapters,
+                    default_timeout=self.config.command_timeout_seconds)
+            except ValueError as e:
+                log.warning("Reviewer %r cannot be resolved: %s",
+                            reviewer_name, e)
+                outcomes.append({
+                    "adapter": reviewer_name,
+                    "verdict": "request_changes",
+                    "reason": f"reviewer failed: {e!r}",
+                })
+                continue
+            label = f"review-{reviewer_adapter.name}"
+            outcome, state_json = self._consult_reviewer(
+                audit, review_spec, reviewer_adapter, label, prompt)
+            audit.save_response(label, state_json)
+            outcomes.append({"adapter": reviewer_adapter.name, **outcome})
+            resolved_names.append(reviewer_adapter.name)
+
+        total = len(outcomes)
+        approvals = sum(1 for o in outcomes if o["verdict"] == "approve")
+        policy = getattr(review_spec, "consensus", "all")
+        approved = approvals * 2 > total if policy == "majority" \
+            else (total > 0 and approvals == total)
+        if approved:
+            verdict = "approve"
+            reason = (f"{approvals}/{total} reviewers approved "
+                      f"(consensus: {policy})")
+        else:
+            first_rejection = next(
+                (o for o in outcomes if o["verdict"] != "approve"), None)
+            verdict = "request_changes"
+            reason = (first_rejection or {}).get("reason") or (
+                f"consensus not met: {approvals}/{total} approvals "
+                f"(policy: {policy})")
+        info = {
             "enabled": True,
-            "adapter": self.reviewer.name,
+            "adapter": ",".join(resolved_names),
             "verdict": verdict,
             "reason": reason,
+            "consensus": policy,
+            "reviewers": outcomes,
         }
         audit.log_event("review", info)
         return info

@@ -1,0 +1,110 @@
+# Mission: dogfood-32-streaming-and-consensus
+# Goal: Close Tether's observability and trust gaps WITHOUT breaking the
+# AgentAdapter interface. Adds non-blocking streaming support via capability
+# flags and multi-reviewer consensus to the review gate.
+mission:
+  name: dogfood-32-streaming-and-consensus
+  goal: |
+    Implement two high-impact features while preserving Tether's core
+    adapter-agnostic contract:
+
+    TASK 1 - NON-BREAKING STREAMING SUPPORT:
+    - In src/tether/adapters/base.py, add class attribute:
+        supports_streaming: bool = False
+      Do NOT change send() signature.
+    - In src/tether/adapters/command.py:
+        * Set supports_streaming = True
+        * Add optional instance attribute `stream_callback: Optional[Callable[[str], None]] = None`
+        * Refactor send() to use background reader threads for stdout/stderr
+          instead of blocking communicate(). The callback receives chunks
+          in real-time when set; logs still accumulate fully for audit.
+        * Preserve process-tree containment (SIGTERM/SIGKILL group kill).
+        * Preserve usage_patterns extraction on complete output.
+    - Tests: prove chunks arrive incrementally via callback; prove logs
+      still contain full output; prove timeout/cancel still kills tree.
+
+    TASK 2 - MULTI-REVIEWER CONSENSUS:
+    - In src/tether/models.py extend ReviewSpec:
+        reviewers: Optional[List[str]] = None   # multiple adapters
+        consensus: Literal["all", "majority"] = "all"
+      Backward compat: if only `adapter` is set, treat as single-element list.
+    - In src/tether/orchestrator.py _run_review_gate:
+        * Iterate over all configured reviewers (resolve each via registry)
+        * Run credibility probe per reviewer (if configured)
+        * Compute aggregate verdict per consensus policy
+        * Record per-reviewer outcomes in report["review"]["reviewers"]
+    - Tests: 2 reviewers consensus=all (A+R -> fail); 3 reviewers
+      consensus=majority (A+A+R -> pass); credibility probe fails one
+      reviewer but majority still passes.
+
+    TASK 3 - DOCS & VERIFICATION:
+    - Update README.md, docs/ARCHITECTURE.md, docs/ADAPTERS.md
+    - All existing tests pass unchanged
+
+context_files:
+  - docs/ARCHITECTURE.md
+  - docs/ADAPTERS.md
+  - src/tether/adapters/base.py
+  - src/tether/adapters/command.py
+  - src/tether/models.py
+  - src/tether/orchestrator.py
+  - tests/test_review_gate.py
+  - tests/test_adapter_harness.py
+
+constraints:
+  - DO NOT change AgentAdapter.send() signature (hard rule)
+  - Streaming must be opt-in via callback, not mandatory
+  - Single-reviewer missions must work byte-for-byte unchanged
+  - subprocess stays shell=False everywhere
+  - No new third-party dependencies
+
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+    - ".venv/bin/tether adapters conformance mock"
+  artifacts:
+    - "README.md"
+    - "docs/ARCHITECTURE.md"
+  assertions:
+    - path: src/tether/adapters/base.py
+      contains: supports_streaming
+    - path: src/tether/models.py
+      contains: consensus
+    - path: src/tether/adapters/command.py
+      contains: stream_callback
+  probes:
+    - command: "python -c \"from tether.adapters.command import CommandAdapter; a = CommandAdapter({'command': ['echo', 'test']}); assert hasattr(a, 'stream_callback'), 'missing stream_callback'; print('streaming', '-', 'ok')\""
+      contains: "streaming - ok"
+
+recovery:
+  strategy: reset_to_checkpoint
+  max_attempts: 5
+
+review:
+  enabled: true
+  required: true
+  context: full
+  adapter: opencode
+
+budget:
+  max_sends: 10
+  max_wall_seconds: 5400
+
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 1800
+
+allowed_paths:
+  - src/**
+  - tests/**
+  - docs/**
+  - README.md
+  - missions/dogfood-32-streaming-and-consensus.yaml
+
+forbidden_paths:
+  - .git/**
+  - .tether/**

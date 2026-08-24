@@ -289,13 +289,31 @@ def load_mission(path: str | Path) -> MissionContract:
         if review_context not in ("excerpt", "full"):
             raise MissionError(
                 "'review.context' must be 'excerpt' or 'full'")
+        # Multi-reviewer consensus (dogfood-32): structural checks only;
+        # registry resolution and the aggregate verdict run at mission
+        # runtime (orchestrator).
+        reviewers = review_block.get("reviewers")
+        if reviewers is not None:
+            if (not isinstance(reviewers, list)
+                    or not reviewers
+                    or not all(isinstance(r, str) and r.strip()
+                               for r in reviewers)):
+                raise MissionError(
+                    "'review.reviewers' must be a non-empty list of "
+                    "adapter names")
+            reviewers = [r.strip() for r in reviewers]
+        consensus = review_block.get("consensus", "all")
+        if consensus not in ("all", "majority"):
+            raise MissionError(
+                "'review.consensus' must be 'all' or 'majority'")
         unknown = set(review_block) - {
             "enabled", "required", "adapter", "retry_on_rejection",
-            "context", "credibility_probe"}
+            "context", "credibility_probe", "reviewers", "consensus"}
         if unknown:
             raise MissionError(
                 "'review' accepts only 'enabled', 'required', 'adapter', "
-                "'retry_on_rejection', 'context', and 'credibility_probe'; "
+                "'retry_on_rejection', 'context', 'credibility_probe', "
+                "'reviewers', and 'consensus'; "
                 "got: " + ", ".join(sorted(unknown)))
         review = ReviewSpec(
             enabled=review_block.get("enabled", False),
@@ -304,6 +322,8 @@ def load_mission(path: str | Path) -> MissionContract:
             retry_on_rejection=review_block.get("retry_on_rejection", False),
             context=review_context,
             credibility_probe=credibility_probe,
+            reviewers=reviewers,
+            consensus=consensus,
         )
 
     adapter = data.get("adapter")

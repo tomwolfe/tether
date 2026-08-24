@@ -769,3 +769,194 @@ def test_credibility_probe_accepted_in_contract(tmp_path):
     m = load_mission(p)
     assert m.review is not None
     assert m.review.credibility_probe == "true-probe"
+
+
+# --------------------- dogfood-32: multi-reviewer consensus
+
+class _ScriptedReviewer(AgentAdapter):
+    """Registry reviewer returning one fixed scripted verdict."""
+
+    name = "scripted-reviewer"
+    verified = True
+    review_text = REVIEW_APPROVED
+
+    def __init__(self, settings=None):
+        super().__init__(settings or {})
+
+    def is_available(self):
+        return True, ""
+
+    def start_session(self, project_dir, session_id):
+        return SessionInfo(session_id=session_id, project_dir=project_dir)
+
+    def send(self, prompt, session):
+        return AgentState(status="completed", logs=self.review_text)
+
+    def cancel(self, session):
+        pass
+
+
+def _register_reviewer(monkeypatch, name, text):
+    cls = type(f"_Rev_{name}", (_ScriptedReviewer,),
+               {"name": name, "review_text": text})
+    monkeypatch.setitem(registry._REGISTRY, name, cls)
+
+
+def _consensus_run(tmp_path, review_block):
+    _git_repo(tmp_path)
+    mp = tmp_path / "m.yaml"
+    mp.write_text(
+        f"mission:\n  name: rev\n  goal: make f.txt say done\n"
+        f"verification:\n  commands:\n    - {PASS_CMD}\n"
+        f"adapter: mock\n{review_block}"
+    )
+    subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "mission"],
+                   check=True)
+    cfg = TetherConfig(audit_dir=".tether/sessions")
+    worker = _ReviewingAdapter(REVIEW_APPROVED)
+    report = Orchestrator(worker, cfg, tmp_path).run(load_mission(mp))
+    return report, worker
+
+
+def test_two_reviewers_consensus_all_mixed_fails_mission(tmp_path,
+                                                         monkeypatch):
+    _register_reviewer(monkeypatch, "rev-a", REVIEW_APPROVED)
+    _register_reviewer(monkeypatch, "rev-b", REVIEW_REJECTED)
+    report, worker = _consensus_run(
+        tmp_path,
+        "review:\n  enabled: true\n  reviewers: [rev-a, rev-b]\n"
+        "  consensus: all\n")
+    assert report["status"] == "failed"
+    review = report["review"]
+    assert review["verdict"] == "request_changes"
+    assert review["consensus"] == "all"
+    assert review["adapter"] == "rev-a,rev-b"
+    per = {r["adapter"]: r["verdict"] for r in review["reviewers"]}
+    assert per == {"rev-a": "approve", "rev-b": "request_changes"}
+    assert review["reason"] == "the diff never touches the goal"
+    # The worker adapter never received a review send; each reviewer got its
+    # own fresh session.
+    assert worker.review_prompts == []
+
+
+def test_three_reviewers_majority_passes_with_one_rejection(tmp_path,
+                                                            monkeypatch):
+    _register_reviewer(monkeypatch, "rev-a", REVIEW_APPROVED)
+    _register_reviewer(monkeypatch, "rev-b", REVIEW_APPROVED)
+    _register_reviewer(monkeypatch, "rev-c", REVIEW_REJECTED)
+    report, _worker = _consensus_run(
+        tmp_path,
+        "review:\n  enabled: true\n"
+        "  reviewers: [rev-a, rev-b, rev-c]\n"
+        "  consensus: majority\n")
+    assert report["status"] == "success"
+    review = report["review"]
+    assert review["verdict"] == "approve"
+    assert review["consensus"] == "majority"
+    per = {r["adapter"]: r["verdict"] for r in review["reviewers"]}
+    assert per == {"rev-a": "approve", "rev-b": "approve",
+                   "rev-c": "request_changes"}
+    assert "2/3 reviewers approved" in review["reason"]
+
+
+def test_majority_tie_fails_safe(tmp_path, monkeypatch):
+    _register_reviewer(monkeypatch, "rev-a", REVIEW_APPROVED)
+    _register_reviewer(monkeypatch, "rev-b", REVIEW_REJECTED)
+    report, _worker = _consensus_run(
+        tmp_path,
+        "review:\n  enabled: true\n  reviewers: [rev-a, rev-b]\n"
+        "  consensus: majority\n")
+    assert report["status"] == "failed"
+    assert report["review"]["verdict"] == "request_changes"
+
+
+# Probe that rejects any response containing the UNTRUSTED marker (exit 0 =
+# credible). Lets exactly one of three scripted reviewers fail credibility.
+PROBE_DISTRUST_UNTRUSTED = (
+    f"{sys.executable} -c \"import sys; data=sys.stdin.buffer.read(); "
+    "sys.exit(9 if b'UNTRUSTED' in data else 0)\""
+)
+
+
+def test_credibility_probe_fails_one_reviewer_majority_still_passes(
+        tmp_path, monkeypatch):
+    _register_reviewer(monkeypatch, "rev-a", REVIEW_APPROVED)
+    # Approves on its face, but its response trips the credibility probe.
+    _register_reviewer(
+        monkeypatch, "rev-b",
+        "REVIEW: APPROVE\nI am totally UNTRUSTED though")
+    _register_reviewer(monkeypatch, "rev-c", REVIEW_APPROVED)
+    report, _worker = _consensus_run(
+        tmp_path,
+        "review:\n  enabled: true\n"
+        "  reviewers: [rev-a, rev-b, rev-c]\n"
+        "  consensus: majority\n"
+        f"  credibility_probe: |\n    {PROBE_DISTRUST_UNTRUSTED}\n")
+    # The probed-out reviewer counts as a rejection, but 2/3 still form a
+    # majority: the mission passes.
+    assert report["status"] == "success"
+    review = report["review"]
+    assert review["verdict"] == "approve"
+    per = {r["adapter"]: r for r in review["reviewers"]}
+    assert per["rev-a"]["verdict"] == "approve"
+    assert per["rev-b"]["verdict"] == "request_changes"
+    assert per["rev-b"]["reason"] == "reviewer credibility check failed"
+    assert per["rev-c"]["verdict"] == "approve"
+
+
+def test_consensus_all_credibility_failure_anywhere_fails(tmp_path,
+                                                          monkeypatch):
+    _register_reviewer(monkeypatch, "rev-a", REVIEW_APPROVED)
+    _register_reviewer(
+        monkeypatch, "rev-b", "REVIEW: APPROVE\nUNTRUSTED response")
+    report, _worker = _consensus_run(
+        tmp_path,
+        "review:\n  enabled: true\n  reviewers: [rev-a, rev-b]\n"
+        "  consensus: all\n"
+        f"  credibility_probe: |\n    {PROBE_DISTRUST_UNTRUSTED}\n")
+    assert report["status"] == "failed"
+    assert report["review"]["verdict"] == "request_changes"
+
+
+def test_unknown_reviewer_name_fails_safe_as_rejection(tmp_path,
+                                                       monkeypatch):
+    _register_reviewer(monkeypatch, "rev-a", REVIEW_APPROVED)
+    report, _worker = _consensus_run(
+        tmp_path,
+        "review:\n  enabled: true\n  reviewers: [rev-a, no-such-adapter]\n"
+        "  consensus: all\n")
+    assert report["status"] == "failed"
+    review = report["review"]
+    assert review["verdict"] == "request_changes"
+    per = {r["adapter"]: r["verdict"] for r in review["reviewers"]}
+    assert per["rev-a"] == "approve"
+    assert per["no-such-adapter"] == "request_changes"
+
+
+def test_reviewers_and_consensus_validate_in_contract(tmp_path):
+    ok = tmp_path / "ok.yaml"
+    ok.write_text("mission:\n  name: x\n  goal: y\n"
+                  "review:\n  enabled: true\n  reviewers: [pi, mock]\n"
+                  "  consensus: majority\n")
+    m = load_mission(ok)
+    assert m.review is not None
+    assert m.review.reviewers == ["pi", "mock"]
+    assert m.review.consensus == "majority"
+    default = tmp_path / "default.yaml"
+    default.write_text("mission:\n  name: x\n  goal: y\n"
+                       "review:\n  enabled: true\n")
+    m2 = load_mission(default)
+    assert m2.review is not None
+    assert m2.review.reviewers is None       # single-reviewer compat
+    assert m2.review.consensus == "all"
+    bad_list = tmp_path / "bad-list.yaml"
+    bad_list.write_text("mission:\n  name: x\n  goal: y\n"
+                        "review:\n  enabled: true\n  reviewers: solo\n")
+    with pytest.raises(MissionError):
+        load_mission(bad_list)
+    bad_policy = tmp_path / "bad-policy.yaml"
+    bad_policy.write_text("mission:\n  name: x\n  goal: y\n"
+                          "review:\n  enabled: true\n  consensus: two-thirds\n")
+    with pytest.raises(MissionError):
+        load_mission(bad_policy)

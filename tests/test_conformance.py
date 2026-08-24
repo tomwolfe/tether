@@ -40,9 +40,10 @@ def test_command_adapter_capabilities():
     assert cmd.supports_cancel is True
     assert cmd.supports_process_tree_kill is True
     assert cmd.one_shot is True
-    # honest negatives: no usage parsing, no streaming today
+    # honest negatives: no usage parsing; streaming (dogfood-32) is opt-in
+    # via stream_callback, so the capability is declared but inert by default.
     assert cmd.supports_usage is False
-    assert cmd.supports_streaming is False
+    assert cmd.supports_streaming is True
 
 
 def test_mock_adapter_capabilities_minimal_and_honest():
@@ -60,17 +61,17 @@ def test_experimental_presets_inherit_command_capabilities():
         assert preset.supports_process_tree_kill is True
         assert preset.one_shot is True
         assert preset.supports_usage is False
-        assert preset.supports_streaming is False
+        assert preset.supports_streaming is True  # opt-in, inherited
 
 
 def test_capability_flags_string():
     assert capability_flags(MockAdapter()) == "one-shot"
     cmd = CommandAdapter({"command": [sys.executable, "-c", "pass"]})
-    assert capability_flags(cmd) == "cancel,tree-kill,one-shot"
+    assert capability_flags(cmd) == "cancel,tree-kill,streaming,one-shot"
     result = runner.invoke(app, ["adapters", "list"])
     assert result.exit_code == 0
     assert "CAPABILITIES" in result.output
-    assert "cancel,tree-kill,one-shot" in result.output  # command row
+    assert "cancel,tree-kill,streaming,one-shot" in result.output  # command row
 
 
 # ---------------------------------------------------------------- harness

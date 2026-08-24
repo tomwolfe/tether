@@ -231,3 +231,170 @@ def test_cancel_without_active_command_is_noop(tmp_path):
     session = adapter.start_session(str(tmp_path), "s")
     adapter.cancel(session)  # nothing running: must not raise
     assert adapter.send("p", session).status == "completed"
+
+
+# ------------------------------------------- opt-in streaming (dogfood-32)
+
+
+def test_command_adapter_declares_streaming_capability():
+    from tether.adapters.base import AgentAdapter
+
+    assert CommandAdapter.supports_streaming is True
+    assert AgentAdapter.supports_streaming is False
+    # Streaming stays opt-in: no callback installed by default.
+    assert CommandAdapter({"command": ["true"]}).stream_callback is None
+
+
+def test_stream_callback_receives_chunks_incrementally(tmp_path):
+    stub = _stub(tmp_path, "streamy-agent", """\
+        import sys, time
+        print("chunk-one", flush=True)
+        time.sleep(5)
+        print("chunk-two", flush=True)
+        """)
+    adapter = CommandAdapter({"command": [sys.executable, stub]})
+    chunks: list[str] = []
+    adapter.stream_callback = chunks.append
+    session = adapter.start_session(str(tmp_path), "sess-stream")
+    result: dict = {}
+
+    def run():
+        result["state"] = adapter.send("p", session)
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    try:
+        # chunk-one must reach the callback WHILE send() is still blocked on
+        # the agent — proof of real-time delivery, not a post-hoc replay.
+        assert _wait_until(lambda: "chunk-one" in "".join(chunks)), \
+            "callback never received chunk-one during the run"
+        assert worker.is_alive(), "send() finished before the agent did"
+    finally:
+        worker.join(timeout=30)
+    state = result["state"]
+    assert state.status == "completed"
+    # Every chunk arrived via the callback...
+    joined = "".join(chunks)
+    assert "chunk-one" in joined and "chunk-two" in joined
+    # ...and the audit log still contains the FULL output (argv header plus
+    # everything the agent printed).
+    assert "$" in state.logs
+    assert "chunk-one" in state.logs and "chunk-two" in state.logs
+
+
+def test_streaming_timeout_still_kills_tree_and_keeps_partial_output(tmp_path):
+    heartbeat = tmp_path / "stream-heartbeat.log"
+    pid_file = tmp_path / "stream-grandchild.pid"
+    stub = _stub(tmp_path, "stream-tree-agent", """\
+        import subprocess, sys, time
+        print("partial-output-before-kill", flush=True)
+        hb_path, pid_path = sys.argv[1], sys.argv[2]
+        child = subprocess.Popen(
+            [sys.executable, "-c",
+             "import sys, time\\n"
+             "while True:\\n"
+             "    with open(sys.argv[1], 'a') as f:\\n"
+             "        f.write('tick\\\\n')\\n"
+             "    time.sleep(0.1)\\n",
+             hb_path],
+        )
+        with open(pid_path, "w") as f:
+            f.write(str(child.pid))
+        time.sleep(60)
+        """)
+    adapter = CommandAdapter({
+        "command": [sys.executable, stub, str(heartbeat), str(pid_file)],
+        "timeout_seconds": 1,
+    })
+    chunks: list[str] = []
+    adapter.stream_callback = chunks.append
+    session = adapter.start_session(str(tmp_path), "s")
+    state = adapter.send("p", session)
+    # Timeout semantics preserved: failed with a timeout error...
+    assert state.status == "failed"
+    assert "timed out" in (state.error or "")
+    # ...chunks streamed in real time before the kill...
+    assert "partial-output-before-kill" in "".join(chunks)
+    # ...full output still accumulated for audit...
+    assert "partial-output-before-kill" in state.logs
+    # ...and the whole process tree is dead afterwards.
+    assert _wait_until(lambda: heartbeat.exists()
+                       and heartbeat.stat().st_size > 0)
+    assert pid_file.exists()
+    assert _wait_until_quiet(heartbeat), (
+        "grandchild still alive after command timeout")
+
+
+# ------------------------------- inherited-pipe stragglers (dogfood-33)
+
+
+def test_grandchild_inherited_pipes_do_not_hang(tmp_path):
+    # The review-gate repro: the agent spawns a backgrounded grandchild that
+    # inherits stdout/stderr, prints its answer and exits 0. The grandchild
+    # keeps both pipe write-ends open for 30s, so naive unbounded reader
+    # joins block far past timeout_seconds; send() must return promptly with
+    # the captured output instead of hanging.
+    stub = _stub(tmp_path, "inherit-agent", """\
+        import subprocess, sys
+        subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        print("bye", flush=True)
+        """)
+    adapter = CommandAdapter({
+        "command": [sys.executable, stub],
+        "timeout_seconds": 5,
+    })
+    session = adapter.start_session(str(tmp_path), "s")
+    started = time.monotonic()
+    state = adapter.send("p", session)
+    elapsed = time.monotonic() - started
+    assert state.status == "completed", state.error
+    assert "bye" in state.logs
+    # Prompt return: well under 2x timeout even on slow machines.
+    assert elapsed < 10, (
+        f"send() hung past 2x timeout ({elapsed:.1f}s) on inherited pipes")
+
+
+def test_timeout_with_inherited_pipes_returns_promptly_and_kills_tree(tmp_path):
+    # Same shape but the agent itself outlives timeout_seconds: the tree
+    # (child + inheriting grandchild) must be terminated, send() must fail
+    # with the timeout error and return promptly rather than block on the
+    # pipes the dying processes held.
+    heartbeat = tmp_path / "inherit-heartbeat.log"
+    pid_file = tmp_path / "inherit-grandchild.pid"
+    stub = _stub(tmp_path, "inherit-tree-agent", """\
+        import subprocess, sys, time
+        print("before-kill", flush=True)
+        hb_path, pid_path = sys.argv[1], sys.argv[2]
+        child = subprocess.Popen(
+            [sys.executable, "-c",
+             "import sys, time\\n"
+             "while True:\\n"
+             "    with open(sys.argv[1], 'a') as f:\\n"
+             "        f.write('tick\\\\n')\\n"
+             "    time.sleep(0.1)\\n",
+             hb_path],
+        )
+        with open(pid_path, "w") as f:
+            f.write(str(child.pid))
+        time.sleep(60)
+        """)
+    adapter = CommandAdapter({
+        "command": [sys.executable, stub, str(heartbeat), str(pid_file)],
+        "timeout_seconds": 1,
+    })
+    session = adapter.start_session(str(tmp_path), "s")
+    started = time.monotonic()
+    state = adapter.send("p", session)
+    elapsed = time.monotonic() - started
+    assert state.status == "failed"
+    assert "timed out" in (state.error or "")
+    assert "before-kill" in state.logs
+    assert pid_file.exists()  # grandchild was actually spawned
+    assert _wait_until(lambda: heartbeat.exists()
+                       and heartbeat.stat().st_size > 0)
+    # whole tree dead: the grandchild heartbeat stops growing...
+    assert _wait_until_quiet(heartbeat), (
+        "grandchild still alive after command timeout")
+    # ...and send() returned promptly instead of blocking on held pipes.
+    assert elapsed < 20, (
+        f"send() took {elapsed:.1f}s to return after timeout kill")

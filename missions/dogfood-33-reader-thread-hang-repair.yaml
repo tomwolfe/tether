@@ -1,0 +1,113 @@
+# Mission: dogfood-33-reader-thread-hang-repair
+# Finding: during dogfood-32, the adversarial review gate REJECTED the
+# streaming implementation with a proven repro: when the agent process
+# spawns a backgrounded descendant that inherits stdout/stderr (classic
+# dev-server/daemon pattern), the new reader threads in
+# CommandAdapter.send() never see EOF and send() blocks far beyond the
+# configured timeout. Old communicate(timeout=N) raised TimeoutExpired
+# and killed the tree; the refactor regressed this.
+mission:
+  name: dogfood-33-reader-thread-hang-repair
+  goal: |
+    Fix the reader-thread hang in src/tether/adapters/command.py WITHOUT
+    giving up real-time streaming or full-log capture:
+
+    BUG (proven by review-gate repro):
+    A stub agent does `subprocess.Popen([python, '-c', 'sleep 30'])` then
+    prints 'bye' and exits 0. The inherited-write-end keeps each
+    stdout/stderr pipe open, so reader threads block on read() forever
+    and the thread-join/wait logic in send() hangs past
+    timeout_seconds (repro blocked >12s with timeout_seconds=2).
+
+    REQUIRED FIX:
+    - Bounded reads/joins: after process exit OR timeout deadline, do NOT
+      block indefinitely on pipes still held by grandchildren.
+      Acceptable approaches include:
+        * reader threads that wait on the pipe with a deadline
+          (e.g., select/poll on POSIX with computed remaining time), or
+        * join readers with a small grace timeout after process/timeout
+          completion and proceed without them.
+    - On timeout: fire SIGTERM->SIGKILL process-GROUP kill exactly as
+      before so the whole tree dies; if grandchildren were killed, pipes
+      close naturally.
+    - If pipes are still open after the grace period (surviving
+      descendants), send() must return promptly with whatever was
+      captured rather than hang. Do not deadlock; do not spin.
+    - Streaming callback semantics preserved: chunks delivered in
+      real time while data flows; logs contain everything captured up
+      to return; usage_patterns extraction on complete output unchanged.
+    - AgentAdapter.send() signature untouched;
+      supports_streaming stays opt-in; shell=False everywhere.
+    - UTF-8 FIX (from prior review): reader threads currently decode each
+      raw chunk independently, which can mangle multibyte characters
+      straddling a chunk boundary. Buffer bytes and use an incremental
+      decoder (codecs.getincrementaldecoder("utf-8")(errors="replace"))
+      so chunk boundaries never split characters.
+
+    TESTS TO ADD (tests/test_adapter_harness.py or new file):
+    - The exact review repro: child spawns backgrounded grandchild
+      inheriting stdio, prints, exits 0 -> send() returns 'completed'
+      promptly (< ~2x timeout), logs contain the output, no hang.
+    - Same shape but hitting timeout_seconds -> tree (child+grandchild)
+      actually terminated, status 'failed', prompt return.
+    - Existing streaming tests keep passing unchanged.
+
+context_files:
+  - src/tether/adapters/command.py
+  - src/tether/adapters/base.py
+  - tests/test_adapter_harness.py
+  - docs/ADAPTERS.md
+
+constraints:
+  - DO NOT change AgentAdapter.send() signature (hard rule)
+  - Streaming remains opt-in via stream_callback
+  - subprocess stays shell=False everywhere
+  - No new third-party dependencies
+  - All existing tests must pass unchanged
+
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+    - ".venv/bin/tether adapters conformance mock"
+  artifacts:
+    - "docs/ADAPTERS.md"
+  assertions:
+    - path: src/tether/adapters/command.py
+      contains: stream_callback
+  probes:
+    - command: "python -c \"import sys,time; from tether.adapters.command import CommandAdapter; stub='import subprocess,sys\\nsubprocess.Popen([sys.executable,\\'-c\\',\\'import time;time.sleep(30)\\'])\\nprint(\\'bye\\',flush=True)\\n'; a=CommandAdapter({'command':[sys.executable,'-c',stub],'timeout_seconds':5}); t=time.time(); s=a.send('p',a.start_session('/tmp','probe')); dt=time.time()-t; assert s.status=='completed' and 'bye' in s.logs and dt<10, f'status={s.status} dt={dt}'; print('hang-fix - ok')\""
+      contains: "hang-fix - ok"
+
+recovery:
+  strategy: reset_to_checkpoint
+  max_attempts: 5
+
+review:
+  enabled: true
+  required: true
+  context: full
+  adapter: opencode
+
+budget:
+  max_sends: 10
+  max_wall_seconds: 5400
+
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 1800
+
+allowed_paths:
+  - src/**
+  - tests/**
+  - docs/**
+  - README.md
+  - missions/dogfood-33-reader-thread-hang-repair.yaml
+  - missions/dogfood-32-streaming-and-consensus.yaml
+
+forbidden_paths:
+  - .git/**
+  - .tether/**

@@ -39,13 +39,19 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from tether.adapters.base import AgentAdapter, SessionInfo
 from tether.models import AgentState
 
 # Seconds between graceful termination (SIGTERM / taskkill) and force kill.
 TERMINATE_GRACE_SECONDS = 3.0
+# Extra window granted to reader threads to drain residual buffered output
+# after the direct child has exited (success / cancel paths). Normally the
+# exiting child closes the pipes and readers hit EOF immediately, but a
+# descendant that inherited the write-ends can keep them open indefinitely;
+# joins are bounded by this so send() cannot hang on such stragglers.
+READER_JOIN_GRACE_SECONDS = 2.0
 
 
 def _spawn_kwargs() -> Dict[str, Any]:
@@ -71,11 +77,14 @@ class CommandAdapter(AgentAdapter):
          "usage_patterns"}
     )
     # Capabilities (dogfood-09): cancel() terminates the whole process tree;
-    # each send is a full one-shot prompt→result round trip; usage is not
-    # parsed from output and nothing streams. The safe defaults for
-    # supports_usage/supports_streaming stay inherited.
+    # each send is a full one-shot prompt→result round trip; usage is parsed
+    # from output via usage_patterns. Streaming (dogfood-32) is opt-in: the
+    # adapter can deliver stdout/stderr chunks in real time, but only when a
+    # stream_callback is installed; without one, sends behave exactly as
+    # before.
     supports_cancel = True
     supports_process_tree_kill = True
+    supports_streaming = True
 
     def __init__(self, settings: Optional[Dict[str, Any]] = None,
                  default_timeout: int = 1800) -> None:
@@ -85,6 +94,10 @@ class CommandAdapter(AgentAdapter):
         # terminate work that is currently in flight.
         self._active_procs: Dict[str, subprocess.Popen] = {}
         self._proc_lock = threading.Lock()
+        # Opt-in streaming hook (dogfood-32): when set, each stdout/stderr
+        # chunk is passed to it as it arrives. Never set by configuration;
+        # callers install it programmatically per adapter instance.
+        self.stream_callback: Optional[Callable[[str], None]] = None
 
     @property
     def command(self) -> list[str]:
@@ -238,7 +251,7 @@ class CommandAdapter(AgentAdapter):
                 stdin=subprocess.PIPE if via_stdin else None,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
+                text=False,
                 cwd=cwd,
                 env=env,
                 shell=False,
@@ -254,25 +267,102 @@ class CommandAdapter(AgentAdapter):
         timed_out = False
         interrupted = False
         started_at = time.monotonic()
+
+        # Streaming readers (dogfood-32): background threads drain stdout and
+        # stderr chunk-by-chunk so a configured stream_callback sees output in
+        # real time, while the full text still accumulates here for audit.
+        # Reads go through the streams' raw layer (one read syscall per chunk,
+        # bypassing the buffer) so delivery stays immediate even for partial
+        # lines. The full-output guarantee matches communicate(): logs contain
+        # everything both streams emitted.
+        stdout_chunks: list[str] = []
+        stderr_chunks: list[str] = []
+        callback = self.stream_callback
+
+        def _pump(stream: Any, sink: list[str]) -> None:
+            if stream is None:
+                return
+            source = getattr(stream, "raw", None) or stream
+            try:
+                while True:
+                    data = source.read(8192)
+                    if not data:
+                        break
+                    text = data.decode("utf-8", errors="replace")
+                    sink.append(text)
+                    if callback is not None:
+                        # Streaming is best-effort observability: a
+                        # misbehaving callback never breaks the send itself.
+                        try:
+                            callback(text)
+                        except Exception:
+                            pass
+            except OSError:
+                pass
+            finally:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+
+        def _feed_stdin() -> None:
+            # The prompt may exceed the pipe buffer; writing it off-thread
+            # keeps the wait below deadlock-free regardless of child behavior.
+            stdin = proc.stdin
+            if stdin is None:
+                return
+            try:
+                stdin.write((stdin_data or "").encode("utf-8"))
+                stdin.flush()
+            except (OSError, ValueError):
+                pass
+            finally:
+                try:
+                    stdin.close()
+                except OSError:
+                    pass
+
+        stdin_thread: Optional[threading.Thread] = None
+        if via_stdin and proc.stdin is not None:
+            stdin_thread = threading.Thread(target=_feed_stdin, daemon=True)
+            stdin_thread.start()
+        readers = [
+            threading.Thread(target=_pump, args=(proc.stdout, stdout_chunks),
+                             daemon=True),
+            threading.Thread(target=_pump, args=(proc.stderr, stderr_chunks),
+                             daemon=True),
+        ]
+        for thread in readers:
+            thread.start()
         try:
             try:
-                stdout, stderr = proc.communicate(input=stdin_data, timeout=timeout)
+                proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 timed_out = True
-                # Terminate the whole tree, then collect whatever output the
-                # child produced before it died. Bounded so an escaped
+                # Terminate the whole tree; closing the pipes then lets the
+                # reader threads hit EOF with whatever output the child
+                # produced before it died. Bounded join so an escaped
                 # descendant holding the pipes cannot hang us forever.
                 self._terminate_tree(proc)
-                try:
-                    stdout, stderr = proc.communicate(
-                        timeout=2 * TERMINATE_GRACE_SECONDS
-                    )
-                except subprocess.TimeoutExpired:
-                    stdout, stderr = "", ""
+                deadline = time.monotonic() + 2 * TERMINATE_GRACE_SECONDS + 1.0
+                for thread in readers:
+                    thread.join(timeout=max(0.0, deadline - time.monotonic()))
+            else:
+                # Bounded drain (dogfood-33): a descendant that inherited the
+                # pipe write-ends can keep them open long after the direct
+                # child exited; never block send() on such stragglers. In the
+                # normal case readers hit EOF right away and finish well
+                # within the grace window.
+                deadline = time.monotonic() + READER_JOIN_GRACE_SECONDS
+                for thread in readers:
+                    thread.join(timeout=max(0.0, deadline - time.monotonic()))
+            if stdin_thread is not None:
+                stdin_thread.join(timeout=2 * TERMINATE_GRACE_SECONDS)
         except BaseException:
             # Keep the handle registered (do not unregister below) so a later
             # cancel(session) can still reap an orphaned process, e.g. after
-            # Ctrl-C interrupts this send().
+            # Ctrl-C interrupts this send(). Reader threads are daemons; they
+            # end when the pipes close.
             interrupted = True
             raise
         finally:
@@ -281,13 +371,10 @@ class CommandAdapter(AgentAdapter):
                     if self._active_procs.get(session.session_id) is proc:
                         del self._active_procs[session.session_id]
 
-        def _text(data: object) -> str:
-            if isinstance(data, bytes):
-                return data.decode(errors="replace")
-            return str(data)
-
+        stdout = "".join(stdout_chunks)
+        stderr = "".join(stderr_chunks)
         logs = (f"$ {' '.join(shlex.quote(a) for a in argv)}\n"
-                f"{_text(stdout)}{_text(stderr)}")
+                f"{stdout}{stderr}")
         # Basic telemetry surfaced into report.json by the orchestrator.
         usage: Dict[str, Any] = {
             "elapsed_seconds": time.monotonic() - started_at,
@@ -295,7 +382,7 @@ class CommandAdapter(AgentAdapter):
         }
         # Config-driven usage/cost extraction over the raw combined output
         # (completed AND failed sends alike; timeouts included).
-        self._apply_usage_patterns(f"{_text(stdout)}{_text(stderr)}", usage)
+        self._apply_usage_patterns(f"{stdout}{stderr}", usage)
         if timed_out:
             return AgentState(
                 status="failed",

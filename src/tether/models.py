@@ -106,6 +106,15 @@ class ReviewSpec(BaseModel):
     # Any other outcome forces request_changes. Default None keeps existing
     # review behavior unchanged.
     credibility_probe: Optional[str] = None
+    # Multi-reviewer consensus (dogfood-32): optional list of reviewer adapter
+    # names. When set, each is resolved via the registry at run time and
+    # consulted in order (credibility probe applied per reviewer); when None,
+    # a mission with only `adapter` set keeps today's single-reviewer path.
+    reviewers: Optional[List[str]] = None
+    # Aggregate verdict policy across reviewers: "all" requires every
+    # reviewer to approve; "majority" requires strictly more approvals than
+    # rejections (ties fail safe). Ignored for a single effective reviewer.
+    consensus: Literal["all", "majority"] = "all"
 
 
 class BudgetSpec(BaseModel):
