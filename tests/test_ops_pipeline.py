@@ -4,7 +4,9 @@ Integration tests over a seeded ``.tether/sessions/`` tree whose sessions are
 built with the real :class:`AuditTrail` helpers (auto-chained events, real
 verification attempt files) and report payloads modeled on the dogfood-14..30
 live runs: a reviewed success with nonlinear recovery, an aborted oscillation
-failure, and a budget-breach abort.
+failure, and a budget-breach abort. Also covers review-gate rejection
+accounting (request_changes causing a failure) and scrubbing the oscillation
+session end to end with its chain re-verified afterwards.
 """
 import hashlib
 import json
@@ -23,8 +25,11 @@ AUDIT_DIR = ".tether/sessions"
 SID_SUCCESS = "aaa11111aaaa"
 SID_OSCILLATION = "bbb22222bbbb"
 SID_BUDGET = "ccc33333cccc"
+SID_APPROVED = "ddd44444dddd"
+SID_REJECTED = "eee55555eeee"
 FAIL_CMD = "pytest -q tests/test_feature.py"
 SECRET = "sk-live-0123456789abcdef0123"
+OSC_SECRET = "ghp_0123456789abcdefghijklmnopqrst"
 PROMPT_BODY = f'roll out config with api_key = "{SECRET}" tonight\n'
 
 
@@ -245,6 +250,73 @@ def test_stats_over_realistic_dogfood_sessions(tmp_path):
     assert "Usage: 3 session(s) reporting;" in out
 
 
+def test_stats_review_gate_rejection_accounting(tmp_path):
+    """A request_changes verdict on a failed session is tallied as a
+    rejection that caused the failure (dogfood-18 telemetry)."""
+    approved = _new_session(tmp_path, stamp="20260818-090000",
+                            sid=SID_APPROVED, mission="dogfood-reviewed")
+    approved.save_verification(1, [
+        VerificationResult(command=FAIL_CMD, exit_code=0, passed=True)])
+    approved.write_report({
+        "session_id": SID_APPROVED,
+        "mission_name": "dogfood-reviewed",
+        "adapter": "mock",
+        "status": "success",
+        "verification_results": [
+            {"command": FAIL_CMD, "exit_code": 0, "passed": True}],
+        "recovery_attempts": [],
+        "changed_files": [],
+        "review": {"enabled": True, "adapter": "mock",
+                   "verdict": "approve", "reason": "ship it"},
+        "audit_dir": str(approved.dir),
+    })
+    rejected = _new_session(tmp_path, stamp="20260819-090000",
+                            sid=SID_REJECTED, mission="dogfood-reviewed")
+    rejected.save_verification(1, [
+        VerificationResult(command=FAIL_CMD, exit_code=1,
+                           stderr="1 failed", passed=False)])
+    rejected.write_report({
+        "session_id": SID_REJECTED,
+        "mission_name": "dogfood-reviewed",
+        "adapter": "mock",
+        "status": "failed",
+        "verification_results": [
+            {"command": FAIL_CMD, "exit_code": 1, "passed": False}],
+        "recovery_attempts": [],
+        "changed_files": [],
+        "review": {"enabled": True, "adapter": "mock",
+                   "verdict": "request_changes",
+                   "reason": "the change was never finished"},
+        "audit_dir": str(rejected.dir),
+    })
+
+    rj = runner.invoke(app, ["sessions", "stats", "--json",
+                             "--project-dir", str(tmp_path)])
+    assert rj.exit_code == 0, rj.output
+    data = json.loads(rj.output)
+
+    assert data["total_sessions"] == 2
+    assert data["statuses"] == {
+        "cancelled": {"count": 0, "pct": 0.0},
+        "failed": {"count": 1, "pct": 50.0},
+        "success": {"count": 1, "pct": 50.0},
+    }
+    assert data["review_gate"] == {
+        "sessions_reviewed": 2,
+        "verdicts": {"approve": 1, "request_changes": 1},
+        "rejections_caused_failures": 1,
+    }
+    assert data["top_failing_commands"] == [
+        {"command": FAIL_CMD, "count": 1}]
+    assert set(data["missions"]) == {"dogfood-reviewed"}
+
+    rh = runner.invoke(app, ["sessions", "stats",
+                             "--project-dir", str(tmp_path)])
+    assert rh.exit_code == 0, rh.output
+    assert "Review gate: 2 reviewed session(s), approve 1, " \
+           "request_changes 1, rejections causing failures 1" in rh.output
+
+
 # ------------------------------------------------- scrub + event chain
 
 
@@ -312,6 +384,77 @@ def test_scrub_redacts_and_extends_audit_chain_end_to_end(tmp_path):
                              "--project-dir", str(tmp_path)])
     assert rj.exit_code == 0, rj.output
     assert json.loads(rj.output)["total_sessions"] == 3
+
+
+def test_scrub_oscillation_failure_session_end_to_end(tmp_path):
+    """Scrub + chain integrity on the aborted oscillation session.
+
+    Realistic leak: a failing retry attempt dumped an exported CI token
+    into its response log. The scrub must redact it, extend only that
+    session's event chain, and leave every other session untouched.
+    """
+    success, osc, _budget, _outside = _seed_project(tmp_path)
+    leak_path = osc / "responses" / "004-execute-retry.json"
+    leak_path.write_text(json.dumps({
+        "status": "failed",
+        "logs": f"attempt 4 retry dump: GH_TOKEN={OSC_SECRET} exported"},
+        indent=2), encoding="utf-8")
+    events_path = osc / "events.jsonl"
+
+    def chain_ok():
+        rv = runner.invoke(app, ["logs", SID_OSCILLATION, "--verify",
+                                 "--project-dir", str(tmp_path)])
+        return rv.exit_code == 0 and "OK" in rv.output, rv.output
+
+    ok, out = chain_ok()
+    assert ok, out
+    events_before = [json.loads(ln) for ln in
+                     events_path.read_text(encoding="utf-8").splitlines()]
+    success_before = _snapshot(success)
+
+    # Dry run plans the rewrite without touching anything.
+    r = runner.invoke(app, ["sessions", "scrub", SID_OSCILLATION,
+                            "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    assert "Would scrub: " in r.output and "(1 match(es))" in r.output
+    assert "Dry run: nothing modified" in r.output
+    assert [json.loads(ln)["kind"] for ln in
+            events_path.read_text().splitlines()] == [
+        e["kind"] for e in events_before]
+
+    # --confirm rewrites exactly the leaked response file.
+    r = runner.invoke(app, ["sessions", "scrub", SID_OSCILLATION, "--confirm",
+                            "--project-dir", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+    assert "Scrubbed 1 file(s)" in r.output
+    digest = hashlib.sha256(OSC_SECRET.encode()).hexdigest()
+    marker = f"[REDACTED sha256={digest} len={len(OSC_SECRET)}]"
+    text = leak_path.read_text()
+    assert OSC_SECRET not in text and marker in text
+
+    # Sibling sessions keep their bytes; the scrub is bounded per session.
+    assert _snapshot(success) == success_before
+
+    # One chained scrub event extends the oscillation session's log...
+    lines = events_path.read_text(encoding="utf-8").splitlines()
+    events_after = [json.loads(ln) for ln in lines]
+    scrubs = [e for e in events_after if e["kind"] == "scrub"]
+    assert len(scrubs) == 1
+    assert scrubs[0]["files"] == 1 and scrubs[0]["ts"]
+    assert scrubs[0]["prev"] == event_hash(events_before[-1])
+    assert len(events_after) == len(events_before) + 1
+
+    # ...and the tamper-evident chain still verifies afterwards.
+    ok, out = chain_ok()
+    assert ok, out
+
+    # report.json was not scrubbed, so stats keep parsing all sessions.
+    rj = runner.invoke(app, ["sessions", "stats", "--json",
+                             "--project-dir", str(tmp_path)])
+    assert rj.exit_code == 0, rj.output
+    data = json.loads(rj.output)
+    assert data["total_sessions"] == 3
+    assert data["statuses"]["failed"]["count"] == 2
 
 
 # ---------------------------------------------------------------- clean
