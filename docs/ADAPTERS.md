@@ -227,6 +227,14 @@ progress without changing the adapter contract. Guarantees:
 - Callback exceptions are swallowed — streaming is best-effort observability,
   never a way to fail a send.
 
+Current limitations (accepted-by-design): when the agent leaves a surviving
+descendant holding its stdout/stderr, `send()` still returns promptly, but
+the daemon reader threads remain blocked on the inherited pipes and the
+fds stay open until that descendant exits. This is bounded in practice
+because the readers are daemon threads — they can never keep Tether itself
+alive — but captured logs for that send will not be complete until the
+straggler exits or is killed.
+
 ## OpencodeAdapter / PiAdapter — thin CommandAdapter presets
 
 Thin presets over CommandAdapter. The command shapes were checked against the

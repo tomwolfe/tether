@@ -39,6 +39,10 @@ TRANSIENT_SIGNATURES: Tuple[str, ...] = (
     "rate limit",
     "overloaded",
     "connection reset",
+    # Real provider outage messages observed while Tether dogfooded itself
+    # (dogfood-34); matched case-insensitively like the signatures above.
+    "endpoint is unavailable",
+    "upstream request failed",
 )
 
 # Gateway status codes 502/503/504 with word boundaries so e.g. "15023"

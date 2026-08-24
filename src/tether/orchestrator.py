@@ -837,9 +837,12 @@ class Orchestrator:
     ) -> tuple[Dict[str, Any], Dict[str, Any]]:
         """One reviewer pass plus its credibility probe; fail-safe verdict.
 
-        Opens a fresh ``<label>`` session on ``adapter``, sends ``prompt``,
-        applies the configured credibility probe (dogfood-24) to the raw
-        response when set, and parses the verdict fail-safe. Returns
+        Opens a fresh ``<label>`` session on ``adapter``, sends ``prompt``
+        with transient-failure retry (dogfood-34: same bounded backoff as
+        every other agent send — exhausted retries fall through to this
+        method's existing fail-safe request_changes semantics), applies
+        the configured credibility probe (dogfood-24) to the raw response
+        when set, and parses the verdict fail-safe. Returns
         ``(outcome, state_json)`` where outcome carries ``verdict`` and
         ``reason``; any interaction failure counts as request_changes.
         """
@@ -847,7 +850,13 @@ class Orchestrator:
         try:
             session = adapter.start_session(
                 str(self.project_dir), f"{self.session_id}-{label}")
-            state = adapter.send(prompt, session)
+            retries = self.config.retries
+            state, _physical = send_with_transient_retry(
+                adapter.send, prompt, session,
+                step=label, audit=audit,
+                max_transient_retries=retries.max_transient_retries,
+                transient_backoff_seconds=retries.transient_backoff_seconds,
+            )
             state_json = state.model_dump()
             probe_cmd = getattr(review_spec, "credibility_probe", None)
             if probe_cmd:

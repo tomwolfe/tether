@@ -68,6 +68,28 @@ def test_near_miss_numbers_never_match_status_codes(text):
     assert not is_transient_failure(AgentState(status="failed", error=text))
 
 
+@pytest.mark.parametrize("text", [
+    "endpoint is unavailable",
+    "Error: Endpoint Is Unavailable, retry later",
+    "ENDPOINT IS UNAVAILABLE",
+    "upstream request failed",
+    "Upstream Request Failed with status 500",
+])
+def test_dogfood34_provider_signatures_are_transient(text):
+    """dogfood-34: real provider outage messages classify as TRANSIENT,
+    including mixed-case variants."""
+    assert is_transient_failure(AgentState(status="failed", error=text))
+
+
+def test_dogfood34_new_signatures_respect_completed_and_logs_contract():
+    """The new dogfood-34 signatures keep the classifier contract: only
+    non-completed states' adapter-authored error is scanned."""
+    assert not is_transient_failure(AgentState(
+        status="completed", logs="endpoint is unavailable"))
+    assert not is_transient_failure(
+        AgentState(status="failed", logs="upstream request failed"))
+
+
 def test_network_timeout_forms_in_error_are_transient():
     assert is_transient_failure(AgentState(
         status="unavailable", error="connection ETIMEDOUT"))
@@ -401,6 +423,69 @@ def test_repair_transient_retry_recovers_within_one_attempt(
                     for e in _events(tmp_path, report)
                     if e["kind"] == "transient_retry"]
     assert retry_events == [("repair-1", 1)]
+
+
+# --------------------------------------- dogfood-34 gap 2: review-gate send
+
+
+REVIEW_APPROVED = "REVIEW: APPROVE\nthe change accomplishes the goal"
+
+
+def test_review_send_transient_retries_recover(tmp_path, monkeypatch):
+    """dogfood-34: the review-gate send retries TRANSIENT failures like
+    every other agent send: two flaky attempts then an approval completes
+    the review, with one transient_retry audit event per retry."""
+    monkeypatch.setattr(reliability, "sleep", lambda _s: None)
+    adapter = _ScriptedAdapter([
+        {},                          # planning
+        {},                          # execution
+        FLAKY,                       # review attempt 1: transient...
+        FLAKY,                       # ...attempt 2: transient again...
+        {"logs": REVIEW_APPROVED},   # ...attempt 3 approves
+    ])
+    report = _run(tmp_path, adapter,
+                  mission_extra="review:\n  enabled: true\n")
+    assert report["status"] == "success"
+    assert report["review"]["verdict"] == "approve"
+    assert adapter.sent == 5                 # 3 physical review sends
+    retry_events = [(e["step"], e["attempt"])
+                    for e in _events(tmp_path, report)
+                    if e["kind"] == "transient_retry"]
+    assert retry_events == [("review", 1), ("review", 2)]
+
+
+def test_review_genuine_failure_still_rejects_without_retries(tmp_path):
+    """Non-transient review failure keeps byte-for-byte prior semantics:
+    immediate request_changes, zero retries, zero retry events."""
+    adapter = _ScriptedAdapter([
+        {},
+        {},
+        {"status": "failed", "logs": "no verdict here",
+         "error": "exit code 1"},
+    ])
+    report = _run(tmp_path, adapter,
+                  mission_extra="review:\n  enabled: true\n")
+    assert report["status"] == "failed"
+    assert report["review"]["verdict"] == "request_changes"
+    assert adapter.sent == 3                 # plan + execute + one review send
+    assert not [e for e in _events(tmp_path, report)
+                if e["kind"] == "transient_retry"]
+
+
+def test_review_transient_exhaustion_keeps_fail_safe_semantics(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(reliability, "sleep", lambda _s: None)
+    adapter = _ScriptedAdapter([{}, {}] + [dict(FLAKY) for _ in range(3)])
+    report = _run(tmp_path, adapter,
+                  mission_extra="review:\n  enabled: true\n")
+    # Default retry budget exhausted (2 retries => 3 physical sends); the
+    # gate falls into its existing fail-safe request_changes path.
+    assert report["status"] == "failed"
+    assert adapter.sent == 5
+    assert report["review"]["verdict"] == "request_changes"
+    assert [(e["step"], e["attempt"]) for e in _events(tmp_path, report)
+            if e["kind"] == "transient_retry"] \
+        == [("review", 1), ("review", 2)]
 
 
 def test_dry_run_still_makes_no_adapter_calls(tmp_path):
