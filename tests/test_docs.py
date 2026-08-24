@@ -246,3 +246,82 @@ def test_probe_doc_states_marker_self_match_pitfall():
     assert "probe-marker self-match" in readme
     assert "echoes the entire `-c` source line" in readme
     assert "assemble them from string fragments" in readme
+
+
+# ------------------- documentation truth (dogfood-29 audit)
+
+
+def test_strict_mission_key_lists_in_docs_match_mission_error(tmp_path):
+    """README.md and docs/ARCHITECTURE.md both quote the dogfood-25
+    strict-mission-block hint as two key lists; those lists must equal the
+    keys in the actual MissionError message, so the docs cannot drift."""
+    import re
+
+    import pytest
+
+    from tether.mission import MissionError, load_mission
+    bad = tmp_path / "misnested.yaml"
+    bad.write_text("mission:\n  name: x\n  goal: y\n  verification: {}\n",
+                   encoding="utf-8")
+    with pytest.raises(MissionError) as excinfo:
+        load_mission(bad)
+    message = str(excinfo.value)
+
+    pattern = re.compile(
+        r"contract-level blocks \(([^)]*)\) and free-form content \(([^)]*)\)")
+    documented: set[str] = set()
+    for name in ("README.md", "docs/ARCHITECTURE.md"):
+        text = (REPO_ROOT / name).read_text(encoding="utf-8")
+        m = pattern.search(text)
+        assert m, f"strict-mission key-list sentence missing from {name}"
+        for group in m.groups():
+            documented.update(re.findall(r"`([A-Za-z_]+)`", group))
+    assert documented == {
+        "verification", "recovery", "review", "budget", "adapter",
+        "adapters", "allowed_paths", "forbidden_paths",
+        "tasks", "context", "constraints", "context_files",
+    }
+    for key in sorted(documented):
+        assert f"'{key}'" in message, key
+
+
+def test_allow_dirty_is_config_cli_only_as_documented():
+    """docs/ARCHITECTURE.md scopes the dirty-tree abort's allow_dirty to
+    config/CLI precedence: the mission contract has no such key."""
+    from tether.models import MissionContract, TetherConfig
+    assert "allow_dirty" in TetherConfig.model_fields
+    assert "allow_dirty" not in MissionContract.model_fields
+    arch = (REPO_ROOT / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
+    step = next(line for line in arch.splitlines()
+                if "aborts the mission before any adapter call" in line)
+    assert "(config/CLI precedence applies" in step
+    assert "mission/config/CLI" not in step
+
+
+def test_recovery_strategy_is_mission_only_as_documented(tmp_path):
+    """docs/ARCHITECTURE.md: recovery.strategy is mission-only -- project
+    config has no such key (unknown top-level config keys are rejected)."""
+    import pytest
+
+    from tether.config import resolve_config
+    from tether.models import RecoverySpec, TetherConfig
+    assert "recovery" not in TetherConfig.model_fields
+    assert RecoverySpec().strategy == "cumulative"
+    (tmp_path / "tether.yaml").write_text("recovery:\n  strategy: cumulative\n",
+                                          encoding="utf-8")
+    with pytest.raises(ValueError, match="Unknown config keys"):
+        resolve_config(tmp_path)
+
+
+def test_security_doc_non_git_restore_bullet_matches_implementation():
+    """The SECURITY.md rollback-limits bullet must describe what
+    restore_from_backup actually does: post-backup files are kept and
+    reported (tests/test_safety.py pins the behavior), never lost."""
+    security = (REPO_ROOT / "docs" / "SECURITY.md").read_text(encoding="utf-8")
+    limits = security.split("## Rollback limits", 1)[1].split("\n## ", 1)[0]
+    bullet_start = limits.index("- Non-git restores")
+    bullet = limits[bullet_start:limits.index("\n-", bullet_start + 1)]
+    assert "sha256" in bullet
+    assert "created *after* the backup are kept" in bullet
+    assert "are lost" not in bullet
+    assert "refuses restore" in bullet

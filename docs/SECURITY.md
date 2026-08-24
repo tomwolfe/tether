@@ -98,10 +98,11 @@ and still executes with your privileges.
   `--clean`) removes session-attributable untracked files. Pre-existing
   untracked user files are preserved — which means agent-created files that
   collide with pre-existing names may not be fully reverted.
-- Non-git restores replace the tree from a tar backup verified by sha256
-  sidecar. Files created *after* the backup but before detection are lost only
-  if restore succeeds; a failed checksum refuses restore rather than restoring
-  a truncated archive.
+- Non-git restores extract the tree's backed-up files from a tar backup
+  verified by sha256 sidecar; files created *after* the backup are kept and
+  reported for manual cleanup, so only their backed-up counterparts are
+  reverted. A failed checksum refuses restore rather than restoring a
+  truncated archive.
 - Auto-rollback is opt-in, conservative, and scoped to reported changed files.
 - Mid-run recovery resets (`recovery.strategy: reset_to_checkpoint`, dogfood-24)
   reuse exactly this machinery between repair rounds, with the same limits:
