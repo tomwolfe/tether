@@ -1,0 +1,81 @@
+# Mission: dogfood-30-audit-hardening
+# Finding: the operational-intelligence pipeline (stats, scrub,
+# verify-chain, clean) has only unit-level coverage; no integration test
+# exercises the whole pipeline over a realistic multi-session fixture
+# including a failed oscillation session and a reviewed success.
+mission:
+  name: dogfood-30-audit-hardening
+  goal: |
+    Prove Tether's operational intelligence pipeline is reliable on
+    realistic session data by covering it with integration tests that
+    model real sessions (a successful reviewed mission, an aborted
+    oscillation failure) end to end.
+
+tasks:
+  - |
+    INTEGRATION TESTS:
+    Add tests to tests/test_scrub.py or a new tests/test_ops_pipeline.py
+    that build fixture sessions (events.jsonl with chained hashes,
+    report.json with review verdicts / recovery_attempts /
+    budget_exceeded fields) in a temp .tether/sessions layout, then:
+      (a) `sessions stats --json` output includes correct status counts,
+          review_gate verdicts, per-mission baseline entries, and
+          budget_exceeded accounting;
+      (b) `sessions scrub` on a session containing secret-like material
+          redacts it AND leaves the event chain verifiable afterwards;
+      (c) `logs <id> --verify` reports an intact chain before scrub and
+          still-intact (or explicitly re-sealed) after scrub;
+      (d) `sessions clean --older-than` dry-run deletes nothing and
+          --confirm removes exactly the over-age directories.
+    Use the public CLI functions where importable; subprocess only if
+    necessary. Model fixtures on the real dogfood-27..29 session
+    layouts (see docs/ARCHITECTURE.md audit trail sections).
+
+constraints:
+  - tests only plus minimal helpers; no src/tether changes unless a test
+    exposes a genuine bug (then fix minimally and note it)
+  - do not weaken existing tests
+
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+  artifacts:
+    - "tests/"
+  assertions:
+    - path: tests/test_scrub.py
+      contains: stats
+  probes:
+    - command: "python -m pytest -q tests/test_scrub.py"
+      contains: "passed"
+
+recovery:
+  max_attempts: 4
+
+review:
+  enabled: true
+  required: true
+  context: full
+  adapter: opencode
+  retry_on_rejection: true
+
+budget:
+  max_sends: 8
+  max_wall_seconds: 3600
+
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 1800
+
+allowed_paths:
+  - src/**
+  - tests/**
+  - missions/dogfood-30-audit-hardening.yaml
+  - "**/.DS_Store"
+
+forbidden_paths:
+  - .git/**
+  - .tether/**
