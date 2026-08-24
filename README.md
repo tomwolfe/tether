@@ -97,7 +97,7 @@ CLI flags > mission file > project config (`tether.yaml|yml|json|toml`) > defaul
 
 Mission values that are **unset** (absent) fall back to the project config; only explicit mission values override it. Adapter settings are deep-merged per adapter name: mission adapter settings override project adapter settings key-by-key.
 
-Config keys: `default_adapter`, `audit_dir`, `backup_dir`, `dry_run`, `log_level`, `command_timeout_seconds`, `verification_timeout_seconds`, `max_attempts`, `allow_dirty`, `auto_rollback`, `sandbox_mode`, `retention_days` (used by `sessions clean` when `--older-than` is omitted), `secret_denylist`, `secret_allowlist`, `adapters` (per-adapter settings), `verification.commands`.
+Config keys: `default_adapter`, `audit_dir`, `backup_dir`, `dry_run`, `log_level`, `command_timeout_seconds`, `verification_timeout_seconds`, `max_attempts`, `allow_dirty`, `auto_rollback`, `redact_prompts`, `sandbox_mode`, `writer_lock_stale_seconds`, `retention_days` (used by `sessions clean` when `--older-than` is omitted), `secret_denylist`, `secret_allowlist`, `adapters` (per-adapter settings), `verification` (e.g. `commands`; also `timeout_seconds`, `artifacts`, and the deeper tiers).
 
 ## Mission file schema
 
@@ -122,7 +122,7 @@ constraints: []     # free-form constraints shown to the agent
 
 ### Strict `mission:` block
 
-The `mission:` block accepts ONLY `name` and `goal` — exactly the keys the parser honors. Any other key fails validation with a `MissionError` naming the offending key(s). This is deliberate (dogfood-25): unknown keys used to be silently ignored, so a mis-indented file that nested `verification:` under `mission:` validated as OK and ran with all defaults — a no-op success. The error message hints that every other key belongs at the top level of the mission file: contract-level blocks (`verification`, `recovery`, `review`, `budget`, `adapter`, `adapters`, `allowed_paths`, `forbidden_paths`) and free-form content (`context`, `constraints`, `context_files`). `tether validate-mission` catches this before any run.
+The `mission:` block accepts ONLY `name` and `goal` — exactly the keys the parser honors. Any other key fails validation with a `MissionError` naming the offending key(s). This is deliberate (dogfood-25): unknown keys used to be silently ignored, so a mis-indented file that nested `verification:` under `mission:` validated as OK and ran with all defaults — a no-op success. The error message hints that every other key belongs at the top level of the mission file: contract-level blocks (`verification`, `recovery`, `review`, `budget`, `adapter`, `adapters`, `allowed_paths`, `forbidden_paths`) and free-form content (`tasks`, `context`, `constraints`, `context_files`). `tether validate-mission` catches this before any run.
 
 ### Missions without verification commands
 
@@ -178,6 +178,8 @@ verification:
 
 Each probe's command runs in the target project directory with the same timeout as verification commands; stdout+stderr are combined for matching. A probe PASSES when the combined output satisfies ALL of its `contains`/`matches` criteria — the exit code is recorded but is NOT itself the pass criterion (a command that exits 3 while printing the expected behavior output still passes; a green command printing the wrong thing fails). Timeout or a missing binary fails the probe. Probes run after command + artifact + assertion checks pass on an otherwise-green attempt; a failing probe fails the attempt like any other deliverable miss, results land in `report["verification_results"]`, and dry-runs record probes as skipped without executing them.
 
+Authoring caveat (dogfood-28): a probe can satisfy itself from its own failure output and pass while broken — the documented case is probe-marker self-match via a `python -c` one-liner: when its assert fails, the traceback echoes the entire `-c` source line, which usually contains the literal success marker, so the failed run still "prints" the expected text. Markers must be written so they cannot appear in any possible failure output, including echoed source — e.g. assemble them from string fragments (`print('data', '-', 'only')`) and match the joined form (`contains: "data - only"`). See the live-fire field notes in docs/ARCHITECTURE.md.
+
 ### Mutation testing
 
 Verification passing is not the same as the change being correct — so Tether can measure whether verification would CATCH an incorrect change at all (`verification.mutation`, dogfood-22): after command + artifact + assertion + probe checks pass on a green attempt, each changed `.py` file (never `.tether/` or sandbox-forbidden paths) is mutated with built-in stdlib-`ast` operators (`negate_compare`: `== <-> !=`, `< <-> >=`, `<= <-> >`; `flip_bool`: `True <-> False`, `not x -> x`; `arithmetic`: `+ <-> -`, `* <-> /`; `break_return`: `return expr -> return None`), and the SAME verification helpers re-run against every mutant:
@@ -209,7 +211,7 @@ What carries into the clean room:
 - the checkpoint ref's pristine checkout (`git archive`),
 - the session's captured change (`patch.diff` applied via `git apply`, falling back to `patch -p1`),
 - untracked files listed in `untracked.txt` **except gitignored ones**,
-- explicit `clean_room_copy` entries that exist in the project dir (missing entries are skipped silently); `.git/`, `.tether/`, and sandbox-forbidden paths are never copied.
+- explicit `clean_room_copy` entries that exist in the project dir (missing entries are skipped silently); `.git/`, `.tether/`, and paths resolving outside the project directory are never copied.
 
 What deliberately does NOT carry over: **gitignored paths** (that is the whole point — planted helpers like `conftest.py`, `sitecustomize.py`, or `tox.ini` overrides stay behind) and anything resolving outside the project directory. A fresh room is re-materialized for every verification attempt, so recovery rounds always verify the latest captured change; the staging directory is always removed afterwards.
 
@@ -346,7 +348,7 @@ Tests use only temp directories, git temp repos with local identity, and the Moc
 ## Current limitations
 
 - No streaming/interactive agent sessions; adapters are one-shot prompt→result.
-- Non-git changed-file detection is best-effort: files smaller than 1 MiB (`manifest.HASH_SIZE_LIMIT`) are fingerprinted by sha256 content hash, larger files fall back to size+mtime; there is no content diff. `manifest_diff.json` carries those fingerprints, not file contents.
+- Non-git changed-file detection is best-effort: files smaller than 1 MiB (`manifest.HASH_SIZE_LIMIT`) are fingerprinted by sha256 content hash, files at or above that size fall back to size+mtime; there is no content diff. `manifest_diff.json` carries those fingerprints, not file contents.
 - Process-tree containment is best-effort: descendants that escape the process group (e.g. by double-forking into a new session on POSIX) or survive `taskkill /T /F` on Windows cannot be force-killed by Tether.
 - Token/cost usage is only reported if an adapter provides it (Mock provides none; Command reports elapsed time and exit code, plus any metrics extracted from the agent's own output via the per-adapter `usage_patterns` config — regexes over stdout+stderr — so extraction is config-driven, not guaranteed).
 - `budget.max_usage` caps are only enforceable for metrics the adapter actually reports: a metric the adapter never reports cannot trigger its cap (it never false-triggers either). `max_wall_seconds` and `max_sends` always enforce.

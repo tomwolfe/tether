@@ -50,7 +50,7 @@ verification:
     - "ruff check src tests"
   artifacts:
     - "README.md"
-    - "docs/"
+    - "docs/**"
   assertions:
     - path: tests/test_docs.py
       contains: self-match

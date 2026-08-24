@@ -193,14 +193,16 @@ Every CommandAdapter child process receives standard Tether context variables
 - `TETHER_PROJECT_DIR` — absolute path of the target project
 - `TETHER_MISSION` — mission name, when known
 
-Behavior: runs once per `send`, captures stdout/stderr as logs, exit 0 => completed, nonzero => failed, spawn failure => unavailable, timeout => failed. Uses `subprocess.run(shell=False)`. All of this is covered by tests using stub executables (`tests/test_adapter_harness.py`) — no real agent binaries required. The orchestrator also calls `is_available()` itself before starting a run and fails fast when the adapter is unavailable.
+Behavior: runs once per `send`, captures stdout/stderr as logs, exit 0 => completed, nonzero => failed, spawn failure => unavailable, timeout => failed. The child is spawned via `subprocess.Popen` with `shell=False`. All of this is covered by tests using stub executables (`tests/test_adapter_harness.py`) — no real agent binaries required. The orchestrator also calls `is_available()` itself before starting a run and fails fast when the adapter is unavailable.
 
 ## OpencodeAdapter / PiAdapter — thin CommandAdapter presets
 
 Thin presets over CommandAdapter. The command shapes were checked against the
 `--help` output of locally installed CLIs (2026-08):
 
-- opencode: `["opencode", "run", "{prompt}"]` (`opencode run [message..]`)
+- opencode: `["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]`
+  (`opencode run [message..]`; the `-m` model pin avoids a server error some
+  installations hit on bare `opencode run`)
 - pi: `["pi", "--print", "{prompt}"]` (`--print` = non-interactive mode)
 
 End-to-end behavior (provider/model setup, exit codes, session handling) is

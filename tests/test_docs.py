@@ -79,3 +79,170 @@ def test_security_doc_says_scrub_is_not_erasure():
     assert "best-effort" in leakage
     assert "scrub" in leakage
     assert "cryptographic erasure" in leakage
+
+
+# ------------------- documentation truth (dogfood-29)
+
+
+def _config_keys_sentence() -> str:
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    section = readme.split("## Configuration precedence", 1)[1]
+    return next(line for line in section.splitlines()
+                if line.startswith("Config keys:"))
+
+
+def test_readme_config_keys_list_is_complete():
+    from tether.models import TetherConfig
+    sentence = _config_keys_sentence()
+    for key in TetherConfig.model_fields:
+        assert f"`{key}`" in sentence, f"config key missing from README: {key}"
+
+
+def test_documented_defaults_match_tether_config():
+    from tether.cli import DEFAULT_CONFIG_TEMPLATE
+    from tether.models import TetherConfig
+    cfg = TetherConfig()
+    assert cfg.default_adapter == "mock"
+    assert cfg.audit_dir == ".tether/sessions"
+    assert cfg.backup_dir == ".tether/backups"
+    assert cfg.dry_run is False
+    assert cfg.log_level == "INFO"
+    assert cfg.command_timeout_seconds == 1800
+    assert cfg.verification_timeout_seconds == 600
+    assert cfg.max_attempts == 3
+    assert cfg.allow_dirty is False
+    assert cfg.auto_rollback is False
+    assert cfg.redact_prompts is False
+    assert cfg.sandbox_mode == "warn"
+    assert cfg.writer_lock_stale_seconds == 43200
+    assert cfg.retention_days is None
+    # `tether init` writes a starter config whose values are real defaults.
+    for expected in (
+        f"default_adapter: {cfg.default_adapter}",
+        f"audit_dir: {cfg.audit_dir}",
+        f"dry_run: {cfg.dry_run}".lower(),
+        f"log_level: {cfg.log_level}",
+        f"command_timeout_seconds: {cfg.command_timeout_seconds}",
+        f"verification_timeout_seconds: {cfg.verification_timeout_seconds}",
+        f"max_attempts: {cfg.max_attempts}",
+    ):
+        assert expected in DEFAULT_CONFIG_TEMPLATE
+
+
+def test_documented_hard_limits_match_constants():
+    from tether import orchestrator
+    from tether.context_files import (
+        BINARY_SNIFF_BYTES,
+        CONTEXT_FILES_MAX_COUNT,
+        CONTEXT_FILES_MAX_FILE_BYTES,
+        CONTEXT_FILES_TOTAL_MAX_BYTES,
+    )
+    from tether.manifest import HASH_SIZE_LIMIT
+    from tether.models import MutationSpec
+    from tether.verification import REPAIR_OUTPUT_BUDGET
+
+    # README "Context files" section numbers.
+    assert CONTEXT_FILES_MAX_COUNT == 32
+    assert CONTEXT_FILES_MAX_FILE_BYTES == 256 * 1024
+    assert CONTEXT_FILES_TOTAL_MAX_BYTES == 512 * 1024
+    assert BINARY_SNIFF_BYTES == 8192  # NUL sniff window: first 8 KiB
+    # README limitations: non-git fingerprint boundary.
+    assert HASH_SIZE_LIMIT == 1024 * 1024  # 1 MiB
+    # README recovery/repair prompts: ~8KB output budget.
+    assert REPAIR_OUTPUT_BUDGET == 8192
+    # README review gate: ~4KB excerpt vs full-context 64 KiB caps.
+    assert orchestrator.REVIEW_EXCERPT_BUDGET == REPAIR_OUTPUT_BUDGET // 2
+    assert orchestrator.REVIEW_FULL_CONTEXT_BUDGET == 64 * 1024
+    # README mutation example: per-file cap defaults to 20.
+    assert MutationSpec().max_mutants == 20
+
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "**max 32 files**, **max 256 KiB per file**, **max 512 KiB total context**" in readme
+    assert "(~8KB budget)" in readme
+    assert "up to 64 KiB" in readme
+    assert "~4KB excerpt" in readme
+    assert "max_mutants: 20" in readme
+
+
+def test_recovery_max_attempts_cap_is_20():
+    import pytest
+    from pydantic import ValidationError
+    from tether.models import RecoverySpec
+    assert RecoverySpec().strategy == "cumulative"
+    with pytest.raises(ValidationError):
+        RecoverySpec(max_attempts=21)
+
+
+def test_review_gate_documented_defaults_match_spec():
+    from tether.models import ReviewSpec
+    spec = ReviewSpec()
+    assert spec.enabled is False
+    assert spec.required is True
+    assert spec.adapter is None
+    assert spec.retry_on_rejection is False
+    assert spec.context == "excerpt"
+    assert spec.credibility_probe is None
+    from tether.orchestrator import REVIEWER_CREDIBILITY_FAILURE
+    assert REVIEWER_CREDIBILITY_FAILURE == "reviewer credibility check failed"
+
+
+def test_smoke_default_prompt_matches_docs():
+    from tether.smoke import DEFAULT_PROMPT
+    assert DEFAULT_PROMPT == "Reply with the single word OK"
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "`Reply with the single word OK`" in readme
+
+
+def test_run_exit_codes_match_docs():
+    from tether.cli import (
+        EXIT_BUDGET_EXCEEDED,
+        EXIT_CANCELLED,
+        EXIT_FAILED,
+        EXIT_REJECTED,
+        EXIT_SANDBOX_VIOLATION,
+        EXIT_SUCCESS,
+    )
+    assert (EXIT_SUCCESS, EXIT_FAILED, EXIT_CANCELLED, EXIT_REJECTED,
+            EXIT_SANDBOX_VIOLATION, EXIT_BUDGET_EXCEEDED) == (0, 1, 2, 3, 4, 5)
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "exits with code 5 (`EXIT_BUDGET_EXCEEDED`)" in readme
+    assert "CLI exit code 2" in readme
+
+
+def test_adapters_doc_preset_commands_match_code():
+    from tether.adapters.experimental import OpencodeAdapter, PiAdapter
+    doc = (REPO_ROOT / "docs" / "ADAPTERS.md").read_text(encoding="utf-8")
+    lines = doc.splitlines()
+    opencode_line = next(line for line in lines if line.startswith("- opencode:"))
+    pi_line = next(line for line in lines if line.startswith("- pi:"))
+    for part in OpencodeAdapter().command:
+        assert f'"{part}"' in opencode_line, part
+    for part in PiAdapter().command:
+        assert f'"{part}"' in pi_line, part
+
+
+def test_clean_room_copy_doc_exclusions_match_implementation():
+    """The README clean-room 'carries into the room' list must claim exactly
+    the exclusions materialize_clean_room enforces (.git/.tether tops,
+    gitignored untracked entries, outside-project paths) -- no more."""
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    clean_room = readme.split("## Verification", 1)[1].split("## Dry-run", 1)[0]
+    carries = clean_room.split("What carries into the clean room:", 1)[1] \
+                        .split("What deliberately does NOT carry over", 1)[0]
+    assert "except gitignored ones" in carries
+    for phrase in (".git/", ".tether/", "outside the project directory"):
+        assert phrase in carries, phrase
+    # The sandbox globs are NOT consulted by the materializer; docs must not
+    # claim they are.
+    assert "sandbox-forbidden paths are never copied" not in carries
+
+
+def test_probe_doc_states_marker_self_match_pitfall():
+    """The README probe guidance must carry the dogfood-28 authoring
+    caveat: a python -c one-liner's AssertionError traceback echoes the
+    whole -c source, so a literally-written success marker self-matches
+    and the failed probe still passes; markers must be fragment-assembled."""
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "probe-marker self-match" in readme
+    assert "echoes the entire `-c` source line" in readme
+    assert "assemble them from string fragments" in readme
