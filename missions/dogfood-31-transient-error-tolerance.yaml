@@ -1,0 +1,106 @@
+# Mission: dogfood-31-transient-error-tolerance
+# Finding: during dogfood-30, two missions aborted at the planning step
+# because the upstream provider returned "Provider finish_reason:
+# network_error" — an infrastructure flake indistinguishable, to the
+# orchestrator, from a genuine agent failure. A reliability tool must
+# not fail its own missions because of transient provider outages.
+mission:
+  name: dogfood-31-transient-error-tolerance
+  goal: |
+    Make Tether tolerate TRANSIENT provider/infrastructure failures
+    during agent sends: retry them with bounded backoff instead of
+    aborting the mission (planning step) or burning recovery attempts
+    (execution/repair sends). Genuine agent failures keep their current
+    semantics.
+
+tasks:
+  - |
+    TRANSIENT CLASSIFICATION:
+    In src/tether/orchestrator.py (or a small new helper module), add a
+    classifier that inspects a failed AgentState (status != completed)
+    and decides whether the failure is TRANSIENT: match provider
+    infrastructure signatures in state.logs/state.error such as
+    "network_error", "finish_reason: network_error", "rate_limit",
+    "overloaded", "timeout", "connection reset", "502", "503",
+    "504" (case-insensitive). Export it as a pure, tested function.
+  - |
+    RETRY WITH BOUNDED BACKOFF:
+    When the PLANNING send fails with a transient classification,
+    retry the same send up to 3 times total with short backoff (e.g.
+    5s, 15s, 30s), logging a warning per retry and recording an audit
+    event kind "transient_retry" ({step, attempt, reason}). If all
+    retries are exhausted, abort exactly as today. When an EXECUTION or
+    repair send fails transiently, retry the SAME send up to 3 times
+    before treating it as a failed attempt for recovery purposes;
+    transient retries do NOT consume max_attempts or budget sends
+    beyond what actually happens (each retried send still counts once
+    toward usage tracking as one logical send). Respect budget
+    max_wall_seconds throughout.
+  - |
+    CONFIGURABILITY + DOCS:
+    Add config keys (project tether.yaml level): retries.max_transient_retries
+    (default 2) and retries.transient_backoff_seconds (default 10) if a
+    config knob is cleaner than hardcoding 3; document whichever you
+    implement in README.md and docs/ARCHITECTURE.md core-loop steps.
+  - |
+    TESTS:
+    Unit tests for the classifier (each signature, plus negative cases
+    like a real test failure output that merely contains the word
+    "timeout"). Orchestrator-level tests using a stub adapter whose
+    send fails transiently N times then completes: planning recovers,
+    audit events recorded, exhausted-retry case still fails the mission
+    with the existing next_steps message.
+
+constraints:
+  - do not change AgentAdapter method signatures
+  - genuine (non-transient) failures keep current behavior exactly
+  - dry-run behavior unchanged
+  - subprocess stays shell=False
+
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+    - ".venv/bin/tether adapters conformance mock"
+  artifacts:
+    - "src/**"
+  assertions:
+    - path: src/tether/orchestrator.py
+      contains: network_error
+  probes:
+    - command: "python -m pytest -q tests/test_core.py"
+      contains: "passed"
+
+recovery:
+  strategy: cumulative
+  max_attempts: 4
+
+review:
+  enabled: true
+  required: true
+  context: full
+  adapter: opencode
+  retry_on_rejection: true
+
+budget:
+  max_sends: 10
+  max_wall_seconds: 3600
+
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 1800
+
+allowed_paths:
+  - src/**
+  - tests/**
+  - README.md
+  - docs/**
+  - missions/dogfood-31-transient-error-tolerance.yaml
+  - "**/.DS_Store"
+
+forbidden_paths:
+  - .git/**
+  - .tether/**
