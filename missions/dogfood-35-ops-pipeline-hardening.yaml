@@ -1,0 +1,129 @@
+# Mission: dogfood-35-ops-pipeline-hardening
+# Findings: the operational-intelligence pipeline (`sessions stats`,
+# `sessions scrub`, `sessions clean`, and hash-chain verification) has
+# only unit-level coverage. No integration test exercises the FULL
+# pipeline over realistic multi-session fixture data, so silent data
+# corruption or aggregate drift could ship unnoticed.
+mission:
+  name: dogfood-35-ops-pipeline-hardening
+  goal: |
+    Close Tether's operational-intelligence reliability gap: the stats,
+    scrub, clean, and chain-verification commands have only unit-level
+    coverage. Add integration tests that exercise the FULL pipeline over
+    realistic multi-session fixture data, proving that scrubbing preserves
+    chain integrity, stats aggregates survive malformed/legacy sessions,
+    and clean removes exactly the right directories. Each task proven by
+    tests that fail before and pass after. All existing tests keep
+    passing. Change NOTHING outside scope.
+
+    TASK 1 - INTEGRATION TEST FIXTURES:
+    Extend tests/test_ops_pipeline.py: build fixture sessions using the
+    real AuditTrail helpers under a temp .tether/sessions/ tree. Include:
+    (a) a reviewed success with nonlinear recovery and usage telemetry;
+    (b) an aborted oscillation failure with failure_class=oscillation_detected;
+    (c) a budget-breach abort with budget_exceeded payload;
+    (d) a legacy pre-dogfood-14 session with minimal report.json;
+    (e) a corrupted session (truncated report.json, unparseable events.jsonl).
+    Model fixtures on real dogfood session layouts.
+
+    TASK 2 - STATS PIPELINE RESILIENCE:
+    Assert the stats aggregation produces correct aggregates over the mixed
+    fixture tree: status counts, review-gate verdicts, per-mission baselines,
+    budget_exceeded accounting, mutation kill rates, usage totals. Assert
+    malformed/legacy sessions are skipped gracefully (never crash) and do
+    not corrupt aggregates from valid sessions. Assert human-readable output
+    includes Review gate / Budgets / Mutation / Per-mission lines only when
+    relevant data exists.
+
+    TASK 3 - SCRUB + CHAIN INTEGRITY END-TO-END:
+    Seed a session containing secret-like material in prompts/responses.
+    Assert: (1) scrub without --confirm prints a plan and touches nothing;
+    (2) scrub --confirm redacts secrets AND appends a scrub event that
+    extends the hash chain correctly; (3) logs <id> --verify reports intact
+    chain BEFORE and AFTER scrub; (4) sibling sessions and files outside the
+    session dir are untouched; (5) stats still parses all sessions after scrub.
+
+    TASK 4 - CLEAN PRECISION:
+    Create sessions with known mtimes spanning the threshold boundary.
+    Assert: (1) clean dry-run lists exactly the over-age directories and
+    deletes nothing; (2) with --confirm only over-age dirs are removed;
+    (3) surviving sessions remain fully usable (chain verify passes, stats
+    includes them); (4) retention_days config fallback works when
+    --older-than is omitted.
+
+    TASK 5 - DOCS TRUTH PINNING:
+    For every behavior proven above, add or extend tests in tests/test_docs.py
+    pinning the corresponding README/docs claim: ops pipeline docs mention
+    scrub chain integrity; stats documents malformed-session resilience;
+    clean documents the --confirm requirement.
+
+constraints:
+  - do not change AgentAdapter method signatures (hard rule)
+  - do not weaken existing tests; all current tests must keep passing
+  - subprocess stays shell=False everywhere
+  - no new third-party dependencies (stdlib only)
+  - keep changes minimal, typed, and scoped to the five tasks
+  - fixtures must use real AuditTrail helpers, not hand-rolled JSON
+  - scrub must never touch files outside the target session directory
+
+context_files:
+  - docs/ARCHITECTURE.md
+  - README.md
+  - src/tether/cli.py
+  - src/tether/audit.py
+  - src/tether/cleanroom.py
+  - tests/test_ops_pipeline.py
+  - tests/test_scrub.py
+  - tests/test_docs.py
+
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+    - ".venv/bin/tether adapters conformance mock"
+  artifacts:
+    - "tests/test_ops_pipeline.py"
+    - "tests/test_docs.py"
+  assertions:
+    - path: tests/test_ops_pipeline.py
+      contains: scrub
+    - path: tests/test_ops_pipeline.py
+      contains: chain
+    - path: tests/test_docs.py
+      contains: malformed
+  probes:
+    - command: "python -m pytest -q tests/test_ops_pipeline.py"
+      contains: passed
+
+recovery:
+  max_attempts: 4
+  strategy: cumulative
+
+review:
+  enabled: true
+  required: true
+  adapter: opencode
+  retry_on_rejection: true
+  context: full
+
+budget:
+  max_sends: 10
+  max_wall_seconds: 5400
+
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 1800
+
+allowed_paths:
+  - src/**
+  - tests/**
+  - docs/**
+  - README.md
+  - missions/dogfood-35-ops-pipeline-hardening.yaml
+
+forbidden_paths:
+  - .git/**
+  - .tether/**
