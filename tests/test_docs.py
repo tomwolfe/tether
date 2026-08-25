@@ -378,3 +378,255 @@ def test_readme_clean_documents_confirm_requirement_and_retention():
                      if line.startswith("Config keys:"))
     assert ("`retention_days` (used by `sessions clean` when "
             "`--older-than` is omitted)") in keys_line
+
+
+# ------------------- documentation truth (dogfood-29/36)
+
+
+def _click_app(typer_app):
+    from typer.main import get_command
+    return get_command(typer_app)
+
+
+def test_documented_cli_commands_exist_in_click_app():
+    """Every command/subcommand shown in the README quick tour must exist
+    in the real Typer/click app."""
+    from tether.cli import adapters_app, app, sessions_app
+    root = _click_app(app)
+    for name in ("init", "validate-config", "validate-mission", "run",
+                 "rollback", "report", "diff", "logs", "adapters",
+                 "sessions"):
+        assert name in root.commands, name
+    assert {"list", "smoke", "conformance", "certify"} \
+        <= set(_click_app(adapters_app).commands)
+    assert {"list", "show", "stats", "clean", "scrub"} \
+        <= set(_click_app(sessions_app).commands)
+
+
+def test_documented_cli_flags_exist():
+    """Flags the README documents on specific commands must exist."""
+    from tether.cli import app
+    commands = _click_app(app).commands
+
+    def opts(name: str) -> set[str]:
+        return {o for p in commands[name].params
+                for o in (*p.opts, *p.secondary_opts)}
+
+    run_opts = opts("run")
+    for flag in ("--adapter", "--project-dir", "--dry-run", "--no-dry-run",
+                 "--max-attempts", "--allow-dirty", "--no-allow-dirty",
+                 "--auto-rollback", "--no-auto-rollback", "--strict",
+                 "--verbose"):
+        assert flag in run_opts, flag
+    assert "--patch" in opts("diff")
+    assert "--verify" in opts("logs")
+    assert "--clean" in opts("rollback")
+    assert "--strict" in opts("validate-mission")
+
+
+def test_documented_session_subcommand_flags_exist():
+    from tether.cli import sessions_app
+    commands = _click_app(sessions_app).commands
+
+    def opts(name: str) -> set[str]:
+        return {o for p in commands[name].params
+                for o in (*p.opts, *p.secondary_opts)}
+
+    assert {"--older-than", "--confirm"} <= opts("clean")
+    assert "--json" in opts("stats")
+    assert "--confirm" in opts("scrub")
+
+
+def test_documented_adapter_setting_names_match_known_settings():
+    """The settings README attributes to each adapter are exactly the keys
+    the adapter declares as known (unknown-key warnings rely on this)."""
+    from tether.adapters.command import CommandAdapter
+    from tether.adapters.mock import MockAdapter
+    assert CommandAdapter.known_settings == frozenset(
+        {"command", "timeout_seconds", "prompt_via_stdin", "env",
+         "usage_patterns"})
+    assert MockAdapter.known_settings == frozenset({"scenario"})
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    sentence = next(line for line in readme.splitlines()
+                    if "unknown setting" in line)
+    for key in sorted(CommandAdapter.known_settings):
+        assert f"`{key}`" in sentence, key
+    assert "`scenario` for mock" in sentence
+
+
+def test_retries_spec_defaults_match_docs():
+    from tether.models import RetriesSpec, TetherConfig
+    spec = RetriesSpec()
+    assert spec.max_transient_retries == 2
+    assert spec.transient_backoff_seconds == 10
+    assert TetherConfig().retries.max_transient_retries == 2
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    retries = readme.split("### Transient provider failures", 1)[1] \
+                    .split("\n## ", 1)[0]
+    assert "2 => up to 3 total" in retries
+    assert "flat wait between retries" in retries
+    arch = (REPO_ROOT / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
+    assert ("`retries.max_transient_retries` default 2 extra attempts / "
+            "`retries.transient_backoff_seconds` default 10") in arch
+
+
+def test_sandbox_mode_values_and_advisory_event_match_code():
+    import typing
+
+    from tether.models import TetherConfig
+    annotation = TetherConfig.model_fields["sandbox_mode"].annotation
+    assert typing.get_args(annotation) == ("warn", "enforce")
+    assert TetherConfig().sandbox_mode == "warn"
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "sandbox_mode_advisory" in readme
+    arch = (REPO_ROOT / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
+    sandbox = arch.split("## Sandbox modes", 1)[1].split("## Design rules",
+                                                         1)[0]
+    assert "`warn` (default)" in sandbox and "`enforce`" in sandbox
+
+
+def test_review_consensus_options_match_review_spec():
+    import typing
+
+    from tether.models import ReviewSpec
+    spec = ReviewSpec()
+    assert spec.reviewers is None
+    assert spec.consensus == "all"
+    assert typing.get_args(ReviewSpec.model_fields["consensus"].annotation) \
+        == ("all", "majority")
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    consensus = readme.split("**Multi-reviewer consensus**", 1)[1]
+    assert "requires unanimous approval" in consensus
+    assert "strictly more approvals than rejections" in consensus
+
+
+def test_retention_days_contract_matches_clean_fallback():
+    import pytest
+
+    from pydantic import ValidationError
+
+    from tether.models import TetherConfig
+    assert TetherConfig().retention_days is None
+    assert TetherConfig(retention_days=0).retention_days == 0
+    with pytest.raises(ValidationError):
+        TetherConfig(retention_days=-1)
+
+
+def test_mutation_operator_names_match_verification_module():
+    from tether.verification import MUTATION_OPERATORS
+    assert MUTATION_OPERATORS == (
+        "negate_compare", "flip_bool", "arithmetic", "break_return")
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    mutation = readme.split("### Mutation testing", 1)[1] \
+                     .split("### Clean-room verification", 1)[0]
+    for operator in MUTATION_OPERATORS:
+        assert operator in mutation, operator
+
+
+def test_conformance_check_names_match_doc():
+    from tether import conformance
+    names = {
+        conformance._AVAILABILITY, conformance._SUCCESS,
+        conformance._LOGS, conformance._FAILURE, conformance._TIMEOUT,
+        conformance._CANCEL, conformance._SPAWN, conformance._PROJECT_DIR,
+    }
+    assert len(names) == 8
+    doc = (REPO_ROOT / "docs" / "ADAPTERS.md").read_text(encoding="utf-8")
+    checks = doc.split("Checks:", 1)[1].split("Notes:", 1)[0]
+    for name in names:
+        assert f"`{name}`" in checks, name
+
+
+def test_adapters_capability_table_matches_classes():
+    doc = (REPO_ROOT / "docs" / "ADAPTERS.md").read_text(encoding="utf-8")
+    table = doc.split("| Adapter | cancel |", 1)[1].split("\n\n", 1)[0]
+
+    def row(name: str) -> list[str]:
+        line = next(ln for ln in table.splitlines()
+                    if ln.startswith(f"| {name} |"))
+        return [c.strip() for c in line.strip("|").split("|")]
+
+    def flag(cell: str) -> bool:
+        assert cell.rstrip("*") in ("yes", "no", "opt-in"), cell
+        return cell.rstrip("*") != "no"
+
+    from tether.adapters.command import CommandAdapter
+    from tether.adapters.experimental import OpencodeAdapter, PiAdapter
+    from tether.adapters.mock import MockAdapter
+    classes = {
+        "mock": MockAdapter,
+        "command": CommandAdapter,
+        "opencode": OpencodeAdapter,
+        "pi": PiAdapter,
+    }
+    maturity = {"mock": "verified", "command": "verified",
+                "opencode": "verified", "pi": "experimental"}
+    for name, cls in classes.items():
+        cells = row(name)
+        assert flag(cells[1]) == cls.supports_cancel, name
+        assert flag(cells[2]) == cls.supports_process_tree_kill, name
+        assert flag(cells[3]) == cls.supports_usage, name
+        assert flag(cells[4]) == cls.supports_streaming, name
+        assert flag(cells[5]) == cls.one_shot, name
+        assert cells[6] == maturity[name], name
+        assert cls.verified == (maturity[name] == "verified"), name
+
+
+def test_command_adapter_env_vars_and_spawn_flags_documented():
+    import inspect
+
+    from tether.adapters import command
+    src = inspect.getsource(command)
+    doc = (REPO_ROOT / "docs" / "ADAPTERS.md").read_text(encoding="utf-8")
+    for var in ("TETHER_SESSION_ID", "TETHER_PROJECT_DIR",
+                "TETHER_MISSION"):
+        assert var in src and f"`{var}`" in doc, var
+    for spawn_flag in ("start_new_session", "CREATE_NEW_PROCESS_GROUP"):
+        assert spawn_flag in src, spawn_flag
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    containment = readme.split("## Process containment", 1)[1] \
+                        .split("\n## ", 1)[0]
+    assert "start_new_session=True" in containment
+    assert "CREATE_NEW_PROCESS_GROUP" in containment
+
+
+def test_limitations_sections_mention_reader_straggler_note():
+    """dogfood-33/34: both limitations sections must carry the straggler
+    caveat, and the constant the README names must really exist."""
+    from tether.adapters.command import READER_JOIN_GRACE_SECONDS
+    assert READER_JOIN_GRACE_SECONDS > 0
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    limitations = readme.split("## Current limitations", 1)[1]
+    assert "command.READER_JOIN_GRACE_SECONDS" in limitations
+    assert "straggler" in limitations
+    doc = (REPO_ROOT / "docs" / "ADAPTERS.md").read_text(encoding="utf-8")
+    limits = doc.split("Current limitations (accepted-by-design)", 1)[1]
+    assert "straggler" in limits
+    assert "daemon reader threads" in limits
+
+
+def test_security_writer_lock_claim_matches_implementation():
+    import inspect
+
+    from tether import orchestrator
+    src = inspect.getsource(orchestrator)
+    assert "O_CREAT" in src and "O_EXCL" in src
+    security = (REPO_ROOT / "docs" / "SECURITY.md").read_text(encoding="utf-8")
+    lock = security.split("## Local lock scope", 1)[1].split("\n## ", 1)[0]
+    assert "O_CREAT|O_EXCL" in lock
+    assert "stale takeover" in lock
+
+
+def test_readme_dev_extra_matches_pyproject():
+    import tomllib
+
+    data = tomllib.loads(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    dev = " ".join(data["project"]["optional-dependencies"]["dev"])
+    assert data["project"]["requires-python"] == ">=3.11"
+    for extra in ("pytest>=8", "pytest-cov", "ruff", "mypy",
+                  "types-PyYAML"):
+        assert extra in dev
+    deps = " ".join(data["project"]["dependencies"])
+    for dep in ("typer>=", "pydantic>=", "pyyaml>="):
+        assert dep in deps
