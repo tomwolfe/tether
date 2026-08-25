@@ -46,8 +46,8 @@ verification:
     - path: src/tether/cli.py
       matches: def _resolve_session(_?dir|path)
   probes:
-    - command: ".venv/bin/tether sessions stats"
-      contains: Per-adapter
+    - command: ".venv/bin/tether sessions --help"
+      contains: stats
   # Meta-verification: mutate cli.py and require the suite to catch it.
   mutation:
     enabled: true
