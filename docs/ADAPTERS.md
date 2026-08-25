@@ -227,13 +227,20 @@ progress without changing the adapter contract. Guarantees:
 - Callback exceptions are swallowed — streaming is best-effort observability,
   never a way to fail a send.
 
-Current limitations (accepted-by-design): when the agent leaves a surviving
-descendant holding its stdout/stderr, `send()` still returns promptly, but
-the daemon reader threads remain blocked on the inherited pipes and the
-fds stay open until that descendant exits. This is bounded in practice
-because the readers are daemon threads — they can never keep Tether itself
-alive — but captured logs for that send will not be complete until the
-straggler exits or is killed.
+Current limitations (accepted-by-design): when an agent leaves a surviving
+straggler descendant holding its stdout/stderr, `send()` still returns
+promptly. The exact bound: daemon reader threads drain both pipes and are
+joined with a grace of `READER_JOIN_GRACE_SECONDS = 2.0` (in
+`tether.adapters.command`) after the direct child exits; output arriving on
+a still-held-open pipe after that grace may be truncated from the captured
+logs, and the pipe fds stay open until the straggler exits or is reaped.
+Because the readers are daemon threads they can never keep Tether itself
+alive. While a straggler lives, its inherited pipe fds stay open, so
+outstanding readers/fds scale with the number of surviving stragglers —
+once each straggler exits or is reaped, its daemon reader terminates and
+the fd is released, so nothing accumulates beyond the set of still-living
+stragglers. All of these claims are pinned by the acceptance tests in
+`tests/test_reader_straggler.py`.
 
 ## OpencodeAdapter / PiAdapter — thin CommandAdapter presets
 

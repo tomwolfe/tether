@@ -605,6 +605,24 @@ def test_limitations_sections_mention_reader_straggler_note():
     assert "daemon reader threads" in limits
 
 
+def test_adapters_doc_pins_exact_streaming_straggler_bound():
+    """dogfood-37: ADAPTERS.md must state the precise straggler mechanism
+    and numbers -- daemon reader threads, the 2.0s READER_JOIN_GRACE_SECONDS
+    join grace, possible truncation after the grace expires, fds that stay
+    open until the straggler exits or is reaped -- instead of the vague
+    "bounded in practice" phrasing, and the named constant must be 2.0."""
+    from tether.adapters.command import READER_JOIN_GRACE_SECONDS
+    assert READER_JOIN_GRACE_SECONDS == 2.0
+    doc = (REPO_ROOT / "docs" / "ADAPTERS.md").read_text(encoding="utf-8")
+    assert "bounded in practice" not in doc
+    limits = doc.split("Current limitations (accepted-by-design)", 1)[1]
+    assert "daemon reader threads" in limits
+    assert "READER_JOIN_GRACE_SECONDS = 2.0" in limits
+    assert "may be truncated" in limits
+    assert "fds stay open until the straggler exits or is reaped" in limits
+    assert "tests/test_reader_straggler.py" in limits
+
+
 def test_security_writer_lock_claim_matches_implementation():
     import inspect
 
