@@ -1,0 +1,111 @@
+# Mission: dogfood-38-transient-classifier-stress
+# Findings: dogfood-31 shipped the transient-error classifier and dogfood-34
+# expanded its signature list after real provider flakes were missed. The
+# classifier has never been stress-tested against a corpus of REAL error
+# text harvested from past dogfood sessions. Two failure modes matter:
+# (1) a genuine infrastructure flake classified non-transient => unretried,
+# wasted mission; (2) a genuine agent failure classified transient =>
+# pointless retries that burn budget and mask real defects.
+mission:
+  name: dogfood-38-transient-classifier-stress
+  goal: |
+    Stress-test the transient-failure classifier against real-world error
+    text and prove it makes no misclassifications on known cases. All
+    existing tests keep passing.
+
+    TASK 1 - HARVEST A REAL CORPUS:
+    Scan .tether/sessions/*/report.json and events.jsonl from past dogfood
+    sessions for failed adapter sends, timeouts, and provider errors.
+    Collect every distinct error string/stderr fragment into a fixture
+    file tests/fixtures/provider_errors.json mapping each entry to a
+    hand-verified expected classification ("transient" or "fatal") with a
+    short justification. Include AT MINIMUM the real dogfood-33/34 flake
+    ("Error from provider (Console): Upstream request failed: Endpoint is
+    unavailable."), timeout kills (exit -15 style), empty-output failures,
+    and ordinary agent mistakes (syntax errors, assertion failures).
+
+    TASK 2 - PARAMETERIZED STRESS TESTS:
+    Add tests/test_transient_corpus.py: parameterize over every corpus
+    entry and assert classify_transient() returns exactly the expected
+    verdict. Every entry must pass — this test is the acceptance gate.
+    Also add mixed-case / whitespace / prefix-suffix wrapping variants of
+    each signature-bearing entry.
+
+    TASK 3 - ADVERSARIAL NEAR-MISS CASES:
+    Add synthetic near-miss strings that MUST NOT be classified transient
+    even though they share words with signatures (e.g. "endpoint" alone,
+    "request failed validation", agent-authored code printing provider-like
+    text into its own output). These guard against over-broad matching.
+
+    TASK 4 - CLASSIFIER HARDENING IF (AND ONLY IF) TESTS EXPOSE GAPS:
+    If any corpus entry or near-miss case fails, make the minimal change
+    to src/tether/reliability.py (new signature, tightened match) so all
+    entries classify correctly without breaking existing behavior.
+    Document each gap found in docs/DOGFOODING.md under the audit section
+    as one bullet per gap.
+
+constraints:
+  - do not change AgentAdapter method signatures or retry loop semantics
+  - only classification logic may change in reliability.py; no new deps
+  - corpus expectations are ground truth fixed by the mission author;
+    if an entry's expectation seems wrong, still implement it and note
+    the concern in the final report rather than flipping the expectation
+  - subprocess stays shell=False everywhere
+  - all current tests must keep passing
+
+context_files:
+  - src/tether/reliability.py
+  - src/tether/orchestrator.py
+  - tests/test_transient.py
+  - docs/DOGFOODING.md
+
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+    - ".venv/bin/tether adapters conformance mock"
+  artifacts:
+    - "tests/test_transient_corpus.py"
+    - "tests/fixtures/provider_errors.json"
+  assertions:
+    - path: tests/test_transient_corpus.py
+      contains: parametrize
+    - path: tests/test_transient_corpus.py
+      contains: fatal
+    - path: tests/fixtures/provider_errors.json
+      contains: Endpoint is unavailable
+  probes:
+    - command: "python -m pytest -q tests/test_transient_corpus.py"
+      contains: passed
+
+recovery:
+  max_attempts: 4
+  strategy: cumulative
+
+review:
+  enabled: true
+  required: true
+  adapter: opencode
+  retry_on_rejection: true
+  context: full
+
+budget:
+  max_sends: 12
+  max_wall_seconds: 10800
+
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 2700
+
+allowed_paths:
+  - src/tether/reliability.py
+  - tests/**
+  - docs/**
+  - missions/dogfood-38-transient-classifier-stress.yaml
+
+forbidden_paths:
+  - .git/**
+  - .tether/**
