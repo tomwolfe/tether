@@ -1,0 +1,115 @@
+# Mission: dogfood-41-git-state-guard
+# Findings: session 7f460335 (dogfood-40 v1) live fire proved the write
+# sandbox's blind spot: the nested agent ran `git reset` mid-mission,
+# moving the user's branch pointer and forcing manual reflog repair.
+# Path-based change detection and allowed/forbidden globs never see git
+# metadata operations. Three acceptance tests in
+# tests/test_git_state_guard.py are ALREADY COMMITTED AND RED; the docs
+# pin test_architecture_documents_git_state_guard is red too. This mission
+# turns them green as real uncommitted work.
+mission:
+  name: dogfood-41-git-state-guard
+  goal: |
+    Implement the opt-in git-state guard so agent-driven history surgery
+    fails a mission the same way a sandbox violation does, without changing
+    ANY behavior for missions that do not set the new key.
+
+    TASK 1 - CONTRACT KEY (src/tether/models.py):
+    Add `git_state_guard: Optional[bool] = None` to MissionContract
+    (top-level key, mission-only like allowed_paths; None/absent = OFF).
+    A validator must reject non-boolean values with MissionError-style
+    clarity consistent with sibling fields.
+
+    TASK 2 - GUARD (src/tether/orchestrator.py):
+    In _gate_and_capture (which already runs after EVERY send — initial
+    execution and every recovery attempt alike), after the forensic
+    artifact refresh and alongside the existing sandbox gate: when the
+    mission enables git_state_guard AND the project is a git repo with a
+    recorded original_head, verify that
+      (a) `git rev-parse HEAD` still equals checkpoint.original_head, and
+      (b) the session's checkpoint ref (refs/tether/checkpoint/<session
+          id>) still resolves to that same sha.
+    Any drift raises a new RuntimeError subclass carrying the violations
+    (list of human-readable strings), handled EXACTLY like
+    _SandboxViolationError today: audit event kind "git_state_violations"
+    recording the list, report["git_state_violations"] set from it,
+    verification skipped (empty verification_results), status failed, and
+    a next_steps entry naming the drift and the tether rollback command.
+    Dry-runs and non-git projects are inert. Messages must mention "HEAD"
+    for case (a) and "checkpoint" for case (b). Do not touch any other
+    orchestrator behavior; the default-OFF path must stay byte-identical.
+
+    TASK 3 - DOCS TRUTH:
+    Extend the "## Sandbox modes" section of docs/ARCHITECTURE.md with a
+    short paragraph documenting `git_state_guard: true` (strict HEAD +
+    checkpoint-ref integrity after every send, the `git_state_violations`
+    event, and that leaving it unset keeps behavior byte-identical).
+    Append the dogfood-41 record to docs/DOGFOODING.md. The red pin
+    tests/test_docs.py::test_architecture_documents_git_state_guard then
+    passes unchanged — do not edit its assertions.
+
+constraints:
+  - "only src/tether/models.py, src/tether/orchestrator.py, docs/ARCHITECTURE.md, docs/DOGFOODING.md may be modified"
+  - "the committed RED tests must pass WITHOUT editing their assertions"
+  - "default OFF keeps every existing mission byte-identical (no new keys, events, or checks)"
+  - "reset_to_checkpoint recovery must NOT trip the guard (its resets restore HEAD to original_head)"
+  - "subprocess stays shell=False everywhere; no new dependencies"
+
+context_files:
+  - src/tether/orchestrator.py
+  - src/tether/git_safety.py
+  - tests/test_git_state_guard.py
+  - docs/ARCHITECTURE.md
+
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests tools"
+    - "mypy src/tether"
+    - ".venv/bin/tether adapters conformance mock"
+    # Regression guards carried forward from dogfood-40.
+    - ".venv/bin/python tools/mutation_killrate.py --target src/tether/cleanroom.py --suite tests/test_cleanroom.py --min-kill-rate 0.8"
+  artifacts:
+    - "tests/test_git_state_guard.py"
+    - "src/tether/orchestrator.py"
+  assertions:
+    - path: tests/test_git_state_guard.py
+      contains: "git_state_violations"
+    - path: src/tether/orchestrator.py
+      contains: "git_state_violations"
+    - path: docs/ARCHITECTURE.md
+      contains: "git_state_guard"
+  probes:
+    - command: ".venv/bin/python -m pytest -q tests/test_git_state_guard.py"
+      contains: passed
+
+recovery:
+  max_attempts: 4
+  strategy: cumulative
+
+review:
+  enabled: true
+  required: true
+  adapter: opencode
+  retry_on_rejection: true
+  context: full
+
+budget:
+  max_sends: 10
+  max_wall_seconds: 10800
+
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 2700
+
+allowed_paths:
+  - src/tether/models.py
+  - src/tether/orchestrator.py
+  - docs/**
+  - missions/dogfood-41-git-state-guard.yaml
+
+forbidden_paths:
+  - .git/**
+  - .tether/**

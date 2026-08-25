@@ -725,3 +725,18 @@ def test_architecture_step12_documents_ansi_stripping_and_reason_rule():
     assert "remainder after the verdict token" in step12
     assert "first substantive line after the marker" in step12
     assert "skipping blank/escape-only lines" in step12
+
+
+def test_architecture_documents_git_state_guard():
+    """dogfood-41 docs-truth pin: the sandbox documentation must state the
+    new contract key, its audit event, and the byte-identical default."""
+    arch = (REPO_ROOT / "docs" / "ARCHITECTURE.md").read_text(
+        encoding="utf-8")
+    section = arch.split("## Sandbox modes", 1)[1].split("\n## ", 1)[0]
+    assert "`git_state_guard: true`" in section
+    assert "`git_state_violations`" in section
+    assert "byte-identical" in section
+    # Strict semantics named explicitly: HEAD drift AND checkpoint-ref
+    # integrity, checked after every send.
+    assert "HEAD" in section
+    assert "checkpoint ref" in section
