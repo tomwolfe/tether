@@ -1,0 +1,120 @@
+# Mission: dogfood-36-docs-truth-v2
+# Findings: dogfood-29 started a docs-vs-code truth audit but did not
+# complete it, and dogfood-35 only pinned the new ops-pipeline claims.
+# Documentation truth has drifted: several config defaults, limitation
+# notes, and behavioral claims in README.md and docs/*.md are stale or
+# unverifiable relative to the code. This mission completes the audit:
+# every verifiable claim gets pinned by a test, and every stale claim
+# gets corrected IN THE DOCS (never by weakening tests).
+mission:
+  name: dogfood-36-docs-truth-v2
+  goal: |
+    Complete the documentation-truth audit of Tether started in dogfood-29.
+    Systematically verify every concrete, checkable claim in README.md and
+    docs/ARCHITECTURE.md, docs/SECURITY.md, docs/ADAPTERS.md, and
+    docs/DOGFOODING.md against the actual code. Fix drift in the docs;
+    pin each verified claim with a test. All existing tests keep passing.
+
+    TASK 1 - CLAIM INVENTORY AND AUDIT:
+    Walk each doc file section by section. For every claim that can be
+    checked mechanically (config default values, command names and flags,
+    event kinds, env vars, adapter settings, limits like prompt/context
+    size caps, retry/backoff numbers), compare it to the code in src/tether/
+    and record whether it is TRUE or STALE. Focus areas known to have
+    drifted: TetherConfig defaults (src/tether/models.py), retries spec
+    (dogfood-31 fields), sandbox_mode semantics (dogfood-26), retention_days,
+    review-gate consensus options (dogfood-32), clean-room copy rules
+    (dogfood-23).
+
+    TASK 2 - CORRECT THE DRIFT:
+    Update the DOCS wherever they are wrong. Never change code behavior to
+    match stale docs unless the doc reflects an agreed contract the code
+    genuinely violates — in that case prefer fixing the DOC and noting the
+    discrepancy in the final report instead of changing runtime behavior.
+    Keep edits minimal and surgical.
+
+    TASK 3 - PIN VERIFIED CLAIMS WITH TESTS:
+    Extend tests/test_docs.py so that for each newly verified claim there
+    is a test that fails if the claim drifts again. Where practical, pin
+    against the SOURCE OF TRUTH (e.g. import TetherConfig defaults rather
+    than restating literal values in the test). Cover at minimum:
+    (a) every documented config key exists on TetherConfig with the
+        documented default;
+    (b) documented CLI commands/subcommands exist in the click app;
+    (c) documented adapter setting names match what adapters read;
+    (d) documented limitations sections still mention the reader-straggler
+        note from dogfood-33/34.
+
+    TASK 4 - AUDIT REPORT SECTION IN DOCS:
+    Add a short "Documentation truth audit" subsection to docs/DOGFOODING.md
+    listing which files were audited, how many claims verified/corrected,
+    and any claims that could NOT be mechanically checked.
+
+constraints:
+  - do not change runtime code behavior; this mission fixes docs and adds tests
+  - if code contradicts a documented contract, fix the DOC and note it
+  - do not weaken existing tests; all current tests must keep passing
+  - no new third-party dependencies (stdlib only)
+  - subprocess stays shell=False everywhere
+
+context_files:
+  - README.md
+  - docs/ARCHITECTURE.md
+  - docs/SECURITY.md
+  - docs/ADAPTERS.md
+  - docs/DOGFOODING.md
+  - src/tether/models.py
+  - src/tether/cli.py
+  - tests/test_docs.py
+
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+    - ".venv/bin/tether adapters conformance mock"
+  artifacts:
+    - "tests/test_docs.py"
+    - "docs/DOGFOODING.md"
+  assertions:
+    - path: tests/test_docs.py
+      contains: TetherConfig
+    - path: tests/test_docs.py
+      contains: retention_days
+    - path: docs/DOGFOODING.md
+      contains: Documentation truth audit
+  probes:
+    - command: "python -m pytest -q tests/test_docs.py"
+      contains: passed
+
+recovery:
+  max_attempts: 4
+  strategy: cumulative
+
+review:
+  enabled: true
+  required: true
+  adapter: opencode
+  retry_on_rejection: true
+  context: full
+
+budget:
+  max_sends: 10
+  max_wall_seconds: 5400
+
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 1800
+
+allowed_paths:
+  - README.md
+  - docs/**
+  - tests/**
+  - missions/dogfood-36-docs-truth-v2.yaml
+
+forbidden_paths:
+  - .git/**
+  - .tether/**
+  - src/tether/adapters/**
