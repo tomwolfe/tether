@@ -325,3 +325,56 @@ def test_security_doc_non_git_restore_bullet_matches_implementation():
     assert "created *after* the backup are kept" in bullet
     assert "are lost" not in bullet
     assert "refuses restore" in bullet
+
+
+# ------------------- documentation truth (dogfood-35 ops pipeline)
+
+
+def test_readme_scrub_documents_chain_extension_and_bounded_scope():
+    """The ops pipeline docs must tie scrubbing to chain integrity: the
+    README scrub section promises the appended scrub event plus strict
+    per-session scope, and SECURITY.md's audit-chain section names the
+    `logs <id> --verify` command that proves the chain afterwards."""
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    scrub = readme.split("### Secret scrubbing", 1)[1].split("\n## ", 1)[0]
+    assert "appends a `scrub` event to `events.jsonl`" in scrub
+    assert "[REDACTED" in scrub
+    assert "Without `--confirm` it prints a plan" in scrub
+    assert "never reads or writes outside the session directory" in scrub
+    security = (REPO_ROOT / "docs" / "SECURITY.md").read_text(
+        encoding="utf-8")
+    chain = security.split("## Audit chain", 1)[1].split("\n## ", 1)[0]
+    assert "`tether logs <session-id> --verify`" in chain
+    assert "SHA-256 hash chain" in chain
+    assert "tamper-evident, not tamper-proof" in chain
+
+
+def test_readme_stats_documents_malformed_session_resilience():
+    """The stats paragraph must document that malformed/truncated/half-
+    written session directories are skipped gracefully and never corrupt
+    the aggregates of valid sessions."""
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    paragraph = next(line for line in readme.splitlines()
+                     if line.startswith("`tether sessions stats`"))
+    assert "malformed, truncated, or half-written session directories" \
+        in paragraph
+    assert "skipped gracefully instead of failing the command" in paragraph
+    assert "never corrupt the aggregates of valid sessions" in paragraph
+    # Pre-existing pins on the same paragraph stay true.
+    assert "per-mission baselines" in paragraph
+
+
+def test_readme_clean_documents_confirm_requirement_and_retention():
+    """The clean command's docs must make the --confirm requirement and the
+    retention_days fallback unmissable: the quick tour shows the preview
+    (nothing deleted) vs --confirm pair, and the config-keys sentence names
+    retention_days as the --older-than fallback."""
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    tour = readme.split("## Quick tour", 1)[1].split("\n## ", 1)[0]
+    assert "# preview old-session cleanup (nothing deleted)" in tour
+    assert ("tether sessions clean --older-than 30d --confirm   "
+            "# delete session dirs older than 30 days") in tour
+    keys_line = next(line for line in readme.splitlines()
+                     if line.startswith("Config keys:"))
+    assert ("`retention_days` (used by `sessions clean` when "
+            "`--older-than` is omitted)") in keys_line
