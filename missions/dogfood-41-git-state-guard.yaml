@@ -49,7 +49,8 @@ mission:
     passes unchanged — do not edit its assertions.
 
 constraints:
-  - "only src/tether/models.py, src/tether/orchestrator.py, docs/ARCHITECTURE.md, docs/DOGFOODING.md may be modified"
+  - "only src/tether/models.py, src/tether/mission.py, src/tether/orchestrator.py, docs/ARCHITECTURE.md, docs/DOGFOODING.md may be modified"
+  - "this run executes WITH git_state_guard enabled (self-verification): any history/ref drift fails it live"
   - "the committed RED tests must pass WITHOUT editing their assertions"
   - "default OFF keeps every existing mission byte-identical (no new keys, events, or checks)"
   - "reset_to_checkpoint recovery must NOT trip the guard (its resets restore HEAD to original_head)"
@@ -98,6 +99,8 @@ budget:
   max_sends: 10
   max_wall_seconds: 10800
 
+git_state_guard: true
+
 adapter: opencode
 adapters:
   opencode:
@@ -106,6 +109,7 @@ adapters:
 
 allowed_paths:
   - src/tether/models.py
+  - src/tether/mission.py
   - src/tether/orchestrator.py
   - docs/**
   - missions/dogfood-41-git-state-guard.yaml
