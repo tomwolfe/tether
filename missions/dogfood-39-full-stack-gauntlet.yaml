@@ -1,0 +1,91 @@
+# Mission: dogfood-39-full-stack-gauntlet
+# Findings: no mission has yet exercised the FULL verification stack in a
+# single real-opencode run: clean-room execution + clean-room verification,
+# mutation testing with a kill-rate gate, multi-reviewer consensus, streaming
+# callback, and a tight wall/sends budget, all against a non-trivial scoped
+# refactor of Tether itself. This mission composes every layer at once.
+mission:
+  name: dogfood-39-full-stack-gauntlet
+  goal: |
+    Perform one scoped, behavior-preserving refactor of Tether under the
+    FULL verification stack. The refactor: deduplicate the repeated
+    "resolve a session id prefix to exactly one directory under the audit
+    dir" logic that appears in multiple `sessions` CLI commands
+    (src/tether/cli.py) into a single private helper, and route all call
+    sites through it. Behavior must be byte-identical: same error messages,
+    same exit codes, same ambiguity handling.
+
+    REQUIREMENTS:
+    - The helper must be typed and unit-testable; add focused unit tests
+      for it (unique match, ambiguous prefix -> same error as today,
+      no match -> same error as today).
+    - All existing tests keep passing unchanged.
+    - No changes outside src/tether/cli.py, tests/, and this mission file.
+
+constraints:
+  - "behavior-preserving: CLI output byte-identical for success AND error paths"
+  - "do not change AgentAdapter method signatures"
+  - "no new third-party dependencies (stdlib only)"
+  - "subprocess stays shell=False everywhere"
+
+context_files:
+  - src/tether/cli.py
+  - docs/ARCHITECTURE.md
+  - README.md
+
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+    - ".venv/bin/tether adapters conformance mock"
+    - ".venv/bin/tether sessions list"
+  artifacts:
+    - "src/tether/cli.py"
+  assertions:
+    - path: src/tether/cli.py
+      matches: def _resolve_session(_?dir|path)
+  probes:
+    - command: ".venv/bin/tether sessions stats"
+      contains: Per-adapter
+  # Meta-verification: mutate cli.py and require the suite to catch it.
+  mutation:
+    enabled: true
+    fail_below: 0.5
+    max_mutants: 15
+  # Run the whole battery in a throwaway checkout of the checkpoint plus
+  # the captured change; never trust the agent's working tree.
+  clean_room: true
+  clean_room_copy:
+    - .venv
+
+recovery:
+  max_attempts: 4
+  strategy: reset_to_checkpoint
+
+review:
+  enabled: true
+  required: true
+  retry_on_rejection: true
+  context: full
+  reviewers: [opencode]
+  consensus: all
+
+budget:
+  max_sends: 10
+  max_wall_seconds: 10800
+
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 2700
+
+allowed_paths:
+  - src/tether/**
+  - tests/**
+  - missions/dogfood-39-full-stack-gauntlet.yaml
+
+forbidden_paths:
+  - .git/**
+  - .tether/**
