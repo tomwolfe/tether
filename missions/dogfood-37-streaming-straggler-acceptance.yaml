@@ -1,0 +1,112 @@
+# Mission: dogfood-37-streaming-straggler-acceptance
+# Findings: dogfood-33 fixed a reader-thread hang by making reader threads
+# daemon threads that give up joining after READER_JOIN_GRACE_SECONDS when
+# a surviving descendant holds stdout/stderr. dogfood-34 documented this
+# as an accepted limitation. No test has ever PROVEN the trade-off is
+# bounded: multiple surviving descendants, long-lived holders, repeated
+# sends, and prompt send() return times are all untested.
+mission:
+  name: dogfood-37-streaming-straggler-acceptance
+  goal: |
+    Prove the streaming straggler trade-off (dogfood-33/34) is bounded and
+    acceptable with acceptance tests, and document the exact bound. All
+    existing tests keep passing.
+
+    TASK 1 - STRAGGLER STRESS TESTS:
+    Add tests (tests/test_reader_straggler.py or extend the existing
+    CommandAdapter/streaming tests) using real subprocesses, no sleeps
+    longer than necessary:
+    (a) A single surviving descendant holding stdout/stderr: send() must
+        return promptly (well under a generous bound), the final chunk
+        must still be delivered up to the grace window, and the process
+        must not hang.
+    (b) MULTIPLE surviving descendants (>=3) each holding duplicated pipe
+        fds: same assertions — bounded join, no deadlock.
+    (c) Repeated sends across several sequential agent runs in one process,
+        each leaving a straggler behind: assert fd/thread counts do not
+        grow unboundedly (daemon readers exit once their pipes close or
+        are GC'd; measure via threading.active_count() before/after and
+        open-fd count where available).
+    (d) The clean path regression: an adapter run whose child exits
+        normally must still join readers within the grace window and
+        deliver ALL output — proving the grace mechanism did not weaken
+        the normal case.
+
+    TASK 2 - DOCUMENT THE EXACT BOUND:
+    In docs/ADAPTERS.md "Current limitations", replace the vague
+    "bounded in practice" phrasing with the precise mechanism: daemon
+    reader threads, READER_JOIN_GRACE_SECONDS = 2.0 join grace, output
+    from a held-open pipe may be truncated after the grace expires, and
+    fds stay open until the descendant exits or is reaped. Pin these doc
+    claims in tests/test_docs.py.
+
+    TASK 3 - ACCEPTANCE CRITERIA AS TESTS:
+    Encode the acceptance decision itself as tests: send() latency with a
+    straggler stays under 5 seconds; normal-path output completeness is
+    byte-exact; thread count returns to baseline after straggler pipes
+    close. If any criterion fails, the mission fails — that IS the finding.
+
+constraints:
+  - do not change AgentAdapter method signatures (hard rule)
+  - do not change runtime behavior of command.py unless a test proves an
+    actual unbounded leak; if so, make the minimal fix and explain it
+  - subprocess usage in tests may use shell=False only; no os.system
+  - no new third-party dependencies (stdlib only)
+  - tests must be deterministic enough to pass repeatedly (avoid racy
+    timing asserts; use generous bounds)
+
+context_files:
+  - src/tether/adapters/command.py
+  - docs/ADAPTERS.md
+  - tests/test_docs.py
+
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests"
+    - "mypy src/tether"
+    - ".venv/bin/tether adapters conformance mock"
+  artifacts:
+    - "tests/test_reader_straggler.py"
+    - "docs/ADAPTERS.md"
+  assertions:
+    - path: tests/test_reader_straggler.py
+      contains: straggler
+    - path: docs/ADAPTERS.md
+      contains: READER_JOIN_GRACE_SECONDS
+    - path: tests/test_docs.py
+      contains: READER_JOIN_GRACE_SECONDS
+  probes:
+    - command: "python -m pytest -q tests/test_reader_straggler.py"
+      contains: passed
+
+recovery:
+  max_attempts: 4
+  strategy: cumulative
+
+review:
+  enabled: true
+  required: true
+  adapter: opencode
+  retry_on_rejection: true
+  context: full
+
+budget:
+  max_sends: 12
+  max_wall_seconds: 10800
+
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 2700
+
+allowed_paths:
+  - src/tether/adapters/**
+  - tests/**
+  - docs/**
+  - missions/dogfood-37-streaming-straggler-acceptance.yaml
+
+forbidden_paths:
+  - .git/**
+  - .tether/**
