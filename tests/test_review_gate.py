@@ -960,3 +960,47 @@ def test_reviewers_and_consensus_validate_in_contract(tmp_path):
                           "review:\n  enabled: true\n  consensus: two-thirds\n")
     with pytest.raises(MissionError):
         load_mission(bad_policy)
+
+
+# ------------------------- verdict parsing vs ANSI reviewer output (dogfood-40v2)
+#
+# Live fire (session 7f460335, real opencode reviewer): escape-prefixed
+# verdict lines are never recognized and the recorded reason was
+# "\x1b[0m" because the line after a bare marker was color-reset noise.
+# These acceptance tests FAIL against the current raw-line parser; the
+# dogfood-40 v2 mission makes them pass.
+
+
+def test_ansi_prefixed_verdict_line_still_decides():
+    from tether.orchestrator import _parse_review_verdict
+    logs = "\x1b[1mREVIEW: APPROVE\x1b[0m\n\x1b[0m\nship it\n"
+    verdict, reason = _parse_review_verdict(logs)
+    assert verdict == "approve"
+    assert reason == "ship it"
+
+
+def test_reason_prefers_substance_after_token_on_marker_line():
+    from tether.orchestrator import _parse_review_verdict
+    logs = ("REVIEW: REQUEST_CHANGES \x1b[0m— patch.diff is empty, "
+            "no work captured\n\x1b[0m\n> build · model\n")
+    verdict, reason = _parse_review_verdict(logs)
+    assert verdict == "request_changes"
+    assert reason == "— patch.diff is empty, no work captured"
+
+
+def test_reason_skips_ansi_only_lines_after_bare_marker():
+    from tether.orchestrator import _parse_review_verdict
+    logs = "REVIEW: APPROVE\n\x1b[0m\n\x1b[2m\x1b[0m\nthe goal is met\n"
+    verdict, reason = _parse_review_verdict(logs)
+    assert verdict == "approve"
+    assert reason == "the goal is met"
+
+
+def test_ansi_stripping_does_not_change_clean_output_semantics():
+    from tether.orchestrator import _parse_review_verdict
+    # Bare marker + plain reasoning line: unchanged historical contract.
+    assert _parse_review_verdict("REVIEW: APPROVE\ntext\n") == \
+        ("approve", "text")
+    # No marker at all: unchanged fail-safe diagnostic.
+    assert _parse_review_verdict("\x1b[0mnothing here\x1b[0m") == \
+        ("request_changes", "no valid review verdict found in reviewer output")

@@ -30,6 +30,13 @@ Session audit trails live under `.tether/sessions/`.
 4. **Two bugs shipped by mission 3 were caught immediately** by manual use:
    `validate-config --strict` exited 0 despite printing INVALID, and
    unregistered adapter names were silently skipped. Both became mission 4.
+5. **Review-verdict parser vs ANSI output (dogfood-40 live fire)**: with the
+   real `opencode` reviewer, `_parse_review_verdict` scans raw lines and
+   takes `lines[idx + 1]` as the reason — an escape-prefixed verdict line
+   (`\x1b[1mREVIEW: ...`) is never recognized, and a bare marker followed by
+   a color-reset line records `reason: "\x1b[0m"`. Live evidence: session
+   `7f460335`, `responses/006-review.json` (substantive rejection text sat
+   ON the marker line; recovery received only `\x1b[0m`).
 
 ## Re-running
 
@@ -123,12 +130,21 @@ unknown-status `None` vs empty-set contract), documents the tool's seed
 parity and subprocess-free unit tests in ARCHITECTURE.md, and records this
 forensics here — all as uncommitted changes with HEAD at the pre-work base.
 
-Third rejection, purely mechanical: the repaired payload had been re-applied
-but then STAGED (`git add`), and tether's capture is the working-tree delta
-(`git diff` of unstaged changes plus untracked files), so every staged byte
-was invisible — the reviewer saw only that round's incremental tweaks (the
-deepened 66:8 probe, doc hardening, a `.py`-target check) with zero hunks
-for the other seven probes, the equivalent-survivor documentation, the tool,
-its unit tests, and the pins. Lesson: at capture time the index must equal
-the pre-work base and every deliverable must sit as an UNSTAGED working-tree
-change; staging is indistinguishable from not doing the work.
+Third rejection, mechanism corrected post-hoc: the repaired payload had
+been re-applied and STAGED, and the reviewer still saw zero hunks for most
+deliverables. Verified empirically against the implementation afterward:
+`patch.diff` is `git diff --binary <original_head>` — commit-vs-worktree —
+so staged bytes ARE captured (a staged edit shows up in the artifact);
+there is no unstaged-only blind spot. The real trap was lesson two's base
+confusion amplified across rounds: after `git reset`, deliverables that
+byte-match either the stale checkpoint or the dangling pre-work commit
+produce no hunks against whichever base the capture uses. Lesson: reason
+from the actual capture command (`git diff --binary <original_head>` plus
+the untracked listing) instead of folklore about staging semantics.
+
+Session forensics also surfaced a genuine Tether defect: the reviewer's
+raw output carried ANSI escapes, and the verdict parser recorded
+`reason: "\x1b[0m"` — the line after the decisive marker was pure color-code
+noise, starving recovery of actionable feedback and contributing to the
+agent's git-history surgery (invisible to the path-based write sandbox).
+Pinned as defect 5 below; fix targeted by the dogfood-40 v2 mission.
