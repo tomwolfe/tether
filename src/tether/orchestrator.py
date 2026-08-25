@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -88,15 +89,22 @@ REVIEW_FULL_CONTEXT_BUDGET = 64 * 1024
 # "REVIEW:". No qualifying line => request_changes.
 REVIEW_APPROVE_TOKEN = "review: approve"
 REVIEW_CHANGES_TOKEN = "review: request_changes"
+# dogfood-40 v2: real reviewers colorize their output, so verdict scanning
+# strips ANSI escape sequences BEFORE the line scan (stdlib regex covering
+# CSI sequences and two-byte ESC codes). Escape-only lines become blank, and
+# escape-prefixed marker lines still decide; clean output is untouched.
+_ANSI_ESCAPE_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])")
 
 
 def _verdict_lines(logs: str) -> list[tuple[int, str]]:
-    """Indices and lowered text of lines starting with a verdict marker."""
+    """Indices and case-preserved text of ANSI-stripped lines starting
+    with a verdict marker."""
     out: list[tuple[int, str]] = []
-    for idx, line in enumerate(logs.splitlines()):
-        stripped = line.strip().lower()
-        if stripped.startswith(REVIEW_APPROVE_TOKEN) or \
-                stripped.startswith(REVIEW_CHANGES_TOKEN):
+    for idx, line in enumerate(_ANSI_ESCAPE_RE.sub("", logs).splitlines()):
+        stripped = line.strip()
+        lowered = stripped.lower()
+        if lowered.startswith(REVIEW_APPROVE_TOKEN) or \
+                lowered.startswith(REVIEW_CHANGES_TOKEN):
             out.append((idx, stripped))
     return out
 
@@ -105,21 +113,33 @@ def _parse_review_verdict(logs: str) -> tuple[str, str]:
     """Fail-safe verdict parse over raw reviewer output.
 
     Returns ``(verdict, reason)`` where verdict is ``"approve"`` or
-    ``"request_changes"``. The last line beginning with a verdict marker
-    decides; output with no such line fails safe as request_changes; the
-    reason is the first line after the decisive marker (bounded), or a
-    short diagnostic when no marker is present.
+    ``"request_changes"``. ANSI escape sequences are stripped first, so
+    colorized output parses identically to clean output. The last line
+    beginning with a verdict marker decides; output with no such line
+    fails safe as request_changes. The reason prefers the decisive
+    line's own remainder after the verdict token when it carries
+    substance (e.g. ``REVIEW: REQUEST_CHANGES — patch.diff is empty``),
+    otherwise it walks forward past blank/escape-only lines to the first
+    substantive line; bounded. A short diagnostic is returned when no
+    marker is present.
     """
     candidates = _verdict_lines(logs)
     if not candidates:
         return ("request_changes",
                 "no valid review verdict found in reviewer output")
     idx, text = candidates[-1]
-    verdict = ("approve" if text.startswith(REVIEW_APPROVE_TOKEN)
-               else "request_changes")
-    lines = logs.splitlines()
-    reason = lines[idx + 1].strip() if idx + 1 < len(lines) else ""
-    return verdict, clip_output(reason, REVIEW_REASON_BUDGET)
+    approve = text.lower().startswith(REVIEW_APPROVE_TOKEN)
+    verdict = "approve" if approve else "request_changes"
+    token = REVIEW_APPROVE_TOKEN if approve else REVIEW_CHANGES_TOKEN
+    remainder = text[len(token):].strip()
+    if remainder:
+        return verdict, clip_output(remainder, REVIEW_REASON_BUDGET)
+    lines = _ANSI_ESCAPE_RE.sub("", logs).splitlines()
+    for line in lines[idx + 1:]:
+        substantive = line.strip()
+        if substantive:
+            return verdict, clip_output(substantive, REVIEW_REASON_BUDGET)
+    return verdict, ""
 
 
 # Meta-trust (dogfood-24): a reviewer's verdict is only trusted after an

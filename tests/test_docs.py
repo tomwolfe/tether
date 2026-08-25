@@ -708,3 +708,20 @@ def test_dogfooding_records_the_dogfood40_audit():
     assert "src/tether/cleanroom.py" in section
     assert "tests/test_cleanroom.py" in section
     assert "0.92" in section
+
+
+def test_architecture_step12_documents_ansi_stripping_and_reason_rule():
+    """dogfood-40 v2 docs-truth pin: the review-gate step must state that
+    verdict scanning strips ANSI escape sequences before scanning, and how
+    the recorded reason is extracted (decisive line's post-token remainder
+    preferred; otherwise the first substantive line past blank/escape-only
+    lines). The fail-safe last-marker contract stays pinned too."""
+    arch = (REPO_ROOT / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
+    step12 = next(line for line in arch.splitlines()
+                  if line.startswith("12. Review gate")).lower()
+    assert "after ansi escape sequences are stripped first" in step12
+    assert "last line beginning with `review: approve` or " \
+        "`review: request_changes` decides" in step12
+    assert "remainder after the verdict token" in step12
+    assert "first substantive line after the marker" in step12
+    assert "skipping blank/escape-only lines" in step12

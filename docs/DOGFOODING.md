@@ -103,6 +103,11 @@ semantics). Post-mission kill rate: **0.92** (46/50) — the ceiling; the four
 remaining survivors are equivalent by construction and documented in the
 test module.
 
+Sessions: v1 `7f460335` (failed: payload pre-committed => empty captured
+change; four correct review rejections; forensics below), v2 `981c4003ea16`
+(success attempt 1: verification green incl. the kill-rate gate, adversarial
+review APPROVE with substantive reason).
+
 Session record: the first verification run was fully green (640 tests,
 ruff, mypy, mock conformance, kill-rate gate 0.92 ≥ 0.8) yet the adversarial
 review gate correctly rejected it: the entire payload had been committed
@@ -148,3 +153,16 @@ raw output carried ANSI escapes, and the verdict parser recorded
 noise, starving recovery of actionable feedback and contributing to the
 agent's git-history surgery (invisible to the path-based write sandbox).
 Pinned as defect 5 below; fix targeted by the dogfood-40 v2 mission.
+
+Outcome: the dogfood-40 v2 mission landed the defect-5 fix —
+`_parse_review_verdict` now strips ANSI escape sequences before scanning,
+so escape-prefixed verdict lines decide, the recorded reason prefers the
+decisive line's post-token remainder when it carries substance (e.g.
+`REVIEW: REQUEST_CHANGES — patch.diff is empty`) and otherwise walks
+forward past blank/escape-only lines to the first substantive line.
+Clean-output parsing is unchanged; pinned by the committed acceptance
+tests in `tests/test_review_gate.py` plus a docs-truth pin in
+`tests/test_docs.py`. The v2 session's own review gate then ran through
+the FIXED parser against the real opencode reviewer and returned an
+approve whose reason was substantive reviewer text — the exact path that
+produced `"\x1b[0m"` in v1.
