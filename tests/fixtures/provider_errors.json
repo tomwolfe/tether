@@ -1,0 +1,146 @@
+{
+  "description": "Hand-verified transient-failure classifier corpus harvested from past dogfood sessions (dogfood-38). Each entry maps real error text to the expected is_transient_failure() verdict; expectations are ground truth fixed by the mission author.",
+  "harvest_note": "Strings collected by scanning .tether/sessions/*/report.json, responses/*.json and verification/*.json across all 24 sessions present at harvest time. No transient_retry event was ever recorded in these sessions: the dogfood-33/34 provider flake was captured with the flake text in logs while error was 'exit code 1', so it is encoded both as surfaced adapter error (transient, per dogfood-34 signatures) and as captured (fatal, per the never-scan-logs contract).",
+  "entries": [
+    {
+      "id": "dogfood33_34_provider_console_upstream_unavailable",
+      "source": ".tether/sessions/20260824-144047-dogfood-34-reliability-gap-closure-c102f0a3/responses/002-plan.json (identical text ended 5 dogfood-33/34 planning sends)",
+      "status": "failed",
+      "error": "Error from provider (Console): Upstream request failed: Endpoint is unavailable.",
+      "expected": "transient",
+      "justification": "Real provider upstream outage text observed live while Tether dogfooded itself; matched case-insensitively by the 'upstream request failed' / 'endpoint is unavailable' signatures added in dogfood-34."
+    },
+    {
+      "id": "dogfood33_34_flake_as_captured_in_logs",
+      "source": ".tether/sessions/20260824-112905-dogfood-33-reader-thread-hang-repair-5427ce3d/responses/002-plan.json",
+      "status": "failed",
+      "error": "exit code 1",
+      "logs": "[91m[1mError: [0mError from provider (Console): Upstream request failed: Endpoint is unavailable.",
+      "expected": "fatal",
+      "justification": "As actually captured: flake text lived in logs and error was only 'exit code 1'. The classifier deliberately never scans logs (agent/test output legitimately mentions outage words), so this genuine-looking state must not retry - pinning that historical no-retry behavior."
+    },
+    {
+      "id": "agent_command_timeout_1800s_repair_send",
+      "source": ".tether/sessions/20260824-190621-dogfood-36-docs-truth-v2-*/responses/016-repair-3.json",
+      "status": "failed",
+      "error": "command timed out after 1800s: opencode",
+      "expected": "fatal",
+      "justification": "Tether's own agent-timeout kill from adapters/command.py; generic timeout wording stays non-transient so timeouts drive recovery exactly once instead of burning retries."
+    },
+    {
+      "id": "agent_command_timeout_2700s_execute_send",
+      "source": ".tether/sessions/20260824-205310-dogfood-36-docs-truth-v2-*/responses/004-execute.json",
+      "status": "failed",
+      "error": "command timed out after 2700s: opencode",
+      "expected": "fatal",
+      "justification": "Same class as the 1800s kill: Tether's own timeout semantics are genuine failures, never retried as infrastructure flakes."
+    },
+    {
+      "id": "verification_command_sigterm_kill_exit_minus_15",
+      "source": ".tether/sessions/20260824-001815-dogfood-02-adapter-smoke-a0c9b392/report.json recovery_attempts[0].failing_output",
+      "status": "failed",
+      "error": "--- COMMAND: python -m pytest -q (exit code -15) ---",
+      "expected": "fatal",
+      "justification": "Verification command killed by SIGTERM after its deadline (negative returncode -15); timeout kills are a genuine failure class owned by the recovery loop, not an infrastructure flake."
+    },
+    {
+      "id": "assertion_failure_cleanroom_leftovers",
+      "source": ".tether/sessions/20260824-092223-dogfood-32-streaming-and-consensus-f58b67d0/verification/attempt-01.json (tempdir path elided)",
+      "status": "failed",
+      "error": "E       AssertionError: assert [PosixPath('/tmp/tether-cleanroom-qtznd3w2')] == []",
+      "expected": "fatal",
+      "justification": "Ordinary agent mistake: a real assertion failure from dogfood-32's first verification attempt; recovered via repair, never via retry."
+    },
+    {
+      "id": "assertion_failure_report_status_success",
+      "source": ".tether/sessions/20260824-092223-dogfood-32-streaming-and-consensus-f58b67d0/verification/attempt-01.json",
+      "status": "failed",
+      "error": "assert report[\"status\"] == \"success\", report[\"next_steps\"]",
+      "expected": "fatal",
+      "justification": "Ordinary agent mistake: failing test assertion captured verbatim from a real verification run; must drive repair, not retry."
+    },
+    {
+      "id": "syntax_error_invalid_syntax",
+      "source": "representative of ordinary agent mistakes (no verbatim SyntaxError survived in session artifacts)",
+      "status": "failed",
+      "error": "SyntaxError: invalid syntax",
+      "expected": "fatal",
+      "justification": "Agent-authored code defect class required by the mission corpus; pure code mistake, always repaired never retried."
+    },
+    {
+      "id": "generic_exit_code_1_crashed_send",
+      "source": ".tether/sessions/*/responses/*.json (11 failed sends across dogfood-30/32/33/36/37)",
+      "status": "failed",
+      "error": "exit code 1",
+      "expected": "fatal",
+      "justification": "The single most common real failure signature in the audit trail: adapter CLI exited nonzero for ordinary reasons; nothing infrastructure-flake-shaped, so no retry."
+    },
+    {
+      "id": "empty_output_review_send",
+      "source": "derived from real outcomes: dogfood-30/33 review sends whose verdict parse found no output ('no valid review verdict found in reviewer output')",
+      "status": "failed",
+      "error": "exit code 1",
+      "logs": "",
+      "expected": "fatal",
+      "justification": "Empty-output failure: agent produced zero output on a send; absence of any flake signature must keep prior fail-safe semantics (recovery/fail-closed), not retry."
+    }
+  ],
+  "near_misses": [
+    {
+      "id": "bare_word_endpoint",
+      "status": "failed",
+      "error": "endpoint",
+      "justification": "Signature word alone without the outage phrase must never match."
+    },
+    {
+      "id": "request_failed_validation",
+      "status": "failed",
+      "error": "request failed validation: schema mismatch",
+      "justification": "Shares words with 'upstream request failed' but is an application-level validation error."
+    },
+    {
+      "id": "endpoint_http_500_validation_traceback",
+      "status": "failed",
+      "error": "endpoint returned HTTP 500 with validation traceback",
+      "justification": "Adjacent status code 500 is deliberately not a gateway-flake signature (only 502/503/504 are)."
+    },
+    {
+      "id": "agent_prints_provider_text_into_own_logs",
+      "status": "failed",
+      "error": "exit code 1",
+      "logs": "print('Upstream Request Failed: Endpoint is unavailable.')",
+      "justification": "Agent-authored code printing provider-like text into its own output: logs are never scanned, so this stays fatal."
+    },
+    {
+      "id": "near_miss_number_15023",
+      "status": "failed",
+      "error": "line 15023 mismatch; expected 15024",
+      "justification": "Word-boundary guard: embedded 502-like digit runs inside larger numbers must not match."
+    },
+    {
+      "id": "number_starting_with_503",
+      "status": "failed",
+      "error": "50300 records migrated before abort",
+      "justification": "Trailing digits defeat the \\b boundary: 50300 is data, not a gateway status."
+    },
+    {
+      "id": "provider_console_words_without_signature",
+      "status": "failed",
+      "error": "provider console reported failure",
+      "justification": "Provider/console vocabulary alone carries no verdict weight without an exact signature phrase."
+    },
+    {
+      "id": "completed_state_with_outage_words_in_logs",
+      "status": "completed",
+      "logs": "network_error overload 503 handled gracefully by retry helper under test",
+      "justification": "Completed states are never transient regardless of what their captured output mentions."
+    },
+    {
+      "id": "blank_error_blank_logs",
+      "status": "needs_input",
+      "error": "",
+      "logs": "",
+      "justification": "No text at all: nothing can match, state keeps plain non-transient semantics."
+    }
+  ]
+}

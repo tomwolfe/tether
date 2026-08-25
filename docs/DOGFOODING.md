@@ -67,3 +67,12 @@ context-file caps and budgets, retry/backoff numbers, sandbox-mode semantics,
   live-fire field notes, defect stories), subjective-strength phrasing such
   as "best-effort" or "not OS-level containment", and command shapes observed
   against specific locally installed agent-CLI versions.
+
+## Transient-classifier corpus audit (dogfood-38)
+
+A corpus of real error strings harvested from past session artifacts
+(`tests/fixtures/provider_errors.json`) was pinned by parameterized stress
+tests (`tests/test_transient_corpus.py`), including adversarial near-misses.
+Audit result: **zero classification gaps** — every corpus entry and near-miss
+already classified correctly under the unchanged dogfood-34 signatures, so no
+`reliability.py` changes were needed.
