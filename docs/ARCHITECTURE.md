@@ -68,6 +68,30 @@ Effective values follow strict precedence: mission explicit value > project conf
 
 Enforce narrows risk but does not eliminate it: it is best-effort detection inside the normal loop, not OS-level containment (see docs/SECURITY.md).
 
+## Quantitative verification strength (dogfood-40)
+
+`tools/mutation_killrate.py` measures the mutation kill rate of an explicit
+(source file × test suite) pair using Tether's own deterministic mutant
+generator — the built-in mutation tier can only target the agent's changed
+files, so audits need this explicit form. `--target` names one `.py` file,
+`--suite` (repeatable) names pytest paths re-run per mutant with `-x -q`,
+`--max-mutants` caps generation deterministically (0 = all sites), and
+`--min-kill-rate` turns the measurement into a gate: exit code 2 below it,
+exit code 0 at or above it, exit code 1 on harness error. Mutant generation
+derives its per-file seed exactly like `run_mutation_testing`, so results are
+reproducible against the built-in tier, and the tool's counting, crash-as-kill
+semantics, deterministic cap, and gate boundaries are unit-tested without
+spawning subprocesses by injecting the suite runner
+(`tests/test_mutation_killrate.py`).
+
+Pinned gate: mutations of `src/tether/cleanroom.py` against
+`tests/test_cleanroom.py` must hold a kill rate ≥ 0.80; measured 0.92
+(46/50) after dogfood-40 added survivor-killing probes to that suite. The
+four permanent survivors are equivalent by construction (`return None`
+mutated to itself via break_return; `return False` mutated to `return None`
+where `_is_relative` results are only used for truthiness) and documented
+in `tests/test_cleanroom.py`.
+
 The loop never references a concrete adapter type; it only calls the `AgentAdapter` interface (`is_available`, `start_session`, `send`, `cancel`, plus prompt builders). Adding an agent = adding a registry entry or a config block.
 
 ## Design rules

@@ -1,6 +1,7 @@
 """Clean-room verification (dogfood-23): false-green closure end-to-end,
 materializer semantics, fail-closed orchestration, and contract validation."""
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -11,7 +12,12 @@ import pytest
 import tether.orchestrator as orch_module
 from tether.adapters.base import AgentAdapter, SessionInfo
 from tether.audit import find_session_dir
-from tether.cleanroom import CleanRoomError, materialize_clean_room
+from tether.cleanroom import (
+    CleanRoomError,
+    _contained,
+    _gitignored_paths,
+    materialize_clean_room,
+)
 from tether.mission import MissionError, load_mission
 from tether.models import AgentState, TetherConfig
 from tether.orchestrator import Orchestrator
@@ -398,3 +404,126 @@ def test_invalid_clean_room_contract_raises(tmp_path, block):
     mp.write_text(_mission_text(block), encoding="utf-8")
     with pytest.raises(MissionError):
         load_mission(mp)
+
+
+# --------------------------- task 5: mutation-survivor probes (dogfood-40)
+#
+# Every probe in this section exists to kill a specific mutant that survived
+# the full cleanroom.py mutation battery (tools/mutation_killrate.py,
+# baseline kill rate 0.76 < gate 0.8). Four of the twelve survivors are
+# equivalent by construction and are documented, not probed:
+#   - 74:8 / 76:8 break_return turn `return None` into itself;
+#   - 83:8 / 85:8 turn `return False` into `return None`, indistinguishable
+#     at every call site because _is_relative is only used for truthiness.
+
+
+def test_gitignored_paths_empty_listing_is_provably_not_ignored(tmp_path):
+    # Kills 66:8 (break_return on `return set()` -> None): an empty listing
+    # means gitignore status was never queried, i.e. PROVABLY none ignored —
+    # distinct from None ("status unknown => callers must skip").
+    assert _gitignored_paths(tmp_path, []) == set()
+    assert _gitignored_paths(tmp_path, []) is not None
+    # The two outcomes are observably different: outside any git repository
+    # check-ignore cannot decide, and the contract demands None (skip), not
+    # set() (allow), so callers fail closed on undeterminable status.
+    outside_any_repo = tmp_path / "not-a-repo"
+    outside_any_repo.mkdir()
+    assert _gitignored_paths(outside_any_repo, ["x"]) is None
+
+
+def test_contained_treats_root_itself_as_inside_boundary(tmp_path):
+    # Kills 91:11 (negate_compare `resolved == root` -> !=): the containment
+    # contract guarding every copy path is inclusive at the root boundary.
+    root = tmp_path.resolve()
+    assert _contained(root, root) is True
+    assert _contained(root / "sub" / "leaf.txt", root) is True
+    sibling = tmp_path.parent / (tmp_path.name + "-sibling")
+    assert _contained(sibling, root) is False
+
+
+def _materialize_project(tmp_path):
+    project = tmp_path / "proj"
+    project.mkdir()
+    _git_repo(project)
+    session = tmp_path / "session"
+    _capture_artifacts(project, session)
+    return project, session
+
+
+def test_absolute_copy_entry_rejected_with_exact_relative_path_error(
+        tmp_path):
+    # Kills 83:15 (flip_bool False->True): under the mutant the absolute
+    # entry slips past the relative-path contract and dies later with the
+    # DIFFERENT "escapes the project dir" message; pin the real message.
+    project, session = _materialize_project(tmp_path)
+    with pytest.raises(CleanRoomError,
+                       match="must be a relative path: '/etc'"):
+        materialize_clean_room(project, "HEAD", session, ["/etc"],
+                               tmp_path / "room")
+
+
+def test_materialize_creates_missing_dest_parents(tmp_path):
+    # Kills 122:27 (flip_bool parents=True -> False): the contract is
+    # "dest (which is created)" — any not-yet-existing destination path must
+    # work, not just destinations whose parent already exists.
+    project, session = _materialize_project(tmp_path)
+    deep = tmp_path / "deep" / "nest" / "room"
+    materialize_clean_room(project, "HEAD", session, [], deep)
+    assert (deep / "app.py").is_file()
+
+
+def test_rematerialize_into_existing_dest_is_idempotent(tmp_path):
+    # Kills 122:42 (flip_bool exist_ok=True -> False): retrying a run into a
+    # reused staging directory (e.g. after a partial failure) must succeed.
+    project, session = _materialize_project(tmp_path)
+    dest = tmp_path / "room"
+    materialize_clean_room(project, "HEAD", session, [], dest)
+    materialize_clean_room(project, "HEAD", session, [], dest)
+    assert (dest / "app.py").read_text(encoding="utf-8") == (
+        "def value():\n    return 1\n")
+
+
+def test_dir_copy_preserves_symlinks_instead_of_dereferencing(tmp_path):
+    # Kills 191:54 (flip_bool symlinks=True -> False): copied trees keep
+    # symlinks AS symlinks; dereferencing would duplicate or break them.
+    project, session = _materialize_project(tmp_path)
+    (project / ".venv" / "bin").mkdir(parents=True)
+    (project / ".venv" / "bin" / "real.txt").write_text("r",
+                                                        encoding="utf-8")
+    os.symlink("real.txt", project / ".venv" / "bin" / "link.txt")
+    dest = tmp_path / "room"
+    materialize_clean_room(project, "HEAD", session, [".venv"], dest)
+    link = dest / ".venv" / "bin" / "link.txt"
+    assert link.is_symlink()
+    assert os.readlink(link) == "real.txt"
+
+
+def test_file_copy_entry_creates_missing_target_dirs(tmp_path):
+    # Kills 194:44 (flip_bool parents=True -> False): a file entry nested
+    # TWO levels below dest (both levels absent from the checkpoint archive)
+    # must be created on demand; parents=False cannot create intermediates.
+    # freshdir is gitignored so the step-3 untracked carry cannot pre-create
+    # it — only this branch's own mkdir can.
+    project, session = _materialize_project(tmp_path)
+    (project / "freshdir" / "nested").mkdir(parents=True)
+    (project / "freshdir" / "nested" / "tool.conf").write_text(
+        "cfg\n", encoding="utf-8")
+    with open(project / ".gitignore", "a", encoding="utf-8") as fh:
+        fh.write("freshdir/\n")
+    dest = tmp_path / "room"
+    materialize_clean_room(project, "HEAD", session,
+                           ["freshdir/nested/tool.conf"], dest)
+    assert (dest / "freshdir" / "nested" / "tool.conf").read_text(
+        encoding="utf-8") == "cfg\n"
+
+
+def test_plain_file_copy_entry_overwrites_archive_bytes(tmp_path):
+    # Kills 194:59 (flip_bool exist_ok=True -> False): the target's parent
+    # (the extracted dest root) ALWAYS pre-exists for file entries, so the
+    # mkdir must tolerate it; also pins that the explicit copy wins over
+    # the pristine archive content.
+    project, session = _materialize_project(tmp_path)
+    (project / "app.py").write_text(FIXED_APP, encoding="utf-8")
+    dest = tmp_path / "room"
+    materialize_clean_room(project, "HEAD", session, ["app.py"], dest)
+    assert (dest / "app.py").read_text(encoding="utf-8") == FIXED_APP

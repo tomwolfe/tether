@@ -76,3 +76,59 @@ tests (`tests/test_transient_corpus.py`), including adversarial near-misses.
 Audit result: **zero classification gaps** — every corpus entry and near-miss
 already classified correctly under the unchanged dogfood-34 signatures, so no
 `reliability.py` changes were needed.
+
+## Clean-room mutation strength audit (dogfood-40)
+
+Tier-1 quantitative audit measured three targets with tether's own generator
+(full enumeration): `verification.py` vs its suites scored **0.975** (gate
+0.7 met) and `_run_review_gate` vs `tests/test_review_gate.py` scored
+**0.737** (gate 0.6 met), but `src/tether/cleanroom.py` against
+`tests/test_cleanroom.py` scored **0.7600** — below the mandated 0.8 gate —
+with 12 survivors, including a flipped path-containment comparison and a
+symlink-dereference flip. Because the built-in mutation tier can only target
+an agent's changed files, the audit shipped as a reusable gate,
+`tools/mutation_killrate.py`, now a permanent verification command in the
+mission file. Eight survivor-killing probes were added to
+`tests/test_cleanroom.py` (empty-listing `{}` vs unknown `None`, inclusive
+`_contained` boundary, exact absolute-entry contract error, dest parents +
+idempotent re-materialization, symlink preservation, file-copy mkdir
+semantics). Post-mission kill rate: **0.92** (46/50) — the ceiling; the four
+remaining survivors are equivalent by construction and documented in the
+test module.
+
+Session record: the first verification run was fully green (640 tests,
+ruff, mypy, mock conformance, kill-rate gate 0.92 ≥ 0.8) yet the adversarial
+review gate correctly rejected it: the entire payload had been committed
+BEFORE the session's checkpoint, so the captured change (`git diff` against
+the checkpoint HEAD plus untracked files) was empty and the reviewer was
+shown "(no change captured)" — with no diff, none of the required work is
+demonstrable. Lesson: tether verifies the WORKING-TREE change relative to
+the checkpoint, so mission work must be delivered as uncommitted changes,
+never pre-committed. The repair round restored the payload to an
+uncommitted working-tree change (`git reset` to the pre-work base, content
+byte-identical), hardened `tools/mutation_killrate.py` (`.py`-only target
+contract), and closed two pinning gaps (`--max-mutants 0` = full
+enumeration; the DOGFOODING audit record pin itself).
+
+Second rejection, subtler cause: the reset orphaned the pre-checkpoint
+commit, but the capture was still taken against THAT commit as base — and
+three deliverables (the `tests/test_cleanroom.py` probes, the
+ARCHITECTURE.md gate section, the mission file) matched it byte-for-byte,
+so the captured diff showed zero hunks for them and Tasks 1–3 looked
+undemonstrable. Lesson: a payload restored by `git reset` must not merely
+equal the dangling commit's trees; each deliverable needs to differ from
+BOTH the pre-work base and any stale checkpoint base so every plausible
+capture shows real hunks. This round deepens the 66:8 probe (pins the
+unknown-status `None` vs empty-set contract), documents the tool's seed
+parity and subprocess-free unit tests in ARCHITECTURE.md, and records this
+forensics here — all as uncommitted changes with HEAD at the pre-work base.
+
+Third rejection, purely mechanical: the repaired payload had been re-applied
+but then STAGED (`git add`), and tether's capture is the working-tree delta
+(`git diff` of unstaged changes plus untracked files), so every staged byte
+was invisible — the reviewer saw only that round's incremental tweaks (the
+deepened 66:8 probe, doc hardening, a `.py`-target check) with zero hunks
+for the other seven probes, the equivalent-survivor documentation, the tool,
+its unit tests, and the pins. Lesson: at capture time the index must equal
+the pre-work base and every deliverable must sit as an UNSTAGED working-tree
+change; staging is indistinguishable from not doing the work.

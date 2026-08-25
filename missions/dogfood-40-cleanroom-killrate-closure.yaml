@@ -1,0 +1,123 @@
+# Mission: dogfood-40-cleanroom-killrate-closure
+# Findings: the quantitative-strength audit measured three Tier-1 targets.
+# verification.py vs its suites scored 0.975 (gate 0.7 met) and
+# _run_review_gate vs tests/test_review_gate.py scored 0.737 (gate 0.6 met),
+# but src/tether/cleanroom.py against tests/test_cleanroom.py measured only
+# 0.7600 under full enumeration (50 mutants) — BELOW the mandated 0.8 gate.
+# Twelve mutants survived; eight were genuinely unobserved behavior. The
+# built-in mutation tier cannot express this audit because its targets are
+# derived from the agent's changed files, so this mission also ships the
+# explicit measurement gate tools/mutation_killrate.py as a permanent
+# verification command. Mission payload: probes only — src/tether/ is NOT
+# modified; every new test kills a named surviving mutant.
+mission:
+  name: dogfood-40-cleanroom-killrate-closure
+  goal: |
+    Close the cleanroom.py mutation-survivor gap. All existing tests keep
+    passing unchanged and src/tether/ stays byte-identical.
+
+    TASK 1 - SURVIVOR-KILLING PROBES (tests/test_cleanroom.py):
+    Add behavioral probes killing each of these surviving mutants from the
+    full-enumeration baseline (tools/mutation_killrate.py, 38/50 = 0.76):
+      - 66:8   break_return  _gitignored_paths empty listing -> None
+      - 83:15  flip_bool     absolute copy entry False -> True
+      - 91:11  negate_compare _contained root-equality boundary
+      - 122:27 flip_bool     dest.mkdir parents=True
+      - 122:42 flip_bool     dest.mkdir exist_ok=True
+      - 191:54 flip_bool     copytree symlinks=True
+      - 194:44 flip_bool     file-copy target.parent.mkdir parents=True
+      - 194:59 flip_bool     file-copy target.parent.mkdir exist_ok=True
+    Each probe must name the mutant it kills and fail when that mutant is
+    applied. Do not probe the four equivalent survivors (74:8, 76:8 are
+    `return None` mutated to itself; 83:8, 85:8 turn `return False` into
+    `return None` which is truthiness-indistinguishable at every call
+    site) — document them in the test module instead.
+
+    TASK 2 - PERMANENT MEASUREMENT GATE (tools/mutation_killrate.py):
+    Ship a typed, stdlib-only CLI that reuses tether.verification's own
+    deterministic generate_mutants (same per-file seed derivation as
+    run_mutation_testing), mutates ONE --target .py file, re-runs the
+    repeatable --suite pytest subset per mutant with byte-exact restore,
+    supports --max-mutants (0 = all sites) and gates on --min-kill-rate
+    (exit 0 pass/advisory, exit 2 below gate, exit 1 harness error).
+    Unit-test its counting, crash-as-kill semantics, deterministic cap,
+    seed parity, report formatting, and gate boundaries WITHOUT spawning
+    subprocesses (inject the suite runner).
+
+    TASK 3 - WIRE AND PIN:
+    The verification.commands below already fail before Task 1/2 exist:
+    the kill-rate gate measures 0.76 < 0.8. After Tasks 1-2 it must print
+    a rate >= 0.8 and exit 0. Document the tool and the pinned 0.8
+    cleanroom gate in docs/ARCHITECTURE.md, record the audit in
+    docs/DOGFOODING.md, and pin both in tests/test_docs.py.
+
+constraints:
+  - "src/tether/** must remain byte-identical (probes only; no product change)"
+  - "no new third-party dependencies (stdlib only)"
+  - "every new cleanroom probe justified by a named surviving mutant"
+  - "never weaken existing tests; subprocess stays shell=False everywhere"
+
+context_files:
+  - src/tether/cleanroom.py
+  - tests/test_cleanroom.py
+  - docs/ARCHITECTURE.md
+
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests tools"
+    - "mypy src/tether"
+    - ".venv/bin/tether adapters conformance mock"
+    # The quantitative completion criterion itself: full enumeration of all
+    # mutable sites in cleanroom.py against its dedicated suite.
+    - ".venv/bin/python tools/mutation_killrate.py --target src/tether/cleanroom.py --suite tests/test_cleanroom.py --min-kill-rate 0.8"
+  artifacts:
+    - "tests/test_cleanroom.py"
+    - "tests/test_mutation_killrate.py"
+    - "tools/mutation_killrate.py"
+  assertions:
+    - path: tests/test_cleanroom.py
+      contains: "task 5: mutation-survivor probes"
+    - path: tests/test_cleanroom.py
+      contains: "Kills 91:11"
+    - path: tools/mutation_killrate.py
+      contains: min-kill-rate
+    - path: docs/ARCHITECTURE.md
+      contains: "Quantitative verification strength"
+  probes:
+    - command: ".venv/bin/python -m pytest -q tests/test_cleanroom.py"
+      contains: passed
+    - command: ".venv/bin/python tools/mutation_killrate.py --help"
+      contains: "--min-kill-rate"
+
+recovery:
+  max_attempts: 4
+  strategy: cumulative
+
+review:
+  enabled: true
+  required: true
+  adapter: opencode
+  retry_on_rejection: true
+  context: full
+
+budget:
+  max_sends: 10
+  max_wall_seconds: 10800
+
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 2700
+
+allowed_paths:
+  - tests/**
+  - tools/**
+  - docs/**
+  - missions/dogfood-40-cleanroom-killrate-closure.yaml
+
+forbidden_paths:
+  - .git/**
+  - .tether/**
+  - src/**

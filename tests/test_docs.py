@@ -648,3 +648,63 @@ def test_readme_dev_extra_matches_pyproject():
     deps = " ".join(data["project"]["dependencies"])
     for dep in ("typer>=", "pydantic>=", "pyyaml>="):
         assert dep in deps
+
+
+# ------------------- documentation truth (dogfood-40)
+
+
+def test_mutation_killrate_tool_interface_matches_architecture_doc():
+    """docs-truth pin: ARCHITECTURE.md's dogfood-40 section describes the
+    real tool interface and the pinned cleanroom kill-rate gate."""
+    tool = (REPO_ROOT / "tools" / "mutation_killrate.py").read_text(
+        encoding="utf-8")
+    for flag in ("--target", "--suite", "--max-mutants",
+                 "--min-kill-rate"):
+        assert f'"{flag}"' in tool, flag
+    arch = (REPO_ROOT / "docs" / "ARCHITECTURE.md").read_text(
+        encoding="utf-8")
+    section = arch.split("## Quantitative verification strength", 1)[1] \
+                  .split("\n## ", 1)[0]
+    assert "tools/mutation_killrate.py" in section
+    assert "--min-kill-rate" in section
+    assert "exit code 2" in section and "exit code 1" in section
+    assert "src/tether/cleanroom.py" in section
+    assert "tests/test_cleanroom.py" in section
+    assert "0.80" in section
+
+
+def test_cleanroom_survivor_probes_are_justified_and_equivalents_documented():
+    """docs-truth pin: every probe names its killed mutant, and the four
+    equivalent survivors are documented rather than probed."""
+    tests_src = (REPO_ROOT / "tests" / "test_cleanroom.py").read_text(
+        encoding="utf-8")
+    section = tests_src.split("task 5: mutation-survivor probes", 1)[1]
+    for site in ("66:8", "83:15", "91:11", "122:27", "122:42", "191:54",
+                 "194:44", "194:59"):
+        assert f"Kills {site}" in section or site in section, site
+    for equiv in ("74:8", "76:8", "83:8", "85:8"):
+        assert equiv in section, equiv
+
+
+def test_mission_pins_cleanroom_gate_as_verification_command():
+    """The quantitative criterion is enforced by the mission itself."""
+    mission = (REPO_ROOT / "missions" /
+               "dogfood-40-cleanroom-killrate-closure.yaml").read_text(
+                   encoding="utf-8")
+    assert "mutation_killrate.py --target src/tether/cleanroom.py" \
+        in mission
+    assert "--min-kill-rate 0.8" in mission
+
+
+def test_dogfooding_records_the_dogfood40_audit():
+    """Task 3 requires the audit to be RECORDED in docs/DOGFOODING.md and
+    pinned here alongside the ARCHITECTURE.md gate documentation: the
+    record must name the tool, both audit targets, and the measured
+    post-mission kill rate."""
+    doc = (REPO_ROOT / "docs" / "DOGFOODING.md").read_text(encoding="utf-8")
+    section = doc.split(
+        "## Clean-room mutation strength audit (dogfood-40)", 1)[1]
+    assert "tools/mutation_killrate.py" in section
+    assert "src/tether/cleanroom.py" in section
+    assert "tests/test_cleanroom.py" in section
+    assert "0.92" in section
