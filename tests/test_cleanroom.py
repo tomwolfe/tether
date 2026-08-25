@@ -179,6 +179,19 @@ def test_mutation_battery_runs_against_the_clean_room(tmp_path, monkeypatch):
             spec, changed_files, project_dir, run_suite, **kwargs)
 
     monkeypatch.setattr(orch_module, "run_mutation_testing", spy)
+    # Leftover detection must key on the dirs THIS run created: the shared
+    # system tempdir can hold live tether-cleanroom-* directories from other
+    # tether processes (e.g. an outer tether verifying this very suite from
+    # inside its own clean room), which are not ours to clean or assert on.
+    real_mkdtemp = tempfile.mkdtemp
+    staged: list[Path] = []
+
+    def tracking_mkdtemp(*args, **kwargs):
+        path = Path(real_mkdtemp(*args, **kwargs))
+        staged.append(path)
+        return path
+
+    monkeypatch.setattr(tempfile, "mkdtemp", tracking_mkdtemp)
     report = _run(tmp_path, adapter, "clean.yaml")
     assert report["status"] == "success", report["next_steps"]
     assert report["mutation"]["killed"] >= 1
@@ -186,8 +199,8 @@ def test_mutation_battery_runs_against_the_clean_room(tmp_path, monkeypatch):
     assert captured["project_dir"] != tmp_path
     assert str(captured["project_dir"]).startswith(tempfile.gettempdir())
     # The throwaway staging directory is always cleaned up.
-    leftovers = [p for p in Path(tempfile.gettempdir()).glob("tether-cleanroom-*")]
-    assert leftovers == []
+    assert staged
+    assert all(not p.exists() for p in staged)
 
 
 # ------------------------------------------- task 3: fail-closed orchestration

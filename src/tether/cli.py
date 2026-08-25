@@ -601,15 +601,7 @@ def report(
 ) -> None:
     """Print the machine-readable report.json of a past session."""
     pd = _project_dir(project_dir)
-    config = resolve_config(pd)
-    try:
-        session = find_session_dir(pd, config.audit_dir, session_id)
-    except ValueError as e:
-        typer.echo(str(e), err=True)
-        raise typer.Exit(code=1)
-    if session is None:
-        typer.echo(f"No session found for id {session_id!r} under {pd / config.audit_dir}", err=True)
-        raise typer.Exit(code=1)
+    session = _resolve_session_dir(pd, session_id)
     path = session / "report.json"
     if not path.exists():
         typer.echo(f"Session found at {session} but no report.json present.", err=True)
@@ -621,7 +613,13 @@ sessions_app = typer.Typer(help="Inspect and manage past sessions.")
 app.add_typer(sessions_app, name="sessions")
 
 
-def _find_session_or_exit(pd: Path, session_id: str) -> Path:
+def _resolve_session_dir(pd: Path, session_id: str) -> Path:
+    """Resolve a session id (or full id prefix) to exactly one audit dir.
+
+    Shared by `report`, `diff`, `logs`, and `sessions show`/`scrub`: an
+    ambiguous prefix exits 1 with find_session_dir's listing error; an
+    unknown id exits 1 with the "No session found" error.
+    """
     config = resolve_config(pd)
     try:
         session = find_session_dir(pd, config.audit_dir, session_id)
@@ -668,7 +666,7 @@ def sessions_show(
 ) -> None:
     """Show a human-readable summary of a past session."""
     pd = _project_dir(project_dir)
-    session = _find_session_or_exit(pd, session_id)
+    session = _resolve_session_dir(pd, session_id)
     report_path = session / "report.json"
     if not report_path.exists():
         typer.echo(f"Session found at {session} but no report.json present.", err=True)
@@ -1047,7 +1045,7 @@ def sessions_scrub(
     appends a scrub event to events.jsonl.
     """
     pd = _project_dir(project_dir)
-    session = _find_session_or_exit(pd, session_id)
+    session = _resolve_session_dir(pd, session_id)
     plans: list[tuple[Path, int]] = []
     for path in _scrub_targets(session):
         try:
@@ -1100,7 +1098,7 @@ def diff(
 ) -> None:
     """List files changed during a past session."""
     pd = _project_dir(project_dir)
-    session = _find_session_or_exit(pd, session_id)
+    session = _resolve_session_dir(pd, session_id)
     if patch:
         for name in ("patch.diff", "manifest_diff.json"):
             path = session / name
@@ -1131,7 +1129,7 @@ def logs(
 ) -> None:
     """Print the event log of a past session."""
     pd = _project_dir(project_dir)
-    session = _find_session_or_exit(pd, session_id)
+    session = _resolve_session_dir(pd, session_id)
     events = session / "events.jsonl"
     if not events.exists():
         typer.echo(f"No events.jsonl in {session}", err=True)
