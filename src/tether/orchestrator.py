@@ -25,9 +25,11 @@ from tether.context_files import (
     render_context_block,
 )
 from tether.git_safety import (
+    REF_PREFIX,
     changed_files_since,
     create_checkpoint,
     describe_sandbox_violation,
+    head_sha,
     make_file_backup,
     restore_from_backup,
     sandbox_write_violation,
@@ -228,6 +230,22 @@ class _SandboxViolationError(RuntimeError):
 
     def __init__(self, message: str,
                  violations: list[Dict[str, str]]) -> None:
+        super().__init__(message)
+        self.violations = violations
+
+
+class _GitStateViolationError(RuntimeError):
+    """Opt-in ``git_state_guard`` gate failure carrying human-readable
+    drift descriptions.
+
+    Raised by ``_gate_and_capture`` when an enabled guard detects that
+    HEAD or the session's checkpoint ref no longer matches the
+    checkpointed commit; handled exactly like :class:`_SandboxViolationError`
+    so verification is skipped and ``git_state_violations`` lands in the
+    report.
+    """
+
+    def __init__(self, message: str, violations: list[str]) -> None:
         super().__init__(message)
         self.violations = violations
 
@@ -659,6 +677,53 @@ class Orchestrator:
         except OSError as e:
             log.debug("Change capture failed: %s", e)
 
+    def _git_state_violations(self, checkpoint: CheckpointInfo) -> list[str]:
+        """Strict integrity checks for opt-in ``git_state_guard`` missions
+        (dogfood-41): (a) ``git rev-parse HEAD`` still equals the
+        checkpointed original_head, and (b) the session's checkpoint ref
+        (``refs/tether/checkpoint/<session-id>``) still resolves to that
+        same sha. Returns human-readable drift strings; empty means intact.
+        Read-only, shell=False, never raises.
+        """
+        assert checkpoint.original_head is not None
+        expected = checkpoint.original_head
+        violations: list[str] = []
+        try:
+            head = head_sha(self.project_dir)
+        except OSError:
+            head = None
+        if head != expected:
+            found = head[:12] if head else "<unresolvable>"
+            violations.append(
+                f"project HEAD drifted from the checkpointed commit "
+                f"(expected {expected[:12]}, found {found}): history was "
+                f"rewritten during the session")
+        ref = f"{REF_PREFIX}/{self.session_id}"
+        proc: Optional[subprocess.CompletedProcess[str]] = None
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(self.project_dir), "rev-parse",
+                 "--verify", "--quiet", ref],
+                capture_output=True, text=True, check=False,
+            )
+        except OSError:
+            pass
+        resolved = (
+            proc.stdout.strip() if proc is not None
+            and proc.returncode == 0 and proc.stdout.strip() else None)
+        if resolved != expected:
+            if resolved is None:
+                violations.append(
+                    f"session checkpoint ref {ref} no longer resolves to "
+                    f"the checkpointed commit (deleted or rewritten); "
+                    f"expected {expected[:12]}")
+            else:
+                violations.append(
+                    f"session checkpoint ref {ref} moved off the "
+                    f"checkpointed commit (expected {expected[:12]}, "
+                    f"found {resolved[:12]})")
+        return violations
+
     def _gate_and_capture(
         self, audit: AuditTrail, mission: Any, checkpoint: CheckpointInfo,
         manifest_before: Optional[dict[str, tuple[int, str | int]]],
@@ -673,8 +738,11 @@ class Orchestrator:
         change artifact in the session directory, then applies the
         write-sandbox gate. On violation, logs the ``sandbox_violations``
         audit event and raises :class:`_SandboxViolationError` so the mission
-        fails and verification is skipped. Returns the detected changed
-        files.
+        fails and verification is skipped. Missions with ``git_state_guard``
+        enabled additionally get the strict HEAD/checkpoint-ref integrity
+        check (:class:`_GitStateViolationError`, ``git_state_violations``
+        event) under the same fail-and-skip contract. Returns the detected
+        changed files.
         """
         changed = changed_files_since(self.project_dir, checkpoint.original_head)
         # Non-git projects: fall back to the pre-execution manifest so change
@@ -718,6 +786,22 @@ class Orchestrator:
                             {"violations": violations})
             raise _SandboxViolationError(
                 f"write sandbox violated: {detail}", violations)
+
+        # Opt-in git-state guard (dogfood-41): alongside the sandbox gate
+        # above, verify strict HEAD + checkpoint-ref integrity after EVERY
+        # send. Any drift fails the mission exactly like a sandbox
+        # violation; dry-runs, non-git projects, and missions without the
+        # key are inert (byte-identical default-OFF path).
+        if (not dry_run
+                and getattr(mission, "git_state_guard", None)
+                and checkpoint.is_git_repo and checkpoint.original_head):
+            drifts = self._git_state_violations(checkpoint)
+            if drifts:
+                detail = "; ".join(drifts)
+                audit.log_event("git_state_violations",
+                                {"violations": drifts})
+                raise _GitStateViolationError(
+                    f"git state violated: {detail}", drifts)
         return changed
 
     def _save_attempt_patch(self, audit: AuditTrail, checkpoint: CheckpointInfo,
@@ -1187,6 +1271,10 @@ class Orchestrator:
         next_steps: list[str] = []
         manifest_before: dict[str, tuple[int, str | int]] | None = None
         sandbox_violations: list[Dict[str, str]] = []
+        # Git-state guard drifts (dogfood-41); empty unless the opt-in
+        # guard fired, so reports of existing missions stay byte-for-byte
+        # unchanged.
+        git_state_violations: list[str] = []
         # Review gate outcome (dogfood-15); None unless review is enabled, so
         # reports of existing missions stay byte-for-byte unchanged.
         review_result: Optional[Dict[str, Any]] = None
@@ -1898,6 +1986,15 @@ class Orchestrator:
                     f"was skipped. Roll back with: tether rollback "
                     f"{self.session_id} --project-dir {self.project_dir}"
                 )
+            elif isinstance(e, _GitStateViolationError):
+                git_state_violations = e.violations
+                next_steps.append(
+                    "Git state violated: "
+                    + "; ".join(git_state_violations)
+                    + ". Verification was skipped. Roll back with: tether "
+                    f"rollback {self.session_id} --project-dir "
+                    f"{self.project_dir}"
+                )
             elif isinstance(e, _BudgetExceededError):
                 budget_exceeded = e.breach
                 audit.log_event("budget_exceeded", e.breach)
@@ -1997,6 +2094,8 @@ class Orchestrator:
         }
         if review_result is not None:
             report["review"] = review_result
+        if git_state_violations:
+            report["git_state_violations"] = git_state_violations
         if budget_exceeded is not None:
             report["budget_exceeded"] = budget_exceeded
         if mutation_summary is not None:

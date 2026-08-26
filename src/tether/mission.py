@@ -330,6 +330,12 @@ def load_mission(path: str | Path) -> MissionContract:
     if adapter is not None and not isinstance(adapter, str):
         raise MissionError("'adapter' must be a string")
 
+    # Git-state guard (dogfood-41): mission-only opt-in flag, enforced at
+    # run time by the orchestrator's post-send gate.
+    git_state_guard = data.get("git_state_guard")
+    if git_state_guard is not None and not isinstance(git_state_guard, bool):
+        raise MissionError("'git_state_guard' must be a boolean")
+
     # Structural validation only (dogfood-21): budgets are enforced at run
     # time by the orchestrator against cumulative usage telemetry.
     raw_budget = data.get("budget")
@@ -428,6 +434,7 @@ def load_mission(path: str | Path) -> MissionContract:
             review=review,
             budget=budget,
             adapter=adapter,
+            git_state_guard=git_state_guard,
             adapters=adapters_block,
             allowed_paths=sandbox_globs.get("allowed_paths"),
             forbidden_paths=sandbox_globs.get("forbidden_paths"),

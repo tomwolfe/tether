@@ -162,6 +162,12 @@ class MissionContract(BaseModel):
     # (before planning) and embedded into the prompt context. Limits, path
     # rules, and binary refusal live in tether.context_files.
     context_files: List[str] = Field(default_factory=list)
+    # Git-state guard (dogfood-41): opt-in strict history/ref integrity.
+    # When True, the post-send gate verifies after EVERY send that HEAD
+    # still equals the checkpointed original_head and that the session's
+    # checkpoint ref still resolves to it. None (absent) = OFF: existing
+    # missions validate and behave byte-identically.
+    git_state_guard: Optional[bool] = None
 
     @field_validator("name")
     @classmethod

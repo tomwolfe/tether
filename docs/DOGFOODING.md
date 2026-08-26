@@ -166,3 +166,43 @@ tests in `tests/test_review_gate.py` plus a docs-truth pin in
 the FIXED parser against the real opencode reviewer and returned an
 approve whose reason was substantive reviewer text — the exact path that
 produced `"\x1b[0m"` in v1.
+
+## Git-state guard (dogfood-41)
+
+The same session-`7f460335` forensics that exposed the ANSI verdict defect
+also proved a structural blind spot: mid-mission the nested agent ran
+`git reset`, moving the user's branch pointer. The path-based write sandbox
+saw no forbidden paths (identical trees — only refs moved), capture bases
+were silently corrupted, and nothing failed. dogfood-41 closes it with an
+opt-in contract key, `git_state_guard: true`: after EVERY send (initial
+execution and every recovery attempt alike), alongside the write-sandbox
+gate, Tether verifies strict integrity — HEAD still equals the checkpointed
+original_head AND the session's checkpoint ref
+(`refs/tether/checkpoint/<session-id>`) still resolves to that same sha.
+Any drift fails the mission exactly like a sandbox violation: a
+`git_state_violations` audit event records human-readable drifts,
+`report["git_state_violations"]` carries them with a `tether rollback`
+next-step naming the drift, verification is skipped (never trusted over a
+rewritten base), and status is failed. Dry-runs and non-git projects are
+inert; `reset_to_checkpoint` recovery never trips the guard because its
+resets restore HEAD to original_head; leaving the key unset keeps behavior
+byte-identical (no new checks, events, or report keys).
+
+Landed with committed acceptance tests in `tests/test_git_state_guard.py`
+(HEAD-move and ref-deletion fail closed; default-OFF legacy pin;
+innocent-agent, reset-recovery, and non-git inertness pins) plus a
+docs-truth pin in `tests/test_docs.py`. One deliberate scope addition: the
+mission whitelist named only models/orchestrator/docs, but
+`tether.mission.load_mission` constructs contracts from explicit kwargs and
+silently drops unknown top-level keys — every prior mission-only key
+(`adapter`, `allowed_paths`, `budget`) needed the same loader passthrough —
+so the field would never have reached the orchestrator without a 5-line,
+sibling-pattern amendment there (`'git_state_guard' must be a boolean`
+MissionError + constructor kwarg).
+
+Sessions: first run `935aa42e` (aborted by the write sandbox itself — the
+agent correctly amended `src/tether/mission.py`, which the mission's
+allowlist omitted; allowlist widened). Second run `8fd9c8bd044d`: success
+on attempt 1, executed WITH `git_state_guard: true` in its own contract —
+the guard shipped by a mission that ran under itself, zero false trips,
+adversarial review APPROVE citing implementation line numbers.
