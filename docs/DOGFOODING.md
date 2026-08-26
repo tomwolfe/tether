@@ -288,9 +288,41 @@ mission after exhausted attempts, non-.py-change n/a advisory pass,
 dry-run never synthesizes). Both suites failed before their targets
 existed and pass after; full suite 704 green, ruff + mypy clean.
 
-Live fire: `missions/dogfood-43-auto-generated-probes.yaml` runs WITH
+Live fire: `missions/dogfood-43-auto-generated-probes.yaml` ran WITH
 `auto_probes.enabled` in its own contract (policy: self-hosting runs
 prove their own features) — the first dogfood mission whose verification
-is partly synthesized at runtime and mutation-tested mid-mission. Session
-record lands here after the clean-tree run (the feature itself must be
-committed first; tether aborts on dirty trees by design).
+is partly synthesized at runtime and mutation-tested mid-mission.
+Session `2c80babff1cd`: SUCCESS on attempt 2 (3 sends, 38.3 min) —
+verification green on attempt 1, adversarial review REJECTED, repair
+round routed via `retry_on_rejection`, attempt 2 re-verified green and
+review APPROVED with a substantive reason; `git_state_guard: true`
+zero false trips. Payload (`tether adapters describe`) confirmed
+post-run: 712 tests / ruff / mypy clean, exit-2 unknown-name path live.
+
+Two genuine field findings (dogfood-44 hardening targets):
+
+1. **Synthesis parser vs real-model YAML.** The real opencode generator
+   echoed the prompt's own fenced TEMPLATE block first (harmless — the
+   LAST-fence-wins rule skipped it) and emitted its final block using
+   shell-style nested single quotes (`print('UNKNOWN_'+'GAUNTLET')`)
+   inside a YAML single-quoted scalar, which is invalid YAML. The strict
+   parser rejected the whole response, status "failed" with the yaml
+   error as reason, and the mission fell back to the human-authored
+   battery — the fail-safe posture working exactly as designed, but zero
+   generated probes survived contact with a real model. Candidates:
+   output-format discipline in the synthesis prompt (no template echo,
+   prefer double-quoted scalars, forbid shell-quote nesting), per-entry
+   salvage instead of all-or-nothing rejection, or both.
+
+2. **Reviewer evidence starvation for untracked files.** Attempt 1 was
+   fully green yet correctly rejected: `patch.diff` is
+   `git diff --binary <original_head>` (commit-vs-worktree) and carries
+   NO untracked file contents, so the full-context reviewer saw
+   `cli.py` import `tether.describe` without ever seeing
+   `describe.py` — an import of nothing reads as an undemonstrable
+   change. Verification/clean-room see untracked files (untracked.txt +
+   materializer copy); the review gate does not. Recovery resolved it by
+   staging the new files (staged bytes ARE captured), but the gate's
+   evidence should not depend on the agent knowing that: candidate fix
+   is a bounded untracked-contents appendix in the review context,
+   mirroring the clean-room rules.

@@ -25,6 +25,7 @@ from tether.audit import (
     redact_secret_value,
 )
 from tether.config import load_project_config, resolve_config
+from tether.describe import describe_adapter
 from tether.git_safety import rollback as git_rollback
 from tether.mission import MissionError, load_mission
 from tether.models import TetherConfig
@@ -294,6 +295,28 @@ def adapters_certify(
         typer.echo(json.dumps(cert, indent=2))
     if not result.ok:
         raise typer.Exit(code=1)
+
+
+@adapters_app.command("describe")
+def adapters_describe(
+    name: str = typer.Argument(..., help="Adapter name (see `tether adapters list`)."),
+    project_dir: Optional[Path] = typer.Option(
+        None, "--project-dir",
+        help="Project whose tether.yaml configures the adapter."),
+) -> None:
+    """Print one JSON object of an adapter's static metadata.
+
+    Resolves the name through the same registry path as smoke/conformance/
+    certify without running the adapter; unknown names exit with code 2.
+    """
+    pd = _project_dir(project_dir)
+    config = resolve_config(pd)
+    try:
+        info = describe_adapter(name, config.adapters)
+    except ValueError:
+        typer.echo(f"unknown adapter: {name}", err=True)
+        raise typer.Exit(code=2)
+    typer.echo(json.dumps(info, indent=2))
 
 
 @app.command()

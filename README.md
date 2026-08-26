@@ -91,6 +91,8 @@ The `opencode` preset is **verified** (certified plus multiple recorded real mis
 
 For a deeper probe, `tether adapters conformance <name>` runs a behavioral battery (availability reporting, success/failure/timeout state mapping, cancellation, stdout+stderr log capture, project-directory containment, spawn failure) and prints per-check results with a PASS/FAIL verdict; the exit code is nonzero on FAIL. `mock` passes out of the box and command-family adapters are exercised against deterministic stub executables. An adapter earns `verified` only by passing conformance plus a demonstrated real-CLI run — promotion criteria in docs/ADAPTERS.md.
 
+For a machine-readable snapshot without running anything, `tether adapters describe <name>` resolves the name against your project config and prints exactly one indented JSON object to stdout: instance name, adapter class, `verified` flag, capability booleans (`cancel`, `process_tree_kill`, `usage`, `streaming`, `one_shot`), and sorted known settings — e.g. `tether adapters describe mock` reports `"verified": true`, `"one_shot": true`, and `"known_settings": ["scenario"]`. An unknown or unresolvable name prints `unknown adapter: <name>` to stderr and exits with code 2.
+
 ## Configuration precedence
 
 CLI flags > mission file > project config (`tether.yaml|yml|json|toml`) > defaults.
