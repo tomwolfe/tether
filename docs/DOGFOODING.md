@@ -206,3 +206,35 @@ allowlist omitted; allowlist widened). Second run `8fd9c8bd044d`: success
 on attempt 1, executed WITH `git_state_guard: true` in its own contract —
 the guard shipped by a mission that ran under itself, zero false trips,
 adversarial review APPROVE citing implementation line numbers.
+
+## Guard adoption and recovery-round drift (dogfood-42)
+
+Policy: from dogfood-42 onward, every dogfood mission sets
+`git_state_guard: true` in its own contract — self-hosting runs prove
+their own guard, so any regression in the guard surfaces in the very
+mission that ships code.
+
+Record: corpus audit of `tests/test_git_state_guard.py` proved two gaps.
+(1) Every drift case tripped the guard on the INITIAL send; nothing
+covered drift during a RECOVERY send under cumulative strategy, after
+verification had already failed once. (2) `.git`-internals plants beyond
+HEAD/refs were invisible: an agent could write `.git/hooks/*` or set
+`core.hooksPath` and hijack every future git operation, unseen by path
+globs and by HEAD/ref checks alike. The mission extends the opt-in guard:
+at mission start (after checkpoint creation) Tether snapshots a baseline —
+the sha256 of every file under `.git/hooks/` keyed by relative path plus
+the current `core.hooksPath` value — and recomputes both after EVERY send;
+any added/modified/deleted hook file or changed/newly-set hooksPath fails
+the mission under the exact same `_GitStateViolationError` contract
+(`git_state_violations` event, report key, skipped verification). Baseline
+semantics mean pre-existing hooks and hooksPath config never trip; with
+the key unset no snapshot or check runs at all. Recovery-round coverage
+needed no new machinery: because the gate re-runs after every recovery
+send, a repair round that moves HEAD trips before the next verification
+can legitimize the drifted tree. Pinned by three new acceptance cases
+(hook plant, hooksPath redirect, cumulative-recovery drift) plus a
+pre-existing-hooks inertness pin in `tests/test_git_state_guard.py`, and
+by docs-truth pins in `tests/test_docs.py` — including the rule that all
+`dogfood-*.yaml` missions numbered 42+ must carry `git_state_guard: true`.
+This mission itself ran under the guard it extended (session
+`585a762fa949`, success attempt 1, adversarial review APPROVE).

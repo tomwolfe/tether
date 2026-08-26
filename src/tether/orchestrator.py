@@ -483,6 +483,62 @@ def _git_untracked_files(project_dir: Path) -> list[str]:
     )
 
 
+def _hook_file_digests(hooks_dir: Path) -> Dict[str, str]:
+    """sha256 of every regular file under ``hooks_dir``, keyed by its POSIX
+    path relative to ``hooks_dir`` (dogfood-42 hook-integrity baseline).
+
+    A missing directory is an empty mapping; unreadable entries are skipped.
+    Read-only; never raises.
+    """
+    digests: Dict[str, str] = {}
+    if not hooks_dir.is_dir():
+        return digests
+    try:
+        candidates = sorted(hooks_dir.rglob("*"))
+    except OSError:
+        return digests
+    for child in candidates:
+        try:
+            if not child.is_file():
+                continue
+            rel = child.relative_to(hooks_dir).as_posix()
+            digests[rel] = hashlib.sha256(child.read_bytes()).hexdigest()
+        except OSError:
+            continue
+    return digests
+
+
+def _core_hooks_path(project_dir: Path) -> Optional[str]:
+    """Current ``git config --get core.hooksPath`` value, or None when the
+    key is unset (or any failure occurs). Read-only, shell=False; never
+    raises.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(project_dir), "config", "--get",
+             "core.hooksPath"],
+            capture_output=True, text=True, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+def _snapshot_hook_integrity(
+    project_dir: Path,
+) -> tuple[Dict[str, str], Optional[str]]:
+    """Mission-start integrity baseline for the git-state guard (dogfood-42):
+    the ``.git/hooks/`` sha256 map plus the current ``core.hooksPath``
+    value. Read-only, shell=False; never raises.
+    """
+    return (
+        _hook_file_digests(project_dir / ".git" / "hooks"),
+        _core_hooks_path(project_dir),
+    )
+
+
 def _release_writer_lock(project_dir: Path, session_id: str) -> None:
     """Release the writer lock if (and only if) this session still owns it."""
     lock_path = writer_lock_path(project_dir)
@@ -724,10 +780,60 @@ class Orchestrator:
                     f"found {resolved[:12]})")
         return violations
 
+    def _hook_integrity_violations(
+        self,
+        baseline: Optional[tuple[Dict[str, str], Optional[str]]],
+    ) -> list[str]:
+        """Hook-integrity drift vs the mission-start baseline (dogfood-42).
+
+        Recomputes the ``.git/hooks/`` sha256 map and ``core.hooksPath``
+        and diffs both against the snapshot taken right after checkpoint
+        creation: added/modified/deleted hook files and a changed or
+        newly-set hooksPath each produce a human-readable violation string.
+        Baseline semantics mean pre-existing hooks/config never trip. A
+        None baseline (guard inactive) checks nothing. Read-only,
+        shell=False, never raises.
+        """
+        if baseline is None:
+            return []
+        base_digests, base_path = baseline
+        cur_digests = _hook_file_digests(self.project_dir / ".git" / "hooks")
+        cur_path = _core_hooks_path(self.project_dir)
+        violations: list[str] = []
+        for name in sorted(set(base_digests) | set(cur_digests)):
+            before = base_digests.get(name)
+            after = cur_digests.get(name)
+            rel = f".git/hooks/{name}"
+            if before is None:
+                violations.append(
+                    f"new git hook planted during the session: {rel} did "
+                    f"not exist at mission start")
+            elif after is None:
+                violations.append(
+                    f"existing git hook deleted during the session: {rel} "
+                    f"was present at mission start")
+            elif before != after:
+                violations.append(
+                    f"existing git hook modified during the session: {rel} "
+                    f"content differs from the mission-start baseline")
+        if cur_path != base_path:
+            if base_path is None:
+                violations.append(
+                    f"git hooks redirect detected: core.hooksPath was "
+                    f"unset at mission start and is now set to "
+                    f"{cur_path!r}")
+            else:
+                violations.append(
+                    f"git hooks redirect detected: core.hooksPath moved "
+                    f"from {base_path!r} at mission start to "
+                    f"{cur_path!r}")
+        return violations
+
     def _gate_and_capture(
         self, audit: AuditTrail, mission: Any, checkpoint: CheckpointInfo,
         manifest_before: Optional[dict[str, tuple[int, str | int]]],
         dry_run: bool,
+        hook_baseline: Optional[tuple[Dict[str, str], Optional[str]]] = None,
     ) -> list[str]:
         """Re-detect changes, refresh forensic artifacts, re-run the gate.
 
@@ -740,7 +846,8 @@ class Orchestrator:
         audit event and raises :class:`_SandboxViolationError` so the mission
         fails and verification is skipped. Missions with ``git_state_guard``
         enabled additionally get the strict HEAD/checkpoint-ref integrity
-        check (:class:`_GitStateViolationError`, ``git_state_violations``
+        check plus hook integrity against ``hook_baseline``
+        (:class:`_GitStateViolationError`, ``git_state_violations``
         event) under the same fail-and-skip contract. Returns the detected
         changed files.
         """
@@ -791,11 +898,14 @@ class Orchestrator:
         # above, verify strict HEAD + checkpoint-ref integrity after EVERY
         # send. Any drift fails the mission exactly like a sandbox
         # violation; dry-runs, non-git projects, and missions without the
-        # key are inert (byte-identical default-OFF path).
+        # key are inert (byte-identical default-OFF path). Hook integrity
+        # (dogfood-42) rides the same contract: the recomputed .git/hooks
+        # map and core.hooksPath must match the mission-start baseline.
         if (not dry_run
                 and getattr(mission, "git_state_guard", None)
                 and checkpoint.is_git_repo and checkpoint.original_head):
             drifts = self._git_state_violations(checkpoint)
+            drifts += self._hook_integrity_violations(hook_baseline)
             if drifts:
                 detail = "; ".join(drifts)
                 audit.log_event("git_state_violations",
@@ -1375,6 +1485,17 @@ class Orchestrator:
             log.info("Checkpoint created at %s (HEAD=%s)",
                      checkpoint.ref, (checkpoint.original_head or "")[:12])
 
+        # Hook-integrity baseline (dogfood-42): with the opt-in git-state
+        # guard active on a git project, snapshot the .git/hooks/ sha256
+        # map plus core.hooksPath BEFORE any adapter send; every post-send
+        # gate diffs against this, so pre-existing hooks/config never trip.
+        # Read-only; with the key unset no snapshot is taken at all
+        # (byte-identical guard-off behavior).
+        hooks_baseline: Optional[tuple[Dict[str, str], Optional[str]]] = None
+        if (getattr(mission, "git_state_guard", None)
+                and checkpoint.is_git_repo and checkpoint.original_head):
+            hooks_baseline = _snapshot_hook_integrity(self.project_dir)
+
         # Sandbox posture advisory (dogfood-19): with allowed_paths set,
         # warn-mode detection relies only on content-based change detection;
         # enforce additionally unions the filesystem-metadata diff that
@@ -1585,7 +1706,8 @@ class Orchestrator:
             # the write-sandbox gate. On violation the mission fails here and
             # verification is skipped entirely.
             changed = self._gate_and_capture(
-                audit, mission, checkpoint, manifest_before, dry_run)
+                audit, mission, checkpoint, manifest_before, dry_run,
+                hooks_baseline)
 
             # Clean-room verification (dogfood-23): when enabled and not
             # dry-run, the ENTIRE battery below runs in a throwaway checkout
@@ -1939,7 +2061,8 @@ class Orchestrator:
                     # Refresh change detection and forensic evidence so the
                     # repair prompt reflects the actual post-reset tree.
                     changed = self._gate_and_capture(
-                        audit, mission, checkpoint, manifest_before, dry_run)
+                        audit, mission, checkpoint, manifest_before, dry_run,
+                        hooks_baseline)
                 # Recovery intelligence: classification header + tailored
                 # guidance, then fold a bounded forensic context (current
                 # changed files, latest change-artifact excerpt, previous
@@ -1970,7 +2093,8 @@ class Orchestrator:
                     # verification runs.
                     prev_changed = list(changed)
                     changed = self._gate_and_capture(
-                        audit, mission, checkpoint, manifest_before, dry_run)
+                        audit, mission, checkpoint, manifest_before, dry_run,
+                        hooks_baseline)
                     recovery_attempt["changed_files_at_attempt"] = list(changed)
                     self._save_attempt_patch(audit, checkpoint, attempt)
                 agent_failed = state.status != "completed"
