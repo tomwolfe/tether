@@ -768,3 +768,77 @@ def test_docs_document_hook_integrity_and_guard_adoption_policy():
         encoding="utf-8")
     assert "every dogfood mission" in dog and \
         "`git_state_guard: true`" in dog
+
+
+# ------------------- documentation truth (dogfood-43)
+
+
+def test_autoprobes_spec_defaults_match_architecture_doc():
+    from tether.models import AutoProbesSpec
+    spec = AutoProbesSpec()
+    assert spec.enabled is False
+    assert spec.adapter is None
+    assert spec.max_probes == 6
+    assert spec.min_teeth_rate is None
+    assert spec.max_mutants == 10
+
+
+def test_architecture_documents_autoprobe_ladder_and_teeth_gate():
+    """docs-truth pin: ARCHITECTURE.md must describe the generated-probe
+    tier (synthesis once after capture, before human-authored verification;
+    tier after human probes) and the teeth gate (mutants of changed .py,
+    generated probes only per mutant, min_teeth_rate gate semantics), plus
+    the fail-safe fallback and byte-identical default. The module map must
+    name autoprobes.py."""
+    arch = (REPO_ROOT / "docs" / "ARCHITECTURE.md").read_text(
+        encoding="utf-8")
+    module_map = arch.split("## Module map", 1)[1].split("```", 2)[1]
+    assert "autoprobes.py" in module_map
+    step10 = next(line for line in arch.splitlines()
+                  if line.startswith("10. Verification"))
+    assert "GENERATED-PROBE tier (dogfood-43)" in step10
+    assert "-auto-probes" in step10
+    assert "before any " in step10 and "human-authored verification" in step10
+    section = arch.split(
+        "## LLM-synthesized behavioral probes (dogfood-43)", 1)[1] \
+        .split("\n## ", 1)[0]
+    flat = " ".join(section.split())
+    for phrase in (
+            "`verification.auto_probes`",
+            "`patch.diff` AND `untracked.txt`",
+            "LAST fenced yaml block wins",
+            "`max_probes` (default 6)",
+            "TEETH gate",
+            "ONLY the generated probes re-run per mutant",
+            "`min_teeth_rate`",
+            "verification/autoprobes-teeth.json",
+            "`auto_probe_teeth`",
+            'report["auto_probes"]',
+            "byte-identically"):
+        assert phrase in flat, phrase
+
+
+def test_dogfooding_records_the_dogfood43_boundary_break():
+    """The dogfood-43 record must state the broken boundary, the red->green
+    proof suites by name, and that the mission runs with auto_probes
+    enabled in its own contract."""
+    doc = (REPO_ROOT / "docs" / "DOGFOODING.md").read_text(
+        encoding="utf-8")
+    section = doc.split(
+        "## Auto-generated verification probes (dogfood-43)", 1)[1]
+    assert "authored by a human BEFORE the run" in section
+    assert "tests/test_autoprobes.py" in section
+    assert "tests/test_autoprobes_mission.py" in section
+    assert "`auto_probes.enabled`" in section
+    assert "synthesized at runtime" in section
+
+
+def test_dogfood43_mission_carries_auto_probes_contract():
+    """The dogfood-43 mission itself must run under the feature it proves:
+    auto_probes enabled with a teeth gate, plus the standing guard policy."""
+    mission = (REPO_ROOT / "missions" /
+               "dogfood-43-auto-generated-probes.yaml").read_text(
+                   encoding="utf-8")
+    assert "auto_probes:" in mission and "enabled: true" in mission
+    assert "min_teeth_rate:" in mission
+    assert "git_state_guard: true" in mission

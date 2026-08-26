@@ -1,0 +1,145 @@
+# Mission: dogfood-43-auto-generated-probes
+# Boundary broken: until now EVERY verification layer (commands, artifacts,
+# assertions, probes, mutation, clean-room, review) shared one assumption —
+# verification content is authored by a human BEFORE the run, guessing at
+# write-time where behavior matters. This is the first mission whose
+# verification is partly synthesized at runtime: the contract enables
+# verification.auto_probes, so after the agent's change is captured Tether
+# consults a generator adapter to invent behavioral probes from the goal +
+# captured diff, runs them as a new ladder tier, and MUTATION-TESTS them
+# against the change (teeth gate) — generated probes must kill real mutants,
+# not merely pass on the finished work.
+#
+# WHY THIS BREAKS THE LOCAL MAXIMUM: 42 missions hardened the single-agent
+# control loop around fixed-at-authoring checks; the remaining strength
+# gains could not come from polishing any existing tier. Verification must
+# adapt to what the agent actually did while keeping the hardened fail-safe
+# posture: synthesis failure falls back to exactly today's battery, and a
+# toothless probe set fails like any deliverable miss.
+#
+# Payload: a real feature (not a meta-task) — `tether adapters describe`
+# prints structured adapter facts for scripting and docs audits.
+mission:
+  name: dogfood-43-auto-generated-probes
+  goal: |
+    Add `tether adapters describe <name>` and keep every committed test
+    green without editing any committed assertion.
+
+    Why this breaks the local maximum: this contract enables
+    verification.auto_probes with a teeth gate — your change will be
+    verified partly by LLM-synthesized behavioral probes that are
+    mutation-tested live against YOUR diff. Write real logic (no stubs):
+    probes that assert on behavior of the new command are what earn the
+    teeth; vacuous output checks will fail the min_teeth_rate gate.
+
+    TASK 1 - DESCRIBE COMMAND (src/tether/cli.py, plus a pure helper module
+    src/tether/describe.py):
+    `tether adapters describe <name>` resolves the adapter name through the
+    SAME registry path used by conformance/certify (resolve_adapter with the
+    project config's adapters block) and prints EXACTLY one JSON object to
+    stdout with these keys in this order:
+      {"name": "<resolved instance name>", "class": "<adapter class name>",
+       "verified": <bool>, "capabilities": {"cancel": <bool>,
+       "process_tree_kill": <bool>, "usage": <bool>, "streaming": <bool>,
+       "one_shot": <bool>}, "known_settings": [<sorted setting names>]}
+    Behavior contract:
+    - Unknown/unresolvable name: print "unknown adapter: <name>" to stderr,
+      exit code 2 (typer.Exit(code=2)); stdout stays empty.
+    - The JSON must be parseable by json.loads verbatim (indent=2).
+    - mock resolves to verified=true with capabilities all false except
+      one_shot=true and known_settings ["scenario"].
+    - opencode resolves (registry entry exists) without running it.
+    Put the gather logic in src/tether/describe.py as
+    `describe_adapter(name, adapters_settings) -> dict` raising ValueError
+    for unresolvable names; cli.py only parses args, catches ValueError,
+    and renders. This split gives mutation testing a small pure target.
+
+    TASK 2 - ACCEPTANCE TESTS (new file tests/test_adapters_describe.py):
+    Cover via CliRunner (house style): happy-path mock JSON parses and has
+    verified true + one_shot true + known_settings ["scenario"]; unknown
+    name exits 2 with the stderr message and empty stdout; opencode
+    resolves with class OpencodeAdapter; describe_adapter raises ValueError
+    for an unresolvable name. Never edit committed test assertions.
+
+    TASK 3 - DOCS (README.md ADAPTERS section area):
+    One short paragraph documenting the command with an example invocation
+    and noting it exits 2 for unknown names.
+
+constraints:
+  - "only src/tether/cli.py, src/tether/describe.py, tests/test_adapters_describe.py, README.md may be created or modified"
+  - "committed tests are acceptance ground truth; never edit their assertions"
+  - "JSON output shape above is exact: key order, names, types"
+  - "unknown-name failure goes to stderr with exit code 2, never stdout"
+  - "describe_adapter stays pure stdlib (dict/list/str); no subprocess"
+
+context_files:
+  - src/tether/cli.py
+  - src/tether/adapters/__init__.py
+  - src/tether/adapters/base.py
+  - tests/test_review_gate.py
+
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests tools"
+    - "mypy src/tether"
+    - ".venv/bin/tether adapters conformance mock"
+    # Regression guards carried forward from dogfood-40/41.
+    - ".venv/bin/python tools/mutation_killrate.py --target src/tether/cleanroom.py --suite tests/test_cleanroom.py --min-kill-rate 0.8"
+  artifacts:
+    - "src/tether/describe.py"
+    - "tests/test_adapters_describe.py"
+    - "README.md"
+  assertions:
+    - path: src/tether/describe.py
+      contains: describe_adapter
+    - path: tests/test_adapters_describe.py
+      contains: CliRunner
+    - path: README.md
+      contains: adapters describe
+  probes:
+    # Human-authored floor; synthesized probes stack on top of these.
+    - command: ".venv/bin/tether adapters describe mock"
+      contains: '"verified": true'
+    - command: ".venv/bin/tether adapters describe definitely-not-real"
+      matches: "unknown adapter: definitely-not-real"
+  auto_probes:
+    enabled: true
+    adapter: opencode
+    max_probes: 5
+    min_teeth_rate: 0.5
+    max_mutants: 12
+
+recovery:
+  max_attempts: 4
+  strategy: cumulative
+
+review:
+  enabled: true
+  required: true
+  adapter: opencode
+  retry_on_rejection: true
+  context: full
+
+budget:
+  max_sends: 10
+  max_wall_seconds: 10800
+
+git_state_guard: true
+
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 2700
+
+allowed_paths:
+  - src/tether/cli.py
+  - src/tether/describe.py
+  - tests/test_adapters_describe.py
+  - README.md
+  - missions/dogfood-43-auto-generated-probes.yaml
+
+forbidden_paths:
+  - .git/**
+  - .tether/**

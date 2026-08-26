@@ -17,6 +17,13 @@ from typing import Any, Dict, Optional
 from tether.adapters import resolve_adapter
 from tether.adapters.base import AgentAdapter
 from tether.audit import AuditTrail, new_session_id, redact_body, redact_secrets, utcnow
+from tether.autoprobes import (
+    AUTO_PROBE_CONTEXT_BUDGET,
+    ProbeSynthesisError,
+    build_synthesis_prompt,
+    parse_generated_probes,
+    summarize_teeth,
+)
 from tether.cleanroom import CleanRoomError, materialize_clean_room
 from tether.context_files import (
     ContextFile,
@@ -41,6 +48,7 @@ from tether.models import (
     ArtifactResult,
     AssertionResult,
     AssertionSpec,
+    AutoProbesSpec,
     CheckpointInfo,
     MutationSpec,
     MutationSummary,
@@ -657,6 +665,12 @@ class Orchestrator:
             return mission.verification.mutation
         return self.config.verification.mutation
 
+    def _effective_verification_auto_probes(
+            self, mission: Any) -> Optional[AutoProbesSpec]:
+        if mission.verification.auto_probes is not None:
+            return mission.verification.auto_probes
+        return self.config.verification.auto_probes
+
     def _effective_verification_clean_room(self, mission: Any) -> bool:
         if mission.verification.clean_room is not None:
             return bool(mission.verification.clean_room)
@@ -1045,6 +1059,93 @@ class Orchestrator:
         })
         return summary, mutants
 
+    def _synthesize_auto_probes(
+        self, audit: AuditTrail, mission: Any, checkpoint: CheckpointInfo,
+        spec: AutoProbesSpec,
+    ) -> tuple[list[ProbeSpec], Dict[str, Any]]:
+        """One probe-synthesis consultation (dogfood-43); fail-safe.
+
+        Builds the synthesis prompt from the mission goal plus the captured
+        change evidence (``patch.diff`` plus ``untracked.txt`` — a plain git
+        diff misses untracked contents, so both are embedded, bounded),
+        consults the generator adapter on a fresh ``-auto-probes`` session
+        with transient-failure retry, and parses the response into strict
+        probe specs. ANY failure (unresolvable adapter, send error,
+        non-completed status, malformed response) records status "failed"
+        with a reason and returns an empty list; the mission then falls back
+        to its human-authored battery exactly as if the feature were absent
+        from that attempt. Returns ``(specs, report_info)``.
+        """
+        info: Dict[str, Any] = {"enabled": True, "adapter": "",
+                                "status": "skipped", "probes": []}
+        name = "patch.diff" if checkpoint.is_git_repo else "manifest_diff.json"
+        parts: list[str] = []
+        for artifact in ([name, "untracked.txt"] if checkpoint.is_git_repo
+                         else [name]):
+            try:
+                text = (audit.dir / artifact).read_text(
+                    encoding="utf-8", errors="replace").strip()
+            except OSError:
+                text = ""
+            if text:
+                parts.append(f"--- {artifact} ---\n{text}")
+        excerpt = clip_output("\n\n".join(parts), AUTO_PROBE_CONTEXT_BUDGET)
+
+        adapter = self.reviewer
+        if spec.adapter:
+            try:
+                adapter = resolve_adapter(
+                    spec.adapter, self.config.adapters,
+                    default_timeout=self.config.command_timeout_seconds)
+            except ValueError as e:
+                log.warning("Probe generator %r cannot be resolved: %s",
+                            spec.adapter, e)
+                info.update(status="failed", adapter=spec.adapter,
+                            reason=f"generator adapter failed to resolve: {e!r}")
+                audit.log_event("auto_probes", info)
+                return [], info
+        info["adapter"] = adapter.name
+
+        prompt = build_synthesis_prompt(
+            mission.goal, name, excerpt, max_probes=spec.max_probes)
+        audit.save_prompt("auto-probes", prompt)
+        state_json: Dict[str, Any] = {"status": "unavailable", "logs": ""}
+        try:
+            session = adapter.start_session(
+                str(self.project_dir), f"{self.session_id}-auto-probes")
+            retries = self.config.retries
+            state, _physical = send_with_transient_retry(
+                adapter.send, prompt, session,
+                step="auto-probes", audit=audit,
+                max_transient_retries=retries.max_transient_retries,
+                transient_backoff_seconds=retries.transient_backoff_seconds,
+            )
+            state_json = state.model_dump()
+        except Exception as e:  # noqa: BLE001 - synthesis must fail safe
+            log.warning("Probe-synthesis interaction failed (%s): %r",
+                        adapter.name, e)
+            info.update(status="failed",
+                        reason=f"synthesis send failed: {e!r}")
+            audit.log_event("auto_probes", info)
+            return [], info
+        audit.save_response("auto-probes", state_json)
+        if state.status != "completed":
+            info.update(status="failed",
+                        reason=f"synthesis send returned {state.status}")
+            audit.log_event("auto_probes", info)
+            return [], info
+        try:
+            specs = parse_generated_probes(state.logs,
+                                           max_probes=spec.max_probes)
+        except ProbeSynthesisError as e:
+            info.update(status="failed", reason=str(e))
+            audit.log_event("auto_probes", info)
+            return [], info
+        info.update(status="synthesized", count=len(specs),
+                    probes=[p.model_dump() for p in specs])
+        audit.log_event("auto_probes", info)
+        return specs, info
+
     def _consult_reviewer(
         self, audit: AuditTrail, review_spec: Any, adapter: AgentAdapter,
         label: str, prompt: str,
@@ -1396,6 +1497,19 @@ class Orchestrator:
         # byte-for-byte unchanged.
         mutation_summary: Optional[MutationSummary] = None
         mutation_output = ""
+        # LLM-synthesized probes (dogfood-43): None unless the mission
+        # enables the feature, so reports of existing missions stay
+        # byte-for-byte unchanged. auto_specs holds the accepted generated
+        # probe specs (synthesized once after the initial capture);
+        # auto_info is the report payload, extended with the latest teeth
+        # measurement as attempts run.
+        auto_spec: Optional[AutoProbesSpec] = None
+        auto_specs: list[ProbeSpec] = []
+        auto_info: Optional[Dict[str, Any]] = None
+        auto_probe_results: list[ProbeResult] = []
+        auto_output = ""
+        teeth_summary: Optional[MutationSummary] = None
+        teeth_output = ""
         # Clean-room staging root (dogfood-23); None unless clean-room
         # verification is active, so unset missions behave identically.
         # Created lazily before the attempt loop; removed in finally below.
@@ -1709,6 +1823,30 @@ class Orchestrator:
                 audit, mission, checkpoint, manifest_before, dry_run,
                 hooks_baseline)
 
+            # LLM-synthesized probes (dogfood-43): generated ONCE here —
+            # after the agent's change is captured but BEFORE any
+            # human-authored verification runs — from the mission goal plus
+            # the captured diff. Accepted specs then ride the ladder like
+            # declared probes for every attempt (recovery included), while
+            # their teeth are re-measured against each green attempt's
+            # changed files. Dry-run makes no adapter calls; a mission with
+            # no captured change has nothing to synthesize probes from.
+            auto_spec = self._effective_verification_auto_probes(mission)
+            if auto_spec is not None and auto_spec.enabled:
+                if dry_run:
+                    auto_info = {"enabled": True, "adapter": "",
+                                 "status": "skipped",
+                                 "reason": "dry-run", "probes": []}
+                    audit.log_event("auto_probes", auto_info)
+                elif not changed:
+                    auto_info = {"enabled": True, "adapter": "",
+                                 "status": "skipped",
+                                 "reason": "no change captured", "probes": []}
+                    audit.log_event("auto_probes", auto_info)
+                else:
+                    auto_specs, auto_info = self._synthesize_auto_probes(
+                        audit, mission, checkpoint, auto_spec)
+
             # Clean-room verification (dogfood-23): when enabled and not
             # dry-run, the ENTIRE battery below runs in a throwaway checkout
             # of the checkpoint ref plus the session's captured change —
@@ -1859,9 +1997,86 @@ class Orchestrator:
                         probes_passed, probe_output = True, ""
                 else:
                     probes_passed, probe_output = True, ""
+                # Generated-probe tier (dogfood-43): runs on otherwise-green
+                # attempts right after the human-authored probes and before
+                # mutation, using the specs synthesized once after capture.
+                # A failing generated probe fails the attempt like any other
+                # deliverable miss; a synthesis failure leaves the tier inert
+                # (advisory fallback to the human-authored battery).
+                auto_probe_results = []
+                auto_output = ""
+                if commands_passed and not agent_failed \
+                        and artifacts_passed and assertions_passed \
+                        and probes_passed:
+                    if auto_spec is not None and auto_spec.enabled \
+                            and auto_specs:
+                        auto_probe_results = run_probes(
+                            auto_specs, verify_dir,
+                            timeout_seconds=timeout, dry_run=dry_run)
+                        auto_passed, auto_output = \
+                            summarize_probes(auto_probe_results)
+                        if not auto_passed:
+                            log.warning("%s", auto_output)
+                    else:
+                        auto_passed = True
+                else:
+                    auto_passed = True
+                # Teeth gate (dogfood-43): mutation-test the generated probes
+                # against this attempt's changed .py files — they must pass
+                # on the pristine tree (guaranteed by the tier above) and
+                # kill mutants at min_teeth_rate. No runnable mutants or an
+                # unset rate are advisory; a real shortfall fails the attempt
+                # like any other deliverable miss and recovery proceeds.
+                teeth_summary = None
+                teeth_output = ""
+                if (commands_passed and not agent_failed
+                        and artifacts_passed and assertions_passed
+                        and probes_passed and auto_passed
+                        and auto_spec is not None and auto_spec.enabled
+                        and auto_specs and not dry_run):
+                    teeth_spec = MutationSpec(
+                        enabled=True, operators=None,
+                        max_mutants=auto_spec.max_mutants, fail_below=None)
+
+                    def run_teeth_suite() -> tuple[bool, str]:
+                        return summarize_probes(run_probes(
+                            auto_specs, verify_dir,
+                            timeout_seconds=timeout))
+
+                    teeth_mutants: list[MutantResult] = []
+                    targets = self._mutation_targets(mission, changed)
+                    teeth_summary = run_mutation_testing(
+                        teeth_spec, targets, verify_dir, run_teeth_suite,
+                        timeout_seconds=timeout,
+                        collect_results=teeth_mutants)
+                    teeth_passed, teeth_output = summarize_teeth(
+                        teeth_summary, teeth_mutants,
+                        auto_spec.min_teeth_rate)
+                    log.info("%s", teeth_output)
+                    assert auto_info is not None  # set during synthesis
+                    auto_info["teeth"] = teeth_summary.model_dump()
+                    audit.log_event("auto_probe_teeth", {
+                        "attempt": attempt,
+                        "targets": targets,
+                        "min_teeth_rate": auto_spec.min_teeth_rate,
+                        "passed": teeth_passed,
+                        **teeth_summary.model_dump(),
+                    })
+                    try:
+                        teeth_path = audit.dir / "verification" / \
+                            "autoprobes-teeth.json"
+                        teeth_path.parent.mkdir(parents=True, exist_ok=True)
+                        teeth_path.write_text(json.dumps(
+                            [m.model_dump() for m in teeth_mutants],
+                            indent=2, default=str), encoding="utf-8")
+                    except OSError as e:
+                        log.debug("Teeth detail capture failed: %s", e)
+                else:
+                    teeth_passed = True
                 audit.save_verification(
                     attempt, [*verification_results, *artifact_results,
-                              *assertion_results, *probe_results])
+                              *assertion_results, *probe_results,
+                              *auto_probe_results])
                 # Mutation meta-check (dogfood-22): runs after the probe tier
                 # on otherwise-green attempts when the contract enables it.
                 # Gating (fail_below) fails the attempt like any other
@@ -1871,7 +2086,8 @@ class Orchestrator:
                 mutation_spec = self._effective_verification_mutation(mission)
                 if (commands_passed and not agent_failed
                         and artifacts_passed and assertions_passed
-                        and probes_passed and mutation_spec is not None
+                        and probes_passed and auto_passed
+                        and teeth_passed and mutation_spec is not None
                         and mutation_spec.enabled):
                     if dry_run:
                         mutation_summary = MutationSummary()
@@ -1889,7 +2105,7 @@ class Orchestrator:
                         log.warning("%s", mutation_output)
                 passed = commands_passed and artifacts_passed \
                     and assertions_passed and probes_passed \
-                    and mutation_passed
+                    and auto_passed and teeth_passed and mutation_passed
                 # Set when a required review rejects but retry_on_rejection
                 # is enabled and attempt budget remains (dogfood-17): control
                 # falls through into the normal recovery machinery below
@@ -1946,7 +2162,8 @@ class Orchestrator:
                 if attempt >= max_attempts:
                     status = "failed"
                     deliverable_output = missing_output or assertion_output \
-                        or probe_output or mutation_output
+                        or probe_output or auto_output or teeth_output \
+                        or mutation_output
                     if deliverable_output and not failing_output:
                         next_steps.append(deliverable_output)
                     next_steps.append(
@@ -1971,6 +2188,7 @@ class Orchestrator:
                         failure_class, FAILURE_CLASS_GUIDANCE["unknown"])
                     reason = (failing_output or missing_output
                               or assertion_output or probe_output
+                              or auto_output or teeth_output
                               or mutation_output
                               or (state.error or "agent reported failure"))
                 # Oscillation detection (dogfood-24): a repeated failure
@@ -2204,7 +2422,8 @@ class Orchestrator:
             "finished_at": finished_at,
             "verification_results": [
                 r.model_dump() for r in [*verification_results, *artifact_results,
-                                        *assertion_results, *probe_results]
+                                        *assertion_results, *probe_results,
+                                        *auto_probe_results]
             ],
             "recovery_attempts": recovery_attempts,
             "changed_files": changed_files,
@@ -2224,6 +2443,8 @@ class Orchestrator:
             report["budget_exceeded"] = budget_exceeded
         if mutation_summary is not None:
             report["mutation"] = mutation_summary.model_dump()
+        if auto_info is not None:
+            report["auto_probes"] = auto_info
         report_path = audit.write_report(report)
 
         # Opt-in automatic rollback: only for failed/cancelled outcomes, never

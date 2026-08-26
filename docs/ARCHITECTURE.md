@@ -24,6 +24,9 @@ src/tether/
     experimental.py OpencodeAdapter, PiAdapter (thin presets over CommandAdapter)
     __init__.py    Registry: resolve_adapter(name, settings)
   verification.py  Runs declared commands safely (shell=False, timeouts, cwd)
+  autoprobes.py    LLM-synthesized behavioral probes (dogfood-43): prompt
+                   builder over goal + captured change, fail-safe fenced-YAML
+                   parser into ProbeSpec, and the mutation-teeth summarizer
   cleanroom.py     Clean-room materializer (dogfood-23): throwaway checkout of
                    the checkpoint ref + captured change; fail-closed
   git_safety.py    Checkpoint refs, dirty detection, prefix-resolving rollback,
@@ -49,7 +52,7 @@ src/tether/
 7. Execution prompt -> adapter; agent state stored. Execution and repair sends get the same transient-retry treatment as planning; exhausted retries flow into recovery exactly like one failed send, and retries never consume `max_attempts`. Usage metrics from every physical send merge into `cumulative_usage` while each retried step counts as ONE logical send (`send_count`).
 8. Changed-file detection (`git diff` vs checkpoint HEAD + untracked; non-git projects use a before/after file manifest). Recomputed after EVERY send — the initial execution and every recovery attempt alike.
 9. Forensic change capture into the session audit directory (skipped in dry-run): git projects get `patch.diff` (`git diff --no-color --binary <original_head>`, includes binary changes) plus `untracked.txt` (a plain diff misses untracked contents); non-git projects get `manifest_diff.json` (added/modified/deleted plus the before/after fingerprints). Captured and refreshed after every send, before verification, so the evidence always reflects the agent's latest changes.
-10. Verification of declared commands (skipped execution in dry-run). When the resolved command list is EMPTY and not dry-run, the loop logs a prominent warning ("mission declares no verification commands; success will not exercise any checks") and records it in `next_steps` (dogfood-25) — command-less missions still succeed, never silently. On otherwise-green attempts, artifact globs, structural assertions, and behavioral PROBES run next (each deeper tier only when the previous ones are green): probes (`verification.probes`, dogfood-20) execute a declared command with shell=False in the project dir and assert on its OUTPUT — the combined stdout+stderr must satisfy all `contains`/`matches` criteria; the exit code is recorded but never decides. A failing probe fails the attempt like any other deliverable miss and recovery proceeds normally; probe results are recorded alongside command/artifact/assertion entries, and dry-runs mark them skipped. The MUTATION meta-check (dogfood-22) is the deepest tier of this ladder and runs after the probe tier on green attempts: when `verification.mutation.enabled`, each changed `.py` file (never `.tether/` or sandbox-forbidden paths) is mutated with built-in stdlib-`ast` operators (deterministic seeded selection capped by `max_mutants`) and the SAME verification helpers re-run per mutant; per-mutant outcomes go to `verification/mutation.json`, the aggregate to `report["mutation"]` plus a `mutation` audit event, a `kill_rate` below `fail_below` fails the attempt (recovery proceeds normally), an unset `fail_below` is advisory-only, and dry-runs skip it entirely. CLEAN-ROOM tier (dogfood-23): when `verification.clean_room: true`, the ENTIRE battery — commands, artifacts, assertions, probes, mutation — runs in a throwaway checkout (`tether.cleanroom`: `git archive` of the checkpoint ref + applied `patch.diff` + non-gitignored untracked files + optional `clean_room_copy` entries; gitignored and outside-project paths deliberately excluded) instead of the agent's working tree, re-materialized fresh per attempt; materialization failure fails the mission immediately with a `clean_room_error` audit event (fail-closed, no in-tree fallback), and dry-runs record it as skipped.
+10. Verification of declared commands (skipped execution in dry-run). When the resolved command list is EMPTY and not dry-run, the loop logs a prominent warning ("mission declares no verification commands; success will not exercise any checks") and records it in `next_steps` (dogfood-25) — command-less missions still succeed, never silently. On otherwise-green attempts, artifact globs, structural assertions, and behavioral PROBES run next (each deeper tier only when the previous ones are green): probes (`verification.probes`, dogfood-20) execute a declared command with shell=False in the project dir and assert on its OUTPUT — the combined stdout+stderr must satisfy all `contains`/`matches` criteria; the exit code is recorded but never decides. A failing probe fails the attempt like any other deliverable miss and recovery proceeds normally; probe results are recorded alongside command/artifact/assertion entries, and dry-runs mark them skipped. The MUTATION meta-check (dogfood-22) is the deepest tier of this ladder and runs after the probe tier on green attempts: when `verification.mutation.enabled`, each changed `.py` file (never `.tether/` or sandbox-forbidden paths) is mutated with built-in stdlib-`ast` operators (deterministic seeded selection capped by `max_mutants`) and the SAME verification helpers re-run per mutant; per-mutant outcomes go to `verification/mutation.json`, the aggregate to `report["mutation"]` plus a `mutation` audit event, a `kill_rate` below `fail_below` fails the attempt (recovery proceeds normally), an unset `fail_below` is advisory-only, and dry-runs skip it entirely. CLEAN-ROOM tier (dogfood-23): when `verification.clean_room: true`, the ENTIRE battery — commands, artifacts, assertions, probes, mutation — runs in a throwaway checkout (`tether.cleanroom`: `git archive` of the checkpoint ref + applied `patch.diff` + non-gitignored untracked files + optional `clean_room_copy` entries; gitignored and outside-project paths deliberately excluded) instead of the agent's working tree, re-materialized fresh per attempt; materialization failure fails the mission immediately with a `clean_room_error` audit event (fail-closed, no in-tree fallback), and dry-runs record it as skipped.  Between the probe tier and the mutation meta-check sits the GENERATED-PROBE tier (dogfood-43): when `verification.auto_probes.enabled`, probes are synthesized once after the initial capture — before any human-authored verification runs — by consulting a generator adapter on a fresh `-auto-probes` session with a prompt built from the mission goal plus the bounded captured change (`patch.diff` AND `untracked.txt` for git, since a plain diff misses untracked contents); see the dedicated section below.
 11. Pass AND agent completed => success. Any non-completed agent state (failed/unavailable/cancelled/needs_input/running) counts as failure. Fail => recovery loop: repair prompt with a bounded (~8KB) excerpt of failing output extended by a bounded forensic context (current changed files, an excerpt of the latest change artifact, the previous attempt's changed files), re-verify, up to effective `max_attempts`. After every recovery send the changed-file detection, forensic capture, and write-sandbox gate run again (step 8–9 semantics): a recovery attempt that violates `allowed_paths`/`forbidden_paths` fails the mission immediately and skips further verification. Git sessions also save a per-attempt patch under `verification/attempt-NN.patch`, and each `recovery_attempts` entry records its `changed_files_at_attempt`.
     Recovery strategy + oscillation detection (dogfood-24): `recovery.strategy` selects the tree posture across repair rounds — `cumulative` (default, unchanged behavior) keeps intermediate damage; `reset_to_checkpoint` restores the checkpoint state before EVERY repair send (scoped clean rollback for git — pre-existing untracked files preserved via the same `preserve` set as auto-rollback — or backup restore otherwise), logs a `recovery_reset` audit event, refreshes change detection and forensic evidence, and records a failed reset on the recovery entry (`reset_error`) best-effort without aborting; dry-runs never reset. Independently, a pure `_OscillationDetector` hashes each failed attempt's signature (whitespace-normalized failing output + sorted changed-file tuple, O(attempts) memory): the FIRST repeat logs an `oscillation_detected` event and auto-escalates cumulative mode to `reset_to_checkpoint`; a SECOND recurrence even under reset aborts the loop early with `status: failed`, a final `failure_class: "oscillation_detected"` recovery entry, and actionable rollback guidance in `next_steps` instead of burning the remaining attempt budget. Distinct alternating failures never trigger any of this.
     Budget guardrails (dogfood-21): before every adapter send and before each verification round the core loop checks the mission's optional `budget` — `max_wall_seconds` (monotonic since mission start), `max_sends`, and cumulative `max_usage` metric ceilings (enforced only for metrics already seen in cumulative usage, so configured-but-unreported metrics never false-trigger). A breach fails the mission immediately, skips remaining sends and verification, records `report["budget_exceeded"]` (`limit`/`threshold`/`observed`) plus rollback guidance in `next_steps`, logs a `budget_exceeded` audit event, and maps to CLI exit code 5 (`EXIT_BUDGET_EXCEEDED`). Every main-path report carries `cumulative_usage` (merged numeric usage metrics across all sends plus `wall_seconds` and `send_count`); usage accumulates across EVERY send (initial + recovery) while the last-send `usage` field is unchanged.
@@ -95,6 +98,42 @@ where `_is_relative` results are only used for truthiness) and documented
 in `tests/test_cleanroom.py`.
 
 The loop never references a concrete adapter type; it only calls the `AgentAdapter` interface (`is_available`, `start_session`, `send`, `cancel`, plus prompt builders). Adding an agent = adding a registry entry or a config block.
+
+## LLM-synthesized behavioral probes (dogfood-43)
+
+`verification.auto_probes` breaks the manual-verification-authoring
+boundary: after the agent's change is captured — but BEFORE any
+human-authored verification runs — Tether consults a generator adapter
+(`adapter` names one via the registry; unset uses the mission's reviewer
+instance) on a fresh `-auto-probes` session, with a prompt built from the
+mission goal plus the bounded captured change (`patch.diff` AND
+`untracked.txt` for git projects, up to 64 KiB combined). The response is
+parsed fail-safe (`tether.autoprobes.parse_generated_probes`): ANSI
+stripped first (dogfood-40 lesson), LAST fenced yaml block wins, every
+entry must carry a non-empty shlex-parsable `command` within 2000 chars
+plus at least one of non-empty `contains`/valid-regex `matches`; ANY
+malformation rejects the whole response. Accepted specs are capped by
+`max_probes` (default 6) and run as an extra ladder tier right after the
+human-authored probes on otherwise-green attempts — a failing generated
+probe fails the attempt like any deliverable miss; results ride
+`verification_results` in the report.
+
+The TEETH gate then mutation-tests the generated probes against the
+change: each changed `.py` file (same sandbox-filtered targets as the
+mutation tier) is mutated with the built-in seeded operators (capped by
+`max_mutants`, default 10) and ONLY the generated probes re-run per
+mutant. Pristine-tree passage is guaranteed by the tier above, so the
+measured kill share is pure probe strength: below `min_teeth_rate`
+(a number in [0,1]) the attempt fails and recovery receives the
+"lack teeth" output naming surviving sites; unset = advisory only; no
+runnable mutants (no changed `.py`) or a failed synthesis are advisory
+too. Synthesis failure never fails the mission: status "failed" plus
+reason land in the `auto_probes` audit event and `report["auto_probes"]`,
+and the mission falls back to exactly today's human-authored battery.
+Per-mutant detail persists under `verification/autoprobes-teeth.json`
+with an `auto_probe_teeth` event per measured attempt. The key defaults
+to absent/OFF: existing missions validate and behave byte-identically
+(no new sessions, events, or report keys).
 
 ## Design rules
 

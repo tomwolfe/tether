@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from tether.models import (
     AssertionSpec,
+    AutoProbesSpec,
     BudgetSpec,
     MissionContract,
     MutationSpec,
@@ -240,6 +241,57 @@ def load_mission(path: str | Path) -> MissionContract:
                     f"{entry!r}")
         clean_room_copy = list(raw_clean_room_copy)
 
+    # Structural validation only (dogfood-43): probe synthesis, the extra
+    # ladder tier, and the teeth gate run at mission runtime (orchestrator);
+    # here we only enforce the contract shape.
+    raw_auto_probes = verification.get("auto_probes")
+    auto_probes: AutoProbesSpec | None = None
+    if raw_auto_probes is not None:
+        if not isinstance(raw_auto_probes, dict):
+            raise MissionError("'verification.auto_probes' must be a mapping")
+        unknown = set(raw_auto_probes) - {
+            "enabled", "adapter", "max_probes", "min_teeth_rate",
+            "max_mutants"}
+        if unknown:
+            raise MissionError(
+                "'verification.auto_probes' accepts only 'enabled', "
+                "'adapter', 'max_probes', 'min_teeth_rate', and "
+                "'max_mutants'; got: " + ", ".join(sorted(unknown)))
+        ap_enabled = raw_auto_probes.get("enabled")
+        if "enabled" in raw_auto_probes and not isinstance(ap_enabled, bool):
+            raise MissionError(
+                "'verification.auto_probes.enabled' must be a boolean")
+        ap_adapter = raw_auto_probes.get("adapter")
+        if ap_adapter is not None and not isinstance(ap_adapter, str):
+            raise MissionError(
+                "'verification.auto_probes.adapter' must be a string")
+        for key in ("max_probes", "max_mutants"):
+            value = raw_auto_probes.get(key)
+            if key in raw_auto_probes and (
+                    not isinstance(value, int) or isinstance(value, bool)
+                    or value <= 0):
+                raise MissionError(
+                    f"'verification.auto_probes.{key}' must be a positive "
+                    "integer")
+        ap_min_teeth = raw_auto_probes.get("min_teeth_rate")
+        if ap_min_teeth is not None and (
+                isinstance(ap_min_teeth, bool)
+                or not isinstance(ap_min_teeth, (int, float))
+                or not (0.0 <= float(ap_min_teeth) <= 1.0)):
+            raise MissionError(
+                "'verification.auto_probes.min_teeth_rate' must be a number "
+                "between 0 and 1")
+        auto_kwargs: Dict[str, Any] = {"enabled": bool(ap_enabled)}
+        if ap_adapter is not None:
+            auto_kwargs["adapter"] = ap_adapter
+        if "max_probes" in raw_auto_probes:
+            auto_kwargs["max_probes"] = raw_auto_probes["max_probes"]
+        if "max_mutants" in raw_auto_probes:
+            auto_kwargs["max_mutants"] = raw_auto_probes["max_mutants"]
+        if ap_min_teeth is not None:
+            auto_kwargs["min_teeth_rate"] = float(ap_min_teeth)
+        auto_probes = AutoProbesSpec(**auto_kwargs)
+
     recovery = data.get("recovery") or {}
     if not isinstance(recovery, dict):
         raise MissionError("'recovery' must be a mapping")
@@ -424,6 +476,7 @@ def load_mission(path: str | Path) -> MissionContract:
                 mutation=mutation,
                 clean_room=clean_room,
                 clean_room_copy=clean_room_copy,
+                auto_probes=auto_probes,
             ),
             recovery=(
                 RecoverySpec(max_attempts=max_attempts)

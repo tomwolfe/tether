@@ -34,6 +34,11 @@ class VerificationSpec(BaseModel):
     # checkout (for things like `.venv`); never carries .tether/, .git/, or
     # sandbox-forbidden paths. Default None so existing missions unchanged.
     clean_room_copy: Optional[List[str]] = None
+    # LLM-synthesized behavioral probes (dogfood-43): generated from the
+    # mission goal plus the captured change, run as an extra tier, and
+    # mutation-tested ("teeth"). Default None (OFF) so existing missions
+    # validate and behave unchanged.
+    auto_probes: Optional[AutoProbesSpec] = None
 
 
 class MutationSpec(BaseModel):
@@ -48,6 +53,23 @@ class MutationSpec(BaseModel):
     max_mutants: int = Field(default=20, gt=0)
     # Kill-rate gate in [0, 1]; None = advisory only (never fails an attempt).
     fail_below: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+
+
+class AutoProbesSpec(BaseModel):
+    """Opt-in LLM-synthesized behavioral probes (dogfood-43): after the
+    agent's change is captured, a reviewer-class adapter invents probes from
+    the mission goal plus the captured diff; they run as an extra ladder tier
+    and are mutation-tested against the change ("teeth"). Default OFF so
+    existing missions behave unchanged."""
+    enabled: bool = False   # default OFF; existing missions unchanged
+    # Generator adapter name; None uses the mission's reviewer instance.
+    adapter: Optional[str] = None
+    # Deterministic cap on accepted generated probes.
+    max_probes: int = Field(default=6, gt=0)
+    # Teeth gate in [0, 1]; None = advisory only (never fails an attempt).
+    min_teeth_rate: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    # Cap on mutants per changed file during the teeth pass.
+    max_mutants: int = Field(default=10, gt=0)
 
 
 class ProbeSpec(BaseModel):

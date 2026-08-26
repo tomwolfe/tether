@@ -238,3 +238,59 @@ by docs-truth pins in `tests/test_docs.py` — including the rule that all
 `dogfood-*.yaml` missions numbered 42+ must carry `git_state_guard: true`.
 This mission itself ran under the guard it extended (session
 `585a762fa949`, success attempt 1, adversarial review APPROVE).
+
+## Auto-generated verification probes (dogfood-43)
+
+Boundary broken: every prior verification layer — commands, artifacts,
+assertions, probes, mutation, clean-room, review — shared one assumption:
+verification content is authored by a human BEFORE the run, guessing at
+write-time where behavior matters. Nothing adapted verification to what
+the agent actually did. Why this breaks the local maximum: the single-
+agent loop was maximally hardened around fixed-at-authoring checks, so
+the next strength gain could not come from polishing any existing tier;
+it had to come from making verification diff-adaptive while keeping the
+hardened fail-safe posture intact.
+
+Design shipped: `verification.auto_probes` (`src/tether/autoprobes.py`,
+wired through models/loader/orchestrator). After the initial capture and
+before any human-authored verification runs, Tether consults a generator
+adapter on a fresh `-auto-probes` session with a prompt built from the
+mission goal plus the bounded captured change (`patch.diff` AND
+`untracked.txt` — a plain git diff misses untracked contents). The
+response parses fail-safe (ANSI stripped first per the dogfood-40 lesson,
+LAST fenced yaml block wins, strict per-entry validation, 2000-char
+command cap, `max_probes` cap default 6); ANY malformation rejects the
+whole response and the mission falls back to exactly today's battery.
+Accepted specs run as a new ladder tier after the human probes; the TEETH
+gate then mutation-tests them against the change — changed `.py` files
+are mutated with the built-in seeded operators and ONLY the generated
+probes re-run per mutant — so pristine-tree passage (guaranteed by the
+tier above) makes the measured kill share pure probe strength. Below
+`min_teeth_rate` the attempt fails and recovery receives the surviving
+mutant sites; unset rate / no runnable mutants / failed synthesis are
+advisory. Detail persists in `verification/autoprobes-teeth.json` plus an
+`auto_probe_teeth` event per measured attempt; `report["auto_probes"]`
+records synthesis status, accepted specs, and latest teeth. Key absent =
+byte-identical behavior (pinned).
+
+Proof (red -> green, in-session): unit contract
+`tests/test_autoprobes.py` (30 cases: prompt shape incl. the dogfood-28
+marker-self-match warning, parser happy paths/fail-safe matrix/bounds/
+truncation/ANSI, teeth summarizer semantics, and REAL mutant measurement —
+a behavioral probe kills both mutants of a fixture function while a
+toothless constant-output probe kills none) and integration contract
+`tests/test_autoprobes_mission.py` (10 cases: loader accept/reject matrix,
+off-by-default full inertness, live synthesis over a scripted adapter with
+prompt-evidence assertions, tier execution visible in report
+verification_results, garbage-synthesis advisory fallback with no teeth
+run, toothless-probe gate failure routed into recovery and failing the
+mission after exhausted attempts, non-.py-change n/a advisory pass,
+dry-run never synthesizes). Both suites failed before their targets
+existed and pass after; full suite 704 green, ruff + mypy clean.
+
+Live fire: `missions/dogfood-43-auto-generated-probes.yaml` runs WITH
+`auto_probes.enabled` in its own contract (policy: self-hosting runs
+prove their own features) — the first dogfood mission whose verification
+is partly synthesized at runtime and mutation-tested mid-mission. Session
+record lands here after the clean-tree run (the feature itself must be
+committed first; tether aborts on dirty trees by design).
