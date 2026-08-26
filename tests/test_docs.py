@@ -740,3 +740,31 @@ def test_architecture_documents_git_state_guard():
     # integrity, checked after every send.
     assert "HEAD" in section
     assert "checkpoint ref" in section
+
+
+def test_dogfood_missions_from_42_on_enable_git_state_guard():
+    """dogfood-42 adoption policy: every self-hosting dogfood mission from
+    number 42 onward must run under the guard it helped prove."""
+    import re
+    for yml in sorted((REPO_ROOT / "missions").glob("dogfood-*.yaml")):
+        m = re.match(r"dogfood-(\d+)-", yml.name)
+        if not m or int(m.group(1)) < 42:
+            continue
+        text = yml.read_text(encoding="utf-8")
+        assert re.search(r"(?m)^git_state_guard:\s*true\s*$", text), \
+            f"{yml.name} must set git_state_guard: true"
+
+
+def test_docs_document_hook_integrity_and_guard_adoption_policy():
+    """dogfood-42 docs-truth pin: ARCHITECTURE's guard paragraph covers
+    .git/hooks and core.hooksPath integrity; DOGFOODING states the
+    adoption policy for all future dogfood missions."""
+    arch = (REPO_ROOT / "docs" / "ARCHITECTURE.md").read_text(
+        encoding="utf-8")
+    section = arch.split("## Sandbox modes", 1)[1].split("\n## ", 1)[0]
+    assert ".git/hooks" in section
+    assert "core.hooksPath" in section
+    dog = (REPO_ROOT / "docs" / "DOGFOODING.md").read_text(
+        encoding="utf-8")
+    assert "every dogfood mission" in dog and \
+        "`git_state_guard: true`" in dog

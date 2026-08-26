@@ -1,0 +1,112 @@
+# Mission: dogfood-42-guard-adoption-and-recovery-drift
+# Findings: corpus audit of tests/test_git_state_guard.py proved two gaps:
+# (1) every drift case tripped the guard on the INITIAL send — no test
+# covers drift during a RECOVERY send under cumulative strategy, i.e. after
+# verification has already failed once; (2) .git-internals plants beyond
+# HEAD/refs are invisible: an agent can write .git/hooks/* or set
+# core.hooksPath and hijack every future git operation, unseen by path
+# globs AND by HEAD/ref checks. This mission closes both and makes guard
+# adoption permanent policy for all future self-hosting missions. It runs
+# WITH git_state_guard: true in its own contract.
+mission:
+  name: dogfood-42-guard-adoption-and-recovery-drift
+  goal: |
+    Extend the opt-in git-state guard with hook integrity, document the
+    adoption policy, and keep every committed test green without editing
+    any committed assertion.
+
+    TASK 1 - HOOK INTEGRITY UNDER THE GUARD (src/tether/orchestrator.py):
+    When a mission enables git_state_guard AND the project is a git repo,
+    snapshot a baseline at mission start (after checkpoint creation): the
+    sha256 of every file under .git/hooks/ keyed by relative path (a
+    missing directory is an empty baseline) PLUS the current
+    `git config --get core.hooksPath` value (unset = None). After EVERY
+    send, alongside the existing HEAD/checkpoint-ref checks, recompute
+    both and treat ANY difference from baseline as violations in the SAME
+    _GitStateViolationError contract: additions/modifications/deletions of
+    hook files produce messages mentioning "hook"; a changed or newly-set
+    hooksPath produces a message mentioning "hooksPath". Pre-existing
+    state never trips (baseline semantics). Read-only checks, shell=False,
+    never raise beyond the violation error itself.
+
+    TASK 2 - ADOPTION POLICY (docs):
+    In docs/DOGFOODING.md add a short policy statement that EVERY dogfood
+    mission from dogfood-42 onward sets `git_state_guard: true` in its own
+    contract (self-hosting runs prove their own guard), then record this
+    mission under a "## Guard adoption and recovery-round drift
+    (dogfood-42)" heading. In docs/ARCHITECTURE.md extend the existing
+    git_state_guard paragraph with one or two sentences covering the
+    .git/hooks baseline snapshot and core.hooksPath redirect detection
+    (pre-existing hooks/config never trip). The red docs pins in
+    tests/test_docs.py pass once the phrasing lands; do not edit them.
+
+    TASK 3 - NO PRODUCT SURFACE BEYOND ORCHESTRATOR.PY:
+    models.py and mission.py need NO changes for this mission; the new
+    checks ride the existing contract key. All committed tests across the
+    suite stay green unchanged.
+
+constraints:
+  - "only src/tether/orchestrator.py, docs/ARCHITECTURE.md, docs/DOGFOODING.md may be modified"
+  - "committed tests are acceptance ground truth; never edit their assertions"
+  - "guard-off behavior stays byte-identical (no snapshots, no checks, no events when key unset)"
+  - "pre-existing hooks and hooksPath config must never fail the guard"
+  - "subprocess stays shell=False everywhere; stdlib only"
+
+context_files:
+  - src/tether/orchestrator.py
+  - tests/test_git_state_guard.py
+  - docs/ARCHITECTURE.md
+
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests tools"
+    - "mypy src/tether"
+    - ".venv/bin/tether adapters conformance mock"
+    # Regression guards carried forward from dogfood-40/41.
+    - ".venv/bin/python tools/mutation_killrate.py --target src/tether/cleanroom.py --suite tests/test_cleanroom.py --min-kill-rate 0.8"
+  artifacts:
+    - "src/tether/orchestrator.py"
+    - "docs/DOGFOODING.md"
+  assertions:
+    - path: src/tether/orchestrator.py
+      contains: hooksPath
+    - path: docs/ARCHITECTURE.md
+      contains: core.hooksPath
+    - path: docs/DOGFOODING.md
+      contains: "dogfood-42"
+  probes:
+    - command: ".venv/bin/python -m pytest -q tests/test_git_state_guard.py"
+      contains: passed
+
+recovery:
+  max_attempts: 4
+  strategy: cumulative
+
+review:
+  enabled: true
+  required: true
+  adapter: opencode
+  retry_on_rejection: true
+  context: full
+
+budget:
+  max_sends: 10
+  max_wall_seconds: 10800
+
+git_state_guard: true
+
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    timeout_seconds: 2700
+
+allowed_paths:
+  - src/tether/orchestrator.py
+  - docs/**
+  - missions/dogfood-42-guard-adoption-and-recovery-drift.yaml
+
+forbidden_paths:
+  - .git/**
+  - .tether/**

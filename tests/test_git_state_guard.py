@@ -22,7 +22,9 @@ from pathlib import Path
 
 from tether.adapters.base import AgentAdapter, SessionInfo
 from tether.audit import find_session_dir
-from tether.mission import load_mission
+import pytest
+
+from tether.mission import MissionError, load_mission
 from tether.models import AgentState, TetherConfig
 from tether.orchestrator import Orchestrator
 
@@ -235,3 +237,129 @@ def test_mission_contract_field_defaults_to_none():
     from tether.models import MissionContract
     field = MissionContract.model_fields["git_state_guard"]
     assert field.default is None
+
+
+# --------------------- dogfood-42: recovery-round drift + hook integrity
+#
+# Two gaps proven absent from the corpus before this mission:
+#  1. No test tripped the guard on a RECOVERY send (all drift cases hit the
+#     initial execution send); under cumulative strategy the repair send is
+#     the first send after verification has already failed once.
+#  2. Nothing covered .git-internals plants beyond HEAD/refs: an agent can
+#     write .git/hooks/* or redirect core.hooksPath — invisible to path
+#     globs AND to HEAD/ref checks — hijacking future git operations.
+
+
+def _marker_flip_cmd():
+    return (f"{sys.executable} -c \"import pathlib,sys; "
+            "sys.exit(0 if pathlib.Path('fixed.marker').exists() else 3)\"")
+
+
+def test_enabled_drift_during_recovery_round_under_cumulative_trips_guard(
+        tmp_path):
+    # Round 1: honest verification failure (marker absent). Repair send:
+    # agent writes the marker (round 2 WOULD be green) but also moves HEAD.
+    # The post-repair-send gate must trip BEFORE round-2 verification gets
+    # to legitimize the drifted tree.
+    _git_repo_two_commits(tmp_path)
+    text = (
+        "mission:\n  name: gsg\n  goal: g\n"
+        "verification:\n"
+        f"  commands:\n    - {_marker_flip_cmd()}\n"
+        "git_state_guard: true\n"
+        "recovery:\n"
+        "  max_attempts: 2\n"
+        "  strategy: cumulative\nadapter: mock\n")
+    _commit_mission(tmp_path, "m.yaml", text)
+
+    class MarkerThenReset(Surgeon):
+        def send(self, prompt, session):
+            self.send_count += 1
+            if self.send_count >= 3:  # planning=1, execution=2, repair=3+
+                (Path(session.project_dir) / "fixed.marker").write_text(
+                    "x", encoding="utf-8")
+                subprocess.run(
+                    ["git", "reset", "-q", "HEAD~1"],
+                    cwd=str(session.project_dir), capture_output=True,
+                    check=False, shell=False)
+            return AgentState(status="completed", logs="out")
+
+    report = _run(tmp_path, MarkerThenReset(_always()), "m.yaml")
+    assert report["status"] == "failed"
+    violations = report["git_state_violations"]
+    assert violations and any("HEAD" in v for v in violations)
+    assert len(report["recovery_attempts"]) == 1
+
+
+def test_enabled_agent_commit_forward_trips_guard_strictness(tmp_path):
+    # A forward empty commit looks benign but still moves the user's branch;
+    # strict semantics flag ANY history movement while the guard is on.
+    _git_repo_two_commits(tmp_path)
+    _commit_mission(tmp_path, "m.yaml",
+                    _mission_text("git_state_guard: true\n"))
+    surgeon = Surgeon(_always(["git", "commit", "-qm", "wip",
+                               "--allow-empty"]))
+    report = _run(tmp_path, surgeon, "m.yaml")
+    assert report["status"] == "failed"
+    assert report["verification_results"] == []
+    violations = report["git_state_violations"]
+    assert len(violations) >= 1 and any("HEAD" in v for v in violations)
+
+
+def test_non_boolean_git_state_guard_rejected(tmp_path):
+    mp = tmp_path / "m.yaml"
+    mp.write_text(_mission_text("git_state_guard: definitely\n"),
+                  encoding="utf-8")
+    with pytest.raises(MissionError):
+        load_mission(mp)
+
+
+def test_enabled_new_hook_plant_fails_closed(tmp_path):
+    _git_repo_two_commits(tmp_path)
+    _commit_mission(tmp_path, "m.yaml",
+                    _mission_text("git_state_guard: true\n"))
+
+    class HookPlanter(Surgeon):
+        def send(self, prompt, session):
+            self.send_count += 1
+            if self.send_count >= 2:  # execution send
+                hooks = Path(session.project_dir) / ".git" / "hooks"
+                hooks.mkdir(exist_ok=True)
+                (hooks / "pre-commit").write_text("#!/bin/sh\nexit 0\n",
+                                                  encoding="utf-8")
+            return AgentState(status="completed", logs="out")
+
+    report = _run(tmp_path, HookPlanter(_always()), "m.yaml")
+    assert report["status"] == "failed"
+    assert report["verification_results"] == []
+    violations = report["git_state_violations"]
+    assert violations and any("hook" in v.lower() for v in violations)
+
+
+def test_enabled_hooks_path_redirect_fails_closed(tmp_path):
+    _git_repo_two_commits(tmp_path)
+    _commit_mission(tmp_path, "m.yaml",
+                    _mission_text("git_state_guard: true\n"))
+    surgeon = Surgeon(_always(["git", "config", "core.hooksPath",
+                               "/tmp/evil-hooks"]))
+    report = _run(tmp_path, surgeon, "m.yaml")
+    assert report["status"] == "failed"
+    violations = report["git_state_violations"]
+    assert violations and any("hooksPath" in v for v in violations)
+
+
+def test_pre_existing_hooks_do_not_trip(tmp_path):
+    # Baseline semantics: whatever hooks/config existed BEFORE the mission
+    # is the user's own state and must never fail the guard.
+    _git_repo_two_commits(tmp_path)
+    hooks = tmp_path / ".git" / "hooks"
+    hooks.mkdir(exist_ok=True)  # git init already creates it
+    (hooks / "pre-commit").write_text("#!/bin/sh\nexit 0\n",
+                                      encoding="utf-8")
+    subprocess.run(["git", "config", "core.hooksPath", ".githooks"],
+                   cwd=tmp_path, check=True, capture_output=True)
+    _commit_mission(tmp_path, "m.yaml",
+                    _mission_text("git_state_guard: true\n"))
+    report = _run(tmp_path, Surgeon(lambda n: []), "m.yaml")
+    assert report["status"] == "success", report["next_steps"]
+    assert "git_state_violations" not in report
