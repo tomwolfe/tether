@@ -127,15 +127,22 @@ def test_parse_rejects_malformed_probe_entries(entry, fragment):
     response = f"```yaml\nprobes:\n{entry}```"
     with pytest.raises(ProbeSynthesisError) as ei:
         _parse(response)
-    assert fragment in str(ei.value)
+    msg = str(ei.value)
+    assert fragment in msg or "no valid probes after salvage" in msg
 
 
 def test_parse_rejects_overlong_command():
     long_cmd = "c" * (AUTOPROBES_COMMAND_MAX_CHARS + 1)
     response = f"```yaml\nprobes:\n  - command: {long_cmd}\n    contains: x\n```"
-    with pytest.raises(ProbeSynthesisError) as ei:
+    with pytest.raises(ProbeSynthesisError):
         _parse(response)
-    assert str(AUTOPROBES_COMMAND_MAX_CHARS) in str(ei.value)
+
+
+def test_parse_salvages_valid_probes_from_mixed_response():
+    response = "```yaml\nprobes:\n  - command: \"echo hi\"\n    contains: hi\n  - command: \"\"\n    contains: x\n```"
+    specs = _parse(response)
+    assert len(specs) == 1
+    assert specs[0].command == "echo hi"
 
 
 # ------------------------------------------------------------- teeth gate

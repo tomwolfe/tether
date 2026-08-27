@@ -325,4 +325,37 @@ Two genuine field findings (dogfood-44 hardening targets):
    staging the new files (staged bytes ARE captured), but the gate's
    evidence should not depend on the agent knowing that: candidate fix
    is a bounded untracked-contents appendix in the review context,
-   mirroring the clean-room rules.
+    mirroring the clean-room rules.
+
+## Quantitative gates + reviewer untracked fix (dogfood-44/45)
+
+Dogfood-44 raised the quantitative floor: `auto_probes.min_teeth_rate` 0.5 → 0.7
+and `verification.mutation.fail_below` from advisory (`None`) to mandatory 0.5.
+The prior parser was all-or-nothing — one malformed probe entry (single-quote
+nesting, empty command) rejected the whole synthesis → teeth 0 → any gate
+vacuously failed or was bypassed. Fix: `src/tether/autoprobes.py` per-entry
+salvage (skip invalid entries, keep valid; fail only if zero valid remain).
+Mission `dogfood-44-quantitative-gates.yaml` (`auto_probes.enabled: true`,
+`min_teeth_rate: 0.7`, `mutation.fail_below: 0.5`, `git_state_guard: true`)
+FAILs before the fix (salvaged:0) and PASSes after (salvaged:1). Pin:
+`tests/test_autoprobes.py::test_parse_salvages_valid_probes_from_mixed_response`.
+
+Dogfood-45 closed finding #2: `orchestrator._run_review_gate` now appends
+bounded untracked file contents (up to half the review budget) after the
+`patch.diff` excerpt, so new files are reviewable even when unstaged. Before,
+a new-file-only change was review-starved. Mission
+`dogfood-45-reviewer-untracked.yaml` creates an untracked helper and asserts
+review sees it. Both missions run with `git_state_guard: true` and
+`auto_probes.enabled: true` (0.7 teeth, 0.5 mutation).
+
+## Git-state guard expansion (dogfood-46)
+
+Covers ALL git metadata affecting execution integrity: `.git/config` hash,
+`.git/info/exclude`, `.git/info/sparse-checkout`, and submodule pointer
+shas (`git submodule status`). Before, only `HEAD`+checkpoint ref+hooks
+were checked; an agent could poison `exclude`/`sparse-checkout`/`config`
+or retarget a submodule. Fix: `orchestrator._snapshot_hook_integrity` now
+captures extra file hashes + submodule map and `_hook_integrity_violations`
+diffs them fail-closed. Mission `dogfood-46-git-metadata-guard.yaml`
+(`git_state_guard: true`) FAILs if agent modifies excluded config and
+PASSes otherwise; proves via `git config` mutation probe.

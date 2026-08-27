@@ -1,0 +1,54 @@
+# Mission dogfood-44: quantitative verification gates hardening
+# Target 1: raises min_teeth_rate 0.5 -> 0.7 and makes mutation fail_below mandatory
+# Currently synthesis parser is all-or-nothing and fails on real-model single-quote nesting,
+# so teeth = 0 and any rate >0 would fail. Fix makes parser salvage valid entries.
+mission:
+  name: dogfood-44-quantitative-gates
+  goal: |
+    Harden auto_probes synthesis parser to salvage valid probes when some entries are malformed.
+    Currently parse_generated_probes rejects the whole response if any probe entry is invalid
+    (e.g. single-quote YAML nesting from shell-style commands). Change to per-entry salvage:
+    skip invalid entries, keep valid ones; only fail if zero valid probes remain. Also ensure
+    double-quoted scalars handle shell fragments correctly. Keep all tests green.
+
+constraints:
+  - "only src/tether/autoprobes.py, tests/test_autoprobes.py, missions/dogfood-44-quantitative-gates.yaml may be modified"
+  - "parse_generated_probes must still reject empty/missing fence and empty valid set"
+
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests tools"
+    - "mypy src/tether"
+    - ".venv/bin/python tools/mutation_killrate.py --target src/tether/cleanroom.py --suite tests/test_cleanroom.py --min-kill-rate 0.8"
+  probes:
+    - command: ".venv/bin/python -c \"from tether.autoprobes import parse_generated_probes; r='''\n\\`\\`\\`yaml\nprobes:\n  - command: \\\"echo hi\\\"\n    contains: \\\"hi\\\"\n  - command: \\\"\\\"\n    contains: \\\"x\\\"\n\\`\\`\\`'''; specs=parse_generated_probes(r); print('salvaged:'+str(len(specs)))\""
+      contains: "salvaged:1"
+  auto_probes:
+    enabled: true
+    adapter: mock
+    max_probes: 5
+    min_teeth_rate: 0.7
+    max_mutants: 12
+  mutation:
+    enabled: true
+    fail_below: 0.5
+    max_mutants: 12
+
+recovery:
+  max_attempts: 3
+  strategy: cumulative
+review:
+  enabled: false
+budget:
+  max_sends: 8
+  max_wall_seconds: 3600
+git_state_guard: true
+adapter: mock
+allowed_paths:
+  - src/tether/autoprobes.py
+  - tests/test_autoprobes.py
+  - missions/dogfood-44-quantitative-gates.yaml
+forbidden_paths:
+  - .git/**
+  - .tether/**

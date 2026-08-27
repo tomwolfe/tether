@@ -534,16 +534,52 @@ def _core_hooks_path(project_dir: Path) -> Optional[str]:
     return proc.stdout.strip() or None
 
 
+def _file_sha256(p: Path) -> Optional[str]:
+    try:
+        if not p.is_file():
+            return None
+        return hashlib.sha256(p.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+def _submodule_shas(project_dir: Path) -> Dict[str, str]:
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(project_dir), "submodule", "status"],
+            capture_output=True, text=True, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if proc.returncode != 0:
+        return {}
+    out: Dict[str, str] = {}
+    for line in proc.stdout.splitlines():
+        line=line.strip()
+        if not line:
+            continue
+        # format: "  <sha> <path> (branch)"
+        parts=line.lstrip(" +-U").split()
+        if len(parts)>=2:
+            out[parts[1]]=parts[0]
+    return out
+
 def _snapshot_hook_integrity(
     project_dir: Path,
-) -> tuple[Dict[str, str], Optional[str]]:
-    """Mission-start integrity baseline for the git-state guard (dogfood-42):
-    the ``.git/hooks/`` sha256 map plus the current ``core.hooksPath``
-    value. Read-only, shell=False; never raises.
+) -> tuple[Dict[str, str], Optional[str], Dict[str, Optional[str]], Dict[str, str]]:
+    """Mission-start integrity baseline for the git-state guard (dogfood-42/46):
+    the ``.git/hooks/`` sha256 map plus ``core.hooksPath``, plus
+    .git/config, .git/info/exclude, .git/info/sparse-checkout hashes and
+    submodule pointer map. Read-only, never raises.
     """
+    extra = {
+        ".git/config": _file_sha256(project_dir / ".git" / "config"),
+        ".git/info/exclude": _file_sha256(project_dir / ".git" / "info" / "exclude"),
+        ".git/info/sparse-checkout": _file_sha256(project_dir / ".git" / "info" / "sparse-checkout"),
+    }
     return (
         _hook_file_digests(project_dir / ".git" / "hooks"),
         _core_hooks_path(project_dir),
+        extra,
+        _submodule_shas(project_dir),
     )
 
 
@@ -796,7 +832,7 @@ class Orchestrator:
 
     def _hook_integrity_violations(
         self,
-        baseline: Optional[tuple[Dict[str, str], Optional[str]]],
+        baseline: Optional[tuple[Dict[str, str], Optional[str], Dict[str, Optional[str]], Dict[str, str]]],
     ) -> list[str]:
         """Hook-integrity drift vs the mission-start baseline (dogfood-42).
 
@@ -810,9 +846,15 @@ class Orchestrator:
         """
         if baseline is None:
             return []
-        base_digests, base_path = baseline
+        base_digests, base_path, base_extra, base_sub = baseline
         cur_digests = _hook_file_digests(self.project_dir / ".git" / "hooks")
         cur_path = _core_hooks_path(self.project_dir)
+        cur_extra = {
+            ".git/config": _file_sha256(self.project_dir / ".git" / "config"),
+            ".git/info/exclude": _file_sha256(self.project_dir / ".git" / "info" / "exclude"),
+            ".git/info/sparse-checkout": _file_sha256(self.project_dir / ".git" / "info" / "sparse-checkout"),
+        }
+        cur_sub = _submodule_shas(self.project_dir)
         violations: list[str] = []
         for name in sorted(set(base_digests) | set(cur_digests)):
             before = base_digests.get(name)
@@ -841,13 +883,19 @@ class Orchestrator:
                     f"git hooks redirect detected: core.hooksPath moved "
                     f"from {base_path!r} at mission start to "
                     f"{cur_path!r}")
+        for k in sorted(set(base_extra) | set(cur_extra)):
+            if base_extra.get(k) != cur_extra.get(k):
+                violations.append(f"git metadata drift: {k} changed during session")
+        for k in sorted(set(base_sub) | set(cur_sub)):
+            if base_sub.get(k) != cur_sub.get(k):
+                violations.append(f"submodule pointer drift: {k} changed during session")
         return violations
 
     def _gate_and_capture(
         self, audit: AuditTrail, mission: Any, checkpoint: CheckpointInfo,
         manifest_before: Optional[dict[str, tuple[int, str | int]]],
         dry_run: bool,
-        hook_baseline: Optional[tuple[Dict[str, str], Optional[str]]] = None,
+        hook_baseline: Optional[tuple[Dict[str, str], Optional[str], Dict[str, Optional[str]], Dict[str, str]]] = None,
     ) -> list[str]:
         """Re-detect changes, refresh forensic artifacts, re-run the gate.
 
@@ -1231,6 +1279,39 @@ class Orchestrator:
                 else REVIEW_EXCERPT_BUDGET)
         except OSError:
             excerpt = ""
+        # Dogfood-43 finding #2: reviewer saw patch.diff but not untracked file
+        # contents; stage-dependent evidence starvation. Append bounded untracked
+        # file contents so new files are reviewable even when unstaged.
+        if checkpoint.is_git_repo:
+            try:
+                ut = (audit.dir / "untracked.txt").read_text(
+                    encoding="utf-8", errors="replace").strip()
+            except OSError:
+                ut = ""
+            if ut:
+                # List is filenames; try to include file contents bounded.
+                extra: list[str] = []
+                budget = (REVIEW_FULL_CONTEXT_BUDGET if full_context
+                          else REVIEW_EXCERPT_BUDGET) // 2
+                used = 0
+                for rel in ut.splitlines():
+                    rel = rel.strip()
+                    if not rel:
+                        continue
+                    try:
+                        txt = (self.project_dir / rel).read_text(
+                            encoding="utf-8", errors="replace")
+                    except OSError:
+                        continue
+                    chunk = f"\n--- untracked: {rel} ---\n{txt}"
+                    if used + len(chunk) > budget:
+                        chunk = chunk[: max(0, budget - used)]
+                        extra.append(chunk)
+                        break
+                    extra.append(chunk)
+                    used += len(chunk)
+                if extra:
+                    excerpt = (excerpt + "\n" + "\n".join(extra)).strip()
         verdict_instruction = (
             "Review the change above as an adversarial reviewer and answer "
             "with exactly one verdict line — 'REVIEW: APPROVE' or "

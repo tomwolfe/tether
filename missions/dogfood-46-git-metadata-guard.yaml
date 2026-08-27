@@ -1,0 +1,43 @@
+# Dogfood-46: git-state guard expansion to all git metadata affecting execution integrity
+mission:
+  name: dogfood-46-git-metadata-guard
+  goal: |
+    No code change required beyond orchestrator hardening already landed. This mission proves
+    the expanded guard: agent modifying .git/config, .git/info/exclude, sparse-checkout,
+    or submodule pointer trips git_state_guard.
+constraints:
+  - "only src/tether/orchestrator.py, tests/test_git_state_guard.py, missions/dogfood-46-git-metadata-guard.yaml may be modified"
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests tools"
+    - "mypy src/tether"
+  probes:
+    - command: ".venv/bin/python -c \"from tether.orchestrator import _file_sha256; print('guard ok')\""
+      contains: "guard ok"
+  mutation:
+    enabled: true
+    fail_below: 0.5
+    max_mutants: 12
+  auto_probes:
+    enabled: true
+    adapter: mock
+    max_probes: 5
+    min_teeth_rate: 0.7
+    max_mutants: 12
+recovery:
+  max_attempts: 3
+review:
+  enabled: false
+budget:
+  max_sends: 8
+  max_wall_seconds: 3600
+git_state_guard: true
+adapter: mock
+allowed_paths:
+  - src/tether/orchestrator.py
+  - tests/test_git_state_guard.py
+  - missions/dogfood-46-git-metadata-guard.yaml
+forbidden_paths:
+  - .git/**
+  - .tether/**

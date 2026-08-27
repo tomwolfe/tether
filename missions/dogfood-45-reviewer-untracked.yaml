@@ -1,0 +1,58 @@
+# Dogfood-45: reviewer evidence starvation for untracked files (residual risk from dogfood-43 finding #2)
+# Before fix, reviewer prompt embedded only patch.diff (commit-vs-worktree) which omits untracked contents.
+# A new file's contents were invisible to the reviewer → false REQUEST_CHANGES or missed defects.
+# Fix in orchestrator._run_review_gate appends bounded untracked file contents.
+# Also hardens quantitative gate: mutation fail_below mandatory, teeth 0.7 already pinned in dogfood-44.
+mission:
+  name: dogfood-45-reviewer-untracked
+  goal: |
+    Add src/tether/untracked_helper.py with function helper() returning 42 and a test proving it.
+    Keep all tests green. This file is new (untracked before capture) so the reviewer must see its contents.
+
+constraints:
+  - "only src/tether/untracked_helper.py, tests/test_untracked_helper.py, src/tether/orchestrator.py, missions/dogfood-45-reviewer-untracked.yaml may be modified"
+
+verification:
+  commands:
+    - "python -m pytest -q"
+    - "ruff check src tests tools"
+    - "mypy src/tether"
+    - ".venv/bin/python tools/mutation_killrate.py --target src/tether/cleanroom.py --suite tests/test_cleanroom.py --min-kill-rate 0.8"
+  artifacts:
+    - "src/tether/untracked_helper.py"
+  assertions:
+    - path: src/tether/untracked_helper.py
+      contains: "def helper"
+  probes:
+    - command: ".venv/bin/python -c \"import tether.untracked_helper; print(tether.untracked_helper.helper())\""
+      contains: "42"
+  mutation:
+    enabled: true
+    fail_below: 0.5
+    max_mutants: 12
+  auto_probes:
+    enabled: true
+    adapter: mock
+    max_probes: 5
+    min_teeth_rate: 0.7
+    max_mutants: 12
+recovery:
+  max_attempts: 3
+  strategy: cumulative
+review:
+  enabled: true
+  required: true
+  context: full
+budget:
+  max_sends: 8
+  max_wall_seconds: 3600
+git_state_guard: true
+adapter: mock
+allowed_paths:
+  - src/tether/untracked_helper.py
+  - tests/test_untracked_helper.py
+  - src/tether/orchestrator.py
+  - missions/dogfood-45-reviewer-untracked.yaml
+forbidden_paths:
+  - .git/**
+  - .tether/**

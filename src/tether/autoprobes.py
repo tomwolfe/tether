@@ -170,7 +170,14 @@ def parse_generated_probes(
         raise _fail("'probes' is not a list")
     if not raw:
         raise _fail("'probes' list is empty")
-    specs = [_validated_probe(i, entry) for i, entry in enumerate(raw)]
+    specs: list[ProbeSpec] = []
+    for i, entry in enumerate(raw):
+        try:
+            specs.append(_validated_probe(i, entry))
+        except ProbeSynthesisError:
+            continue
+    if not specs:
+        raise _fail("no valid probes after salvage; all entries malformed")
     return specs[:max_probes]
 
 
