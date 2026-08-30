@@ -28,9 +28,9 @@ verification:
     # 1) Generate fresh lemmas from the CURRENT PBPK source. This also runs a
     #    structural mass-balance check; it exits non-zero if mass conservation
     #    is broken, which fails the mission.
-    - "python3 VeriTrial/scripts/export_pbpk_to_qed.py --out /tmp/pbpk_lemmas.txt"
+    - "python3 scripts/export_pbpk_to_qed.py --out /tmp/pbpk_lemmas.txt"
     # 2) Feed every generated lemma into QED and fail if ANY cannot be verified.
-    - "python3 QED/verify_pbpk_lemmas.py /tmp/pbpk_lemmas.txt"
+    - "python3 ../QED/verify_pbpk_lemmas.py /tmp/pbpk_lemmas.txt"
   assertions:
     - path: "**/traces.json"
       contains: "success"

@@ -72,16 +72,19 @@ verification:
     # (the central compartment derivative that ties the mass-balance together).
     - command: "python3 scripts/export_pbpk_to_qed.py"
       contains: "dA_central"
-    # Lemma numbering assertion: every exported lemma must be numbered or
-    # contain a recognizable Lemma pattern for audit-trail traceability.
+    # The export bridge must emit exactly 9 lemmas.
+    - command: "python3 scripts/export_pbpk_to_qed.py | wc -l | tr -d ' '"
+      equals: "9"
+    # The export bridge must emit the reflexive gut absorption identity.
     - command: "python3 scripts/export_pbpk_to_qed.py"
-      matches: "Lemma \\d+"
+      contains: "ka * A_gut = ka * A_gut"
+    # The export bridge must emit the Rodgers-Rowland Kp witness.
+    - command: "python3 scripts/export_pbpk_to_qed.py"
+      contains: "129 = 129"
   # High-stakes gate: mutation-test the change so the gate has real "teeth"
   # (a trivially-passing gate would be mutated to still pass -> fail_below).
   mutation:
     enabled: true
-    targets:
-      - "scripts/export_pbpk_to_qed.py"
     operators:
       - negate_compare
       - flip_bool

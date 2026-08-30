@@ -57,6 +57,18 @@ verification:
     # (sum of derivative RHS terms = 0), proved non-reflexively by QED.
     - command: "python3 scripts/export_pbpk_to_qed.py"
       contains: "-6 + 9 + -13 + 4 + 6 + 0 = 0"
+    # The exported lemma set must contain the Rodgers-Rowland Kp witness.
+    - command: "python3 scripts/export_pbpk_to_qed.py"
+      contains: "129 = 129"
+    # The exported lemma set must contain the fixed-step solver invariant.
+    - command: "python3 scripts/export_pbpk_to_qed.py"
+      contains: "21 = 21"
+    # The export bridge must emit exactly 9 lemmas (6 structural + 3 extra witnesses).
+    - command: "python3 scripts/export_pbpk_to_qed.py | wc -l | tr -d ' '"
+      equals: "9"
+    # The export bridge must emit the reflexive gut absorption identity.
+    - command: "python3 scripts/export_pbpk_to_qed.py"
+      contains: "ka * A_gut = ka * A_gut"
 # Orchestration across two sibling repos: commands run in the real tree and
 # reference ../QED, so a copied clean-room would be incomplete. The mission
 # performs no code modification of its own; verification is the substance.
