@@ -68,15 +68,26 @@ verification:
     # (sum of derivative RHS terms = 0), proved non-reflexively by QED.
     - command: "python3 scripts/export_pbpk_to_qed.py"
       contains: "-6 + 9 + -13 + 4 + 6 + 0 = 0"
+    # Lemma content assertion: the bridge must emit references to dA_central
+    # (the central compartment derivative that ties the mass-balance together).
+    - command: "python3 scripts/export_pbpk_to_qed.py"
+      contains: "dA_central"
+    # Lemma numbering assertion: every exported lemma must be numbered or
+    # contain a recognizable Lemma pattern for audit-trail traceability.
+    - command: "python3 scripts/export_pbpk_to_qed.py"
+      matches: "Lemma \\d+"
   # High-stakes gate: mutation-test the change so the gate has real "teeth"
   # (a trivially-passing gate would be mutated to still pass -> fail_below).
   mutation:
     enabled: true
+    targets:
+      - "scripts/export_pbpk_to_qed.py"
     operators:
       - negate_compare
       - flip_bool
+      - arithmetic
     max_mutants: 10
-    fail_below: 0.6
+    fail_below: 0.7
   recovery:
     max_attempts: 3
     strategy: cumulative
