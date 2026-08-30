@@ -1,0 +1,75 @@
+mission:
+  name: qed-veritrial-formal-pipeline
+  goal: |
+    Top-level control-plane gate: ONE Tether invocation that (1) verifies the
+    QED agentic-pipeline suite AND (2) runs the VeriTrial -> QED formal
+    verification gate end-to-end.
+
+    This is the orchestration bottleneck Tether exists to provide: it proves the
+    foundational layer (QED) is green before the application layer (VeriTrial's
+    enforced PBPK formal gate) is allowed to certify. Either half failing fails
+    the whole mission (fail-closed): a broken QED tactic policy can never
+    silently let VeriTrial's lemmas through, and a missing/failed/sorry lemma
+    can never let VeriTrial's `make validate` report overall_pass = True.
+
+    Concretely the gate:
+      1. runs the QED test suite (``QED/run_tests.py``) -- parser hardening,
+         no-sorry gate, and the VeriTrial-shaped lemma tests (numeric witness
+         + symbolic distributive classification) must all pass;
+      2. exports the CURRENT PBPK lemmas from ``VeriTrial/scripts/export_pbpk_to_qed.py``
+         (single source of truth, live ``model.py``) and feeds them through
+         ``VeriTrial/scripts/verify_formal_gate.py``, which re-derives the live
+         lemmas and refuses to certify any file that has drifted, then proves
+         every lemma with QED under the strict no-sorry policy.
+
+context:
+  - "QED is the multiplier: VeriTrial's enforced gate depends on QED proving its lemmas"
+  - "VeriTrial/scripts/export_pbpk_to_qed.py is the SINGLE SOURCE of required lemmas"
+  - "VeriTrial/scripts/verify_formal_gate.py enforces single-source + fail-closed (no silent pass)"
+  - "QED/verify_pbpk_lemmas.py exits non-zero on ANY lemma that fails or contains sorry"
+  - "Bare Lean 4 (no Mathlib) proves identities by rfl and closed numeric field equalities by decide/simp"
+  - "Symbolic perfusion/distributive lemmas require Mathlib (field_simp/ring); fail-closed without it"
+constraints:
+  - "Do NOT weaken the no-sorry gate or the fail-closed formal gate"
+  - "Do NOT modify Tether's core orchestration logic"
+  - "If the QED suite fails, the whole mission fails (VeriTrial must not be certified on a broken multiplier)"
+  - "Every exported lemma MUST verify; a single failure fails the whole mission"
+  - "Keep all changes backward compatible with existing VeriTrial simulations"
+verification:
+  commands:
+    # (1) Verify the foundational layer: QED's full suite must be green.
+    - "cd ../QED && python3 run_tests.py"
+    # (2) Export the CURRENT PBPK lemmas (single source of truth) and run the
+    #     enforced formal gate, which re-derives the live lemmas, refuses any
+    #     drift, and proves every lemma with QED (no sorry).
+    - "python3 scripts/export_pbpk_to_qed.py --out /tmp/pbpk_lemmas.txt"
+    - "python3 scripts/verify_formal_gate.py /tmp/pbpk_lemmas.txt"
+  assertions:
+    # The formal spec must document the genuine non-reflexive mass-conservation witness.
+    - path: "formal_specs/pbpk_mass_conservation.tex"
+      contains: "Lemma 3b"
+  probes:
+    # The exported lemma set must contain the closed numeric perfusion witness
+    # (a genuine, non-reflexive proof by decide/simp under bare Lean).
+    - command: "python3 scripts/export_pbpk_to_qed.py"
+      contains: "3 * (5 - 4 / 2) = 3 * 5 - 3 * 4 / 2"
+    # The exported lemma set must contain the genuine mass-conservation witness
+    # (sum of derivative RHS terms = 0), proved non-reflexively by QED.
+    - command: "python3 scripts/export_pbpk_to_qed.py"
+      contains: "-6 + 9 + -13 + 4 + 6 + 0 = 0"
+# Orchestration across two sibling repos: commands run in the real tree and
+# reference ../QED, so a copied clean-room would be incomplete. The mission
+# performs no code modification of its own; verification is the substance.
+clean_room: false
+# No code changes are produced by this orchestration mission; mutation testing
+# is exercised by the underlying QED/VeriTrial missions instead.
+recovery:
+  max_attempts: 2
+  strategy: cumulative
+review:
+  enabled: false
+budget:
+  max_sends: 5
+  max_wall_seconds: 1800
+adapter: mock
+git_state_guard: false
