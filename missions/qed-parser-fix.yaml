@@ -1,0 +1,66 @@
+mission:
+  name: qed-parser-hardening
+  goal: |
+    Fix implicit multiplication handling and parentheses nesting in QED/parser.py.
+    The current parser has several fragile edge cases:
+    1. Implicit multiplication "2a" becomes "2 * a" works but "2ab" chains break
+       when adjacent variables get double-multiplication inserted.
+    2. Parentheses parsing in parse_primary uses a depth-counting loop that can
+       misalign inner expression parsing when nested parens appear.
+    3. The normalize_implicit_multiplication regex for single-letter pairs
+       fails on expressions like "(a+b)^2 = a^2 + 2ab + b^2" because "ab" at
+       the end is not properly matched after spaces and operators.
+    Tasks:
+    1. Fix normalize_implicit_multiplication_expression() to handle chains like
+       "2ab", "3xyz", and "(a+b)2" correctly without double-inserting tokens.
+    2. Fix parse_primary() parentheses handling: replace the depth-counting loop
+       with recursive descent that properly calls parse_expression on inner tokens.
+    3. Fix the single-letter-pair regex to work after spaces and operators.
+    4. Add comprehensive unit tests in QED/test_pipeline.py covering these cases.
+    Change NOTHING outside QED/parser.py and QED/test_pipeline.py.
+context:
+  - "QED/parser.py has ASTNode, Num, Var, Neg, BinOp, Eq and other AST node types."
+  - "The parser is a hand-written recursive descent parser for arithmetic."
+  - "Tokenizer uses regex VERBOSE mode to split into numbers, vars, operators, parens."
+  - "normalize_implicit_multiplication_expression works on raw strings BEFORE tokenization."
+  - "normalize_implicit_multiplication works on token lists AFTER tokenization."
+  - "parse_primary handles numbers, variables, parenthesized expressions, unary negation."
+  - "Tests use standard Python unittest or pytest conventions."
+constraints:
+  - Only modify QED/parser.py and QED/test_pipeline.py
+  - Do not change ASTNode class hierarchy or existing AST node types
+  - Do not remove any existing public function signatures
+  - All existing tests in QED/test_pipeline.py must still pass
+  - New tests must use pytest style (def test_xxx:)
+  - Do not add external dependencies (no pip install)
+verification:
+  clean_room: true
+  commands:
+    - "python -m pytest test_pipeline.py -v"
+  assertions:
+    - path: "test_pipeline.py"
+      contains: "test_implicit_multiplication_2ab"
+    - path: "test_pipeline.py"
+      contains: "test_parenthesized_power"
+    - path: "test_pipeline.py"
+      contains: "test_nested_parens"
+  mutation:
+    enabled: true
+    operators:
+      - negate_compare
+      - flip_bool
+      - arithmetic
+    max_mutants: 15
+    fail_below: 0.7
+recovery:
+  max_attempts: 3
+adapter: opencode
+adapters:
+  opencode:
+    command:
+      - opencode
+      - run
+      - "-m"
+      - opencode/mimo-v2.5-free
+      - "{prompt}"
+    timeout_seconds: 1800

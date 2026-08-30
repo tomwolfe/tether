@@ -1,0 +1,73 @@
+mission:
+  name: qed-tactic-intelligence
+  goal: |
+    Wire parsed AST structure and Lean error goal state into get_tactic_candidates
+    and select_tactic in QED/agentic_pipeline.py to improve tactic selection.
+    Current problems:
+    1. get_tactic_candidates uses simple string matching on the raw latex input
+       to decide tactic ordering, ignoring the parsed AST structure.
+    2. select_tactic only looks at error messages and goal strings, without
+       considering the original expression structure or variable types.
+    3. For algebraic identities like "(a+b)^2 = a^2 + 2ab + b^2", the tactic
+       ordering does not prioritize ring or field_simp appropriately.
+    Tasks:
+    1. Update get_tactic_candidates to accept an optional parsed AST dict and
+       use it for smarter tactic ordering:
+       - If the equation involves only +,-,*,^ with Nat/Int, prefer ring first.
+       - If division is present, prefer field_simp then ring.
+       - If the equation is a simple identity (all vars on both sides), try simp.
+       - If the equation involves inequalities, prefer linarith/omega.
+    2. Update select_tactic to incorporate the parsed expression context:
+       - When a goal contains ring-solvable patterns, return ring.
+       - When a goal contains linear arithmetic, return linarith.
+       - When a goal contains natural number arithmetic, return omega.
+    3. Add end-to-end test cases in QED/test_pipeline.py that verify:
+       - "(a+b)^2 = a^2 + 2ab + b^2" gets ring or field_simp in candidates
+       - "x + 0 = x" gets simp or ring as first candidate
+       - "x < x + 1" gets linarith as first candidate
+       - The pipeline runs without errors on these inputs (even if proof fails)
+     Change NOTHING outside QED/agentic_pipeline.py and QED/test_pipeline.py.
+context:
+  - "QED/agentic_pipeline.py has LeanAgenticPipeline class."
+  - "get_tactic_candidates(self, latex: str) returns List[str] of tactic names."
+  - "select_tactic(self, error_info: dict) returns Optional[str] based on error state."
+  - "The parser module provides parse() which returns dict with type, left, right, relation, free_variables."
+  - "parse_latex_to_lean already calls parse() and stores parsed info in traces."
+  - "Tactics available: rfl, simp, norm_num, decide, ring, linarith, omega, field_simp."
+  - "End-to-end tests should call the pipeline methods directly, not subprocess."
+constraints:
+  - Only modify QED/agentic_pipeline.py and QED/test_pipeline.py
+  - Do not change the method signatures of get_tactic_candidates or select_tactic
+  - All existing tests in QED/test_pipeline.py must still pass
+  - New tests must use pytest style
+  - Do not add external dependencies
+verification:
+  clean_room: true
+  commands:
+    - "python -m pytest test_pipeline.py -v"
+  assertions:
+    - path: "test_pipeline.py"
+      contains: "test_tactic_candidates_algebraic"
+    - path: "test_pipeline.py"
+      contains: "test_tactic_candidates_inequality"
+    - path: "test_pipeline.py"
+      contains: "test_select_tactic_ring_goal"
+  mutation:
+    enabled: true
+    operators:
+      - negate_compare
+      - flip_bool
+    max_mutants: 10
+    fail_below: 0.6
+recovery:
+  max_attempts: 3
+adapter: opencode
+adapters:
+  opencode:
+    command:
+      - opencode
+      - run
+      - "-m"
+      - opencode/mimo-v2.5-free
+      - "{prompt}"
+    timeout_seconds: 1800

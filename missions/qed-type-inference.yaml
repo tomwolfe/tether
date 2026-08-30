@@ -1,0 +1,73 @@
+mission:
+  name: qed-type-inference
+  goal: |
+    Improve _suggest_type and _get_var_type in QED/agentic_pipeline.py to produce
+    correct Lean 4 types based on expression content analysis.
+    Current problems:
+    1. _suggest_type always returns "Int" for any expression with operators, even
+       when all operands are natural numbers (e.g. "x + 0 = x" should suggest Nat).
+    2. _get_var_type returns "Int" for everything except explicit Nat.succ/zero,
+       which causes Lean to reject valid natural number theorems.
+    3. No detection of floating-point literals or fractional expressions that
+       would require Real or Rat types.
+    Tasks:
+    1. Improve _suggest_type to analyze the actual numeric literals and operators:
+       - If all numbers are non-negative integers and operators are +,-,*,^
+         and no division, suggest "Nat" for non-negative contexts.
+       - If negative numbers appear, suggest "Int".
+       - If division or fractions appear, suggest "Rat".
+       - If real-valued functions appear, suggest "Real".
+    2. Improve _get_var_type to consider the variable context:
+       - Look at which variables appear in which positions (operands of subtraction
+         need Int, operands of division need Rat, etc.)
+       - Use the same heuristics as _suggest_type but per-variable if needed.
+    3. Add unit tests in QED/test_pipeline.py verifying:
+       - "x + 0 = x" produces suggested_type "Nat" (or at minimum not always Int)
+       - "-1 + 1 = 0" produces suggested_type "Int"
+       - "x / 2 = y" produces suggested_type "Rat"
+       - Variable type inference matches expression context
+     Change NOTHING outside QED/agentic_pipeline.py and QED/test_pipeline.py.
+context:
+  - "QED/agentic_pipeline.py has class LeanAgenticPipeline with _suggest_type and _get_var_type methods."
+  - "_suggest_type(self, latex: str) returns Optional[str] - suggests a Lean type."
+  - "_get_var_type(self, free_variables: list, latex: str) returns str - gets type for variables."
+  - "parse_latex_to_lean uses these to generate theorem parameter declarations."
+  - "The parser module (parser.py) extracts free_variables and expression structure."
+  - "Valid Lean types include: Nat, Int, Rat, Real, Float."
+  - "Tests should verify the return values of _suggest_type and _get_var_type directly."
+constraints:
+  - Only modify QED/agentic_pipeline.py and QED/test_pipeline.py
+  - Do not change the method signatures of _suggest_type or _get_var_type
+  - All existing tests in QED/test_pipeline.py must still pass
+  - New tests must use pytest style
+  - Do not add external dependencies
+verification:
+  clean_room: true
+  commands:
+    - "python -m pytest test_pipeline.py -v"
+  assertions:
+    - path: "test_pipeline.py"
+      contains: "test_suggest_type_nat"
+    - path: "test_pipeline.py"
+      contains: "test_suggest_type_int"
+    - path: "test_pipeline.py"
+      contains: "test_suggest_type_rat"
+  mutation:
+    enabled: true
+    operators:
+      - negate_compare
+      - flip_bool
+    max_mutants: 10
+    fail_below: 0.6
+recovery:
+  max_attempts: 3
+adapter: opencode
+adapters:
+  opencode:
+    command:
+      - opencode
+      - run
+      - "-m"
+      - opencode/mimo-v2.5-free
+      - "{prompt}"
+    timeout_seconds: 1800

@@ -1,0 +1,62 @@
+mission:
+  name: veritrial-pbpk-verification
+  goal: |
+    Formally verify the core PBPK ODE system in VeriTrial using QED.
+    This mission converts the PBPK mass conservation theorems from
+    VeriTrial/formal_specs/pbpk_mass_conservation.tex into verified
+    Lean 4 proofs, confirming that the perfusion-limited PBPK model
+    satisfies key mathematical properties.
+context:
+  - "VeriTrial PBPK model uses perfusion-limited ODEs"
+  - "State vector: [A_gut, A_liver, A_central, A_periph, A_effect, A_elim]"
+  - "QED agentic pipeline converts LaTeX to verified Lean 4 proofs (rfl)"
+  - "QED supports arithmetic equalities over +, * (typed as Nat in bare Lean)"
+  - "QED variable types: Nat, Int, Rat (inferred from expression content)"
+  - "Formal specs in VeriTrial/formal_specs/pbpk_mass_conservation.tex"
+  - "Semantic bridge: VeriTrial/scripts/export_pbpk_to_qed.py generates lemmas from source"
+constraints:
+  - "Do NOT modify QED's core parser or pipeline logic unnecessarily"
+  - "All new code must pass existing test suites"
+  - "Keep formal specs decomposed into QED-parseable fragments"
+  - "Success requires at least one verified Lean proof (no sorry)"
+  - "Proxy limitation: QED (no Mathlib here) verifies structural identities; the bridge checks coefficient-level mass balance"
+verification:
+  # clean_room is disabled so the verification commands run against the real
+  # working tree (including the new untracked bridge/verify scripts).
+  clean_room: false
+  commands:
+    # 1) Generate fresh lemmas from the CURRENT PBPK source. This also runs a
+    #    structural mass-balance check; it exits non-zero if mass conservation
+    #    is broken, which fails the mission.
+    - "python3 VeriTrial/scripts/export_pbpk_to_qed.py --out /tmp/pbpk_lemmas.txt"
+    # 2) Feed every generated lemma into QED and fail if ANY cannot be verified.
+    - "python3 QED/verify_pbpk_lemmas.py /tmp/pbpk_lemmas.txt"
+  assertions:
+    - path: "**/traces.json"
+      contains: "success"
+    - path: "**/traces.json"
+      contains: "passed"
+  # Mission-level mutation testing is disabled here: QED's parser/pipeline
+  # mutation kill rate (>0.7) is already enforced separately via
+  # QED/run_killrate.py in STEP 1. Keeping it disabled avoids an unrelated
+  # suite requirement in this integration demo.
+mutation:
+  enabled: false
+recovery:
+  max_attempts: 3
+  strategy: cumulative
+review:
+  enabled: false
+  required: false
+budget:
+  max_sends: 20
+  max_wall_seconds: 3600
+git_state_guard: false
+# The opencode adapter requires network/API access unavailable here, so the
+# agent step is executed via the local mock adapter (which returns success),
+# while the substantive verification is performed by QED through the real
+# verification commands above.
+adapter: mock
+adapters:
+  mock:
+    scenario: success
