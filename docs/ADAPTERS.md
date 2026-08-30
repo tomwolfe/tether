@@ -268,6 +268,21 @@ Both fail cleanly when the binary is missing; the maturity each one reports in
 `tether adapters list` reflects its static class tag (see capability table and
 promotion record above).
 
+### Known limitations & workarounds
+
+- **TTY requirement**: Some opencode installations require a PTY for proper
+  Unicode rendering and output parsing. The `scripts/opencode_tty.py` wrapper
+  (in QED) creates a pseudo-terminal via `script` and sanitizes output. Missions
+  that use opencode for code generation may need this wrapper when running in
+  non-interactive environments (CI, Tether clean-room). The `command` adapter
+  can substitute a local stub when opencode is unavailable.
+- **Model pin**: The `-m opencode/mimo-v2.5-free` (or equivalent) flag is
+  required to avoid server errors with some opencode versions. Override in
+  `tether.yaml` if your installation uses a different default model.
+- **Network dependency**: opencode requires network/API access. Missions using
+  `adapter: mock` or `adapter: command` as substitutes work offline but do not
+  exercise the real agent.
+
 ## Adding a new adapter
 
 1. Subclass `AgentAdapter` (or `CommandAdapter` if a command template suffices).
