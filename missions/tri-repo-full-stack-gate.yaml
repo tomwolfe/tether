@@ -1,0 +1,58 @@
+mission:
+  name: tri-repo-full-stack-gate
+  goal: |
+    Verify integrated QED-VeriTrial-Tether stack in clean-room isolation.
+
+    This mission orchestrates cross-repo verification across the three
+    repositories that compose the regulatory-grade in-silico platform:
+
+      1. QED: Lean 4 agentic theorem-proving pipeline (symbolic Real analysis)
+      2. VeriTrial: PBPK clinical trial simulation engine (native JAX solver)
+      3. Tether: Orchestration and verification control plane
+
+    The gate runs the full validation stack:
+      - QED unit tests (including symbolic Real analysis tests)
+      - VeriTrial test suite (PBPK solver, cross-solver equivalence)
+      - Numeric lemma export and formal verification through QED (no sorry)
+      - Full validation benchmark suite (Warfarin, Moxifloxacin, Midazolam, Metformin)
+
+    This is the top-level integration gate that certifies the entire stack.
+
+context:
+  - "QED parser.py has has_rational_structure() detecting division over symbolic variables"
+  - "QED agentic_pipeline.py infers Real types for ODE/division expressions with [Field R]"
+  - "QED get_tactic_candidates() prioritizes dsimp/field_simp/ring for Real expressions"
+  - "VeriTrial fixed_step.py uses jax.lax.scan for multi-dose PBPK solving"
+  - "VeriTrial export_pbpk_to_qed.py --symbolic emits parametric Real theorems (requires Mathlib)"
+  - "VeriTrial validation/__init__.py embeds Lean proof hashes in ASME V&V 40 reports"
+  - "Cross-repo QED is located as sibling of VeriTrial (co-located monorepo layout)"
+  - "Symbolic lemmas require Mathlib field_simp/ring; emit them only in Mathlib-backed CI"
+constraints:
+  - "Do NOT introduce sorry axioms in any QED output"
+  - "Do NOT modify existing test expectations without justification"
+  - "Keep all changes backward compatible with existing simulations"
+  - "Cross-repo orchestration requires shared filesystem (clean_room: false)"
+  - "Every exported lemma MUST verify; a single failure fails the whole mission"
+  - "Symbolic ODE lemmas require Mathlib; use numeric witnesses for the formal gate"
+verification:
+  clean_room: false  # Cross-repo orchestration requires shared filesystem
+  commands:
+    # 1) QED test suite: unit tests for parser, pipeline, and symbolic Real analysis
+    - "cd ../QED && python3 -m pytest test_pipeline.py -v"
+    # 2) QED run_tests.py: integration tests with Lean compiler
+    - "cd ../QED && python3 run_tests.py"
+    # 3) VeriTrial test suite: PBPK solver, cross-solver equivalence, formal verification
+    - "cd ../VeriTrial && pytest src/insilico_trial/tests/ -q"
+    # 4) Export PBPK lemmas (numeric witnesses - single source of truth)
+    - "cd ../VeriTrial && python3 scripts/export_pbpk_to_qed.py --out /tmp/pbpk_lemmas.txt"
+    # 5) Formal verification: feed lemmas through QED (no sorry)
+    - "cd ../VeriTrial && python3 scripts/verify_formal_gate.py /tmp/pbpk_lemmas.txt"
+    # 6) Full validation benchmark suite (all 4 drugs + formal verification)
+    - "cd ../VeriTrial && make validate"
+  recovery:
+    max_attempts: 3
+  budget:
+    max_sends: 12
+    max_wall_seconds: 1800
+  adapter: opencode
+  git_state_guard: true
