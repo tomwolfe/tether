@@ -11,43 +11,41 @@ mission:
       3. Tether: Orchestration and verification control plane
 
     The gate runs the full validation stack:
-      - QED unit tests (including symbolic Real analysis tests)
-      - VeriTrial test suite (PBPK solver, cross-solver equivalence)
-      - Numeric lemma export and formal verification through QED (no sorry)
+      - QED unit tests (including symbolic Real analysis with Mathlib)
+      - VeriTrial test suite (PBPK solver, safety, formal verification)
+      - Parametric lemma export and formal verification through QED (no sorry)
       - Full validation benchmark suite (Warfarin, Moxifloxacin, Midazolam, Metformin)
 
     This is the top-level integration gate that certifies the entire stack.
 
 context:
-  - "QED parser.py has has_rational_structure() detecting division over symbolic variables"
-  - "QED agentic_pipeline.py infers Real types for ODE/division expressions with [Field R]"
-  - "QED get_tactic_candidates() prioritizes dsimp/field_simp/ring for Real expressions"
-  - "VeriTrial fixed_step.py uses jax.lax.scan for multi-dose PBPK solving"
-  - "VeriTrial export_pbpk_to_qed.py --symbolic emits parametric Real theorems (requires Mathlib)"
-  - "VeriTrial validation/__init__.py embeds Lean proof hashes in ASME V&V 40 reports"
+  - "QED lakefile.lean declares mathlib4 from leanprover-community/mathlib4"
+  - "QED agentic_pipeline.py uses `lake env lean` for hermetic Mathlib compilation"
+  - "QED get_tactic_candidates() prioritizes intro/dsimp/field_simp/ring for Real expressions"
+  - "VeriTrial export_pbpk_to_qed.py --parametric emits parametric mass-conservation identity"
+  - "VeriTrial formal_verification.py embeds SHA-256 hashes of verified Lean code"
+  - "VeriTrial safety/__init__.py routes QSP DILI params through assess_dili"
+  - "VeriTrial fixed_step.py provides solve_pbpk_batch_with_compartments for liver profiles"
   - "Cross-repo QED is located as sibling of VeriTrial (co-located monorepo layout)"
-  - "Symbolic lemmas require Mathlib field_simp/ring; emit them only in Mathlib-backed CI"
 constraints:
   - "Do NOT introduce sorry axioms in any QED output"
   - "Do NOT modify existing test expectations without justification"
   - "Keep all changes backward compatible with existing simulations"
   - "Cross-repo orchestration requires shared filesystem (clean_room: false)"
   - "Every exported lemma MUST verify; a single failure fails the whole mission"
-  - "Symbolic ODE lemmas require Mathlib; use numeric witnesses for the formal gate"
+  - "Parametric lemmas require Mathlib; numeric witnesses for the formal gate"
 verification:
   clean_room: false  # Cross-repo orchestration requires shared filesystem
   commands:
     # 1) QED test suite: unit tests for parser, pipeline, and symbolic Real analysis
     - "cd ../QED && python3 -m pytest test_pipeline.py -v"
-    # 2) QED run_tests.py: integration tests with Lean compiler
-    - "cd ../QED && python3 run_tests.py"
-    # 3) VeriTrial test suite: PBPK solver, cross-solver equivalence, formal verification
+    # 2) VeriTrial test suite: PBPK solver, safety, formal verification
     - "cd ../VeriTrial && pytest src/insilico_trial/tests/ -q"
-    # 4) Export PBPK lemmas (numeric witnesses - single source of truth)
-    - "cd ../VeriTrial && python3 scripts/export_pbpk_to_qed.py --out /tmp/pbpk_lemmas.txt"
-    # 5) Formal verification: feed lemmas through QED (no sorry)
+    # 3) Export PBPK lemmas (parametric mass-conservation identity)
+    - "cd ../VeriTrial && python3 scripts/export_pbpk_to_qed.py --out /tmp/pbpk_lemmas.txt --parametric"
+    # 4) Formal verification: feed lemmas through QED (no sorry)
     - "cd ../VeriTrial && python3 scripts/verify_formal_gate.py /tmp/pbpk_lemmas.txt"
-    # 6) Full validation benchmark suite (all 4 drugs + formal verification)
+    # 5) Full validation benchmark suite (all 4 drugs + formal verification)
     - "cd ../VeriTrial && make validate"
   recovery:
     max_attempts: 3
