@@ -35,7 +35,7 @@ constraints:
   - "Every exported lemma MUST verify; a single failure fails the whole mission"
   - "Parametric lemmas require Mathlib; numeric witnesses for the formal gate"
 verification:
-  clean_room: false  # Cross-repo orchestration requires shared filesystem
+  clean_room: true
   commands:
     # 1) QED test suite: unit tests for parser, pipeline, and symbolic Real analysis
     - "cd ../QED && python3 -m pytest test_pipeline.py -v"
@@ -47,6 +47,9 @@ verification:
     - "cd ../VeriTrial && python3 scripts/verify_formal_gate.py /tmp/pbpk_lemmas.txt"
     # 5) Full validation benchmark suite (all 4 drugs + formal verification)
     - "cd ../VeriTrial && make validate"
+  mutation:
+    enabled: true
+    fail_below: 0.7
   recovery:
     max_attempts: 3
   budget:
