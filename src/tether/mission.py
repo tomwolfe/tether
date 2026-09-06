@@ -231,14 +231,23 @@ def load_mission(path: str | Path) -> MissionContract:
                 "'verification.clean_room_copy' must be a list of strings")
         for idx, entry in enumerate(raw_clean_room_copy):
             candidate = Path(entry)
+            normed = Path(os.path.normpath(candidate))
+            # Allow sibling-repo paths like ../<name> (exactly two parts,
+            # first is '..', second is a simple directory name).  All other
+            # '..' paths remain forbidden.
+            is_sibling_repo = (
+                len(normed.parts) == 2
+                and normed.parts[0] == ".."
+                and ".." not in normed.parts[1:]
+            )
             if not entry.strip() \
                     or candidate.is_absolute() \
                     or entry.replace("\\", "/").startswith("/") \
-                    or ".." in Path(os.path.normpath(candidate)).parts:
+                    or (".." in normed.parts and not is_sibling_repo):
                 raise MissionError(
                     f"'verification.clean_room_copy[{idx}]' must be a "
-                    "non-empty relative path without '..' components; got "
-                    f"{entry!r}")
+                    "non-empty relative path without '..' components (sibling "
+                    f"repo paths like '../<name>' are allowed); got {entry!r}")
         clean_room_copy = list(raw_clean_room_copy)
 
     # Structural validation only (dogfood-43): probe synthesis, the extra

@@ -82,7 +82,10 @@ def _is_relative(rel: str) -> bool:
     if candidate.is_absolute() or rel.replace("\\", "/").startswith("/"):
         return False
     if any(part == ".." for part in candidate.parts):
-        return False
+        # Allow sibling-repo paths like ../QED — they resolve to a directory
+        # one level above the project root.  The containment check in
+        # materialize_clean_room restricts these to the parent directory only.
+        return len(candidate.parts) >= 2 and candidate.parts[0] == ".."
     return bool(candidate.parts)
 
 
@@ -168,8 +171,11 @@ def materialize_clean_room(
             raise CleanRoomError(
                 f"failed to carry untracked file {rel!r}: {e}") from e
 
-    # 4. Explicit copy entries (e.g. .venv). Missing entries are skipped
-    # silently; protected/escaping entries fail closed.
+    # 4. Explicit copy entries (e.g. .venv, sibling repos). Missing entries are
+    # skipped silently; protected/escaping entries fail closed.
+    # Sibling-repo paths (../<name>) resolve to the parent directory of
+    # project_root — these are allowed because the clean room needs access to
+    # co-located repositories for cross-repo verification.
     for entry in copies or []:
         if not _is_relative(entry):
             raise CleanRoomError(
@@ -179,13 +185,21 @@ def materialize_clean_room(
             raise CleanRoomError(
                 f"refusing to copy protected path into the clean room: "
                 f"{entry!r}")
-        src = project_dir / os.path.normpath(Path(*pure.parts))
+        # Resolve the source path.  For sibling-repo entries (../<name>),
+        # this resolves to a directory one level above project_root.
+        src = (project_dir / entry).resolve()
         if not src.exists():
             continue
-        if not _contained(src, project_root):
+        is_sibling = (pure.parts[0] == ".." and len(pure.parts) == 2)
+        if not is_sibling and not _contained(src, project_root):
             raise CleanRoomError(
                 f"clean_room_copy entry escapes the project dir: {entry!r}")
-        target = dest / Path(*pure.parts)
+        if is_sibling:
+            # For sibling repos, the target mirrors the relative structure
+            # (e.g. ../QED -> <dest>/../QED -> <dest_parent>/QED).
+            target = dest.parent / pure.parts[1]
+        else:
+            target = dest / Path(*pure.parts)
         try:
             if src.is_dir():
                 shutil.copytree(src, target, symlinks=True,
