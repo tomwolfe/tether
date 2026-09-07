@@ -51,7 +51,7 @@ verification:
     # 5) Full validation benchmark suite (all 4 drugs + formal verification)
     - "cd ../VeriTrial && make validate"
   probes:
-    - command: "test -d ../QED && test -d ../VeriTrial && echo 'repos-present'"
+    - command: "sh -c 'test -d ../QED && test -d ../VeriTrial && echo repos-present'"
       contains: "repos-present"
   mutation:
     enabled: true

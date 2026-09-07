@@ -203,8 +203,15 @@ def materialize_clean_room(
             target = dest / Path(*pure.parts)
         try:
             if src.is_dir():
+                # Fresh copy per attempt: drop any residue from a previous
+                # attempt sharing this staging root (copytree with
+                # dirs_exist_ok chokes on pre-existing symlinks, e.g. .lake
+                # chains, raising EEXIST on re-materialization).
+                if target.is_symlink() or target.is_file():
+                    target.unlink()
+                elif target.is_dir():
+                    shutil.rmtree(target)
                 shutil.copytree(src, target, symlinks=True,
-                                dirs_exist_ok=True,
                                 ignore=shutil.ignore_patterns(
                                     ".git", ".tether"))
             else:
