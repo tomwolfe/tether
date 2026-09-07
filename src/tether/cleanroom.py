@@ -204,7 +204,9 @@ def materialize_clean_room(
         try:
             if src.is_dir():
                 shutil.copytree(src, target, symlinks=True,
-                                dirs_exist_ok=True)
+                                dirs_exist_ok=True,
+                                ignore=shutil.ignore_patterns(
+                                    ".git", ".tether"))
             else:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, target)
