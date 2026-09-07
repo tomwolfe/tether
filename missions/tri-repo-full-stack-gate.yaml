@@ -35,31 +35,35 @@ constraints:
   - "Every exported lemma MUST verify; a single failure fails the whole mission"
   - "Parametric lemmas require Mathlib; numeric witnesses for the formal gate"
 verification:
+  commands:
+    # Step 1: QED unit tests with mutation gate
+    - cd ../QED && python3 -m pytest test_pipeline.py -v
+    # Step 2: VeriTrial unit tests
+    - cd ../VeriTrial && python3 -m pytest src/insilico_trial/tests/ -q
+    # Step 3: Export NON-TRIVIAL lemmas only
+    - cd ../VeriTrial && python3 scripts/export_pbpk_to_qed.py --out /tmp/pbpk_lemmas.txt --parametric
+    # Step 4: FORMAL GATE (fail-closed, blocks benchmarks if proofs fail)
+    - cd ../VeriTrial && python3 scripts/verify_formal_gate.py /tmp/pbpk_lemmas.txt
+    # Step 5: Clinical benchmarks ONLY if gate passed
+    - cd ../VeriTrial && python3 -m insilico_trial.cli validate --warfarin-n 100
+  mutation:
+    enabled: true
+    fail_below: 0.7
+    max_mutants: 30
   clean_room: true
   clean_room_copy:
     - ../QED
     - ../VeriTrial
-  commands:
-    # 1) QED test suite: unit tests for parser, pipeline, and symbolic Real analysis
-    - "cd ../QED && python3 -m pytest test_pipeline.py -v"
-    # 2) VeriTrial test suite: PBPK solver, safety, formal verification
-    - "cd ../VeriTrial && pytest src/insilico_trial/tests/ -q"
-    # 3) Export PBPK lemmas (parametric mass-conservation identity)
-    - "cd ../VeriTrial && python3 scripts/export_pbpk_to_qed.py --out /tmp/pbpk_lemmas.txt --parametric"
-    # 4) Formal verification: feed lemmas through QED (no sorry)
-    - "cd ../VeriTrial && python3 scripts/verify_formal_gate.py /tmp/pbpk_lemmas.txt"
-    # 5) Full validation benchmark suite (all 4 drugs + formal verification)
-    - "cd ../VeriTrial && make validate"
   probes:
     - command: "sh -c 'test -d ../QED && test -d ../VeriTrial && echo repos-present'"
       contains: "repos-present"
-  mutation:
-    enabled: true
-    fail_below: 0.7
   recovery:
     max_attempts: 3
   budget:
     max_sends: 12
     max_wall_seconds: 1800
+  review:
+    required: true
+    retry_on_rejection: true
   adapter: opencode
   git_state_guard: true
