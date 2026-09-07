@@ -891,11 +891,70 @@ class Orchestrator:
                 violations.append(f"submodule pointer drift: {k} changed during session")
         return violations
 
+    def _snapshot_sibling_baseline(self, mission: Any) -> Dict[str, str]:
+        """Baseline HEAD for ALL clean_room_copy siblings (e.g. ../QED).
+
+        Only entries of the form ``../<name>`` that resolve to a git repo
+        under the project parent are tracked. Read-only, never raises.
+        """
+        baseline: Dict[str, str] = {}
+        copies = self._effective_verification_clean_room_copy(mission)
+        for entry in copies or []:
+            pure = entry.replace("\\", "/")
+            parts = [p for p in pure.split("/") if p not in ("", ".")]
+            if len(parts) != 2 or parts[0] != "..":
+                continue
+            sib = (self.project_dir / entry).resolve()
+            try:
+                proc = subprocess.run(
+                    ["git", "-C", str(sib), "rev-parse", "HEAD"],
+                    capture_output=True, text=True, check=False,
+                )
+            except OSError:
+                continue
+            if proc.returncode == 0 and proc.stdout.strip():
+                baseline[entry] = proc.stdout.strip()
+        return baseline
+
+    def _sibling_state_violations(
+        self, sibling_baseline: Optional[Dict[str, str]]
+    ) -> list[str]:
+        """Validate sibling HEADs against the mission-start baseline.
+
+        Prevents silent drift in multi-repo clean rooms: any declared
+        ``../<name>`` sibling whose HEAD moved (or became unresolvable)
+        produces a human-readable violation. Empty baseline means intact.
+        Read-only, never raises.
+        """
+        if not sibling_baseline:
+            return []
+        violations: list[str] = []
+        for entry, expected in sorted(sibling_baseline.items()):
+            sib = (self.project_dir / entry).resolve()
+            try:
+                proc = subprocess.run(
+                    ["git", "-C", str(sib), "rev-parse", "HEAD"],
+                    capture_output=True, text=True, check=False,
+                )
+            except OSError:
+                proc = None  # type: ignore[assignment]
+            cur = (
+                proc.stdout.strip() if proc is not None
+                and proc.returncode == 0 and proc.stdout.strip() else None
+            )
+            if cur != expected:
+                found = cur[:12] if cur else "<unresolvable>"
+                violations.append(
+                    f"sibling {entry} HEAD drifted from the checkpointed "
+                    f"commit (expected {expected[:12]}, found {found})")
+        return violations
+
     def _gate_and_capture(
         self, audit: AuditTrail, mission: Any, checkpoint: CheckpointInfo,
         manifest_before: Optional[dict[str, tuple[int, str | int]]],
         dry_run: bool,
         hook_baseline: Optional[tuple[Dict[str, str], Optional[str], Dict[str, Optional[str]], Dict[str, str]]] = None,
+        sibling_baseline: Optional[Dict[str, str]] = None,
     ) -> list[str]:
         """Re-detect changes, refresh forensic artifacts, re-run the gate.
 
@@ -968,6 +1027,7 @@ class Orchestrator:
                 and checkpoint.is_git_repo and checkpoint.original_head):
             drifts = self._git_state_violations(checkpoint)
             drifts += self._hook_integrity_violations(hook_baseline)
+            drifts += self._sibling_state_violations(sibling_baseline)
             if drifts:
                 detail = "; ".join(drifts)
                 audit.log_event("git_state_violations",
@@ -1690,6 +1750,10 @@ class Orchestrator:
         if (getattr(mission, "git_state_guard", None)
                 and checkpoint.is_git_repo and checkpoint.original_head):
             hooks_baseline = _snapshot_hook_integrity(self.project_dir)
+        sibling_baseline: Optional[Dict[str, str]] = None
+        if (getattr(mission, "git_state_guard", None)
+                and checkpoint.is_git_repo and checkpoint.original_head):
+            sibling_baseline = self._snapshot_sibling_baseline(mission)
 
         # Sandbox posture advisory (dogfood-19): with allowed_paths set,
         # warn-mode detection relies only on content-based change detection;
@@ -1902,7 +1966,7 @@ class Orchestrator:
             # verification is skipped entirely.
             changed = self._gate_and_capture(
                 audit, mission, checkpoint, manifest_before, dry_run,
-                hooks_baseline)
+                hooks_baseline, sibling_baseline)
 
             # LLM-synthesized probes (dogfood-43): generated ONCE here —
             # after the agent's change is captured but BEFORE any
@@ -2361,7 +2425,7 @@ class Orchestrator:
                     # repair prompt reflects the actual post-reset tree.
                     changed = self._gate_and_capture(
                         audit, mission, checkpoint, manifest_before, dry_run,
-                        hooks_baseline)
+                        hooks_baseline, sibling_baseline)
                 # Recovery intelligence: classification header + tailored
                 # guidance, then fold a bounded forensic context (current
                 # changed files, latest change-artifact excerpt, previous
@@ -2393,7 +2457,7 @@ class Orchestrator:
                     prev_changed = list(changed)
                     changed = self._gate_and_capture(
                         audit, mission, checkpoint, manifest_before, dry_run,
-                        hooks_baseline)
+                        hooks_baseline, sibling_baseline)
                     recovery_attempt["changed_files_at_attempt"] = list(changed)
                     self._save_attempt_patch(audit, checkpoint, attempt)
                 agent_failed = state.status != "completed"

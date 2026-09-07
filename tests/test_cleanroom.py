@@ -348,7 +348,7 @@ def test_copy_entries_reject_absolute_escape_and_protected_paths(tmp_path):
     _git_repo(project)
     session = tmp_path / "session"
     _capture_artifacts(project, session)
-    for bad in ("/etc", "../outside", ".git", ".tether"):
+    for bad in ("/etc", "../../outside", ".git", ".tether"):
         with pytest.raises(CleanRoomError):
             materialize_clean_room(project, "HEAD", session, [bad],
                                    tmp_path / "room")
@@ -395,7 +395,7 @@ def test_absent_clean_room_defaults_to_none(tmp_path):
     "  clean_room: 1\n",                     # int is not a boolean
     "  clean_room_copy: .venv\n",            # not a list
     "  clean_room_copy: ['/abs/path']\n",    # absolute path
-    "  clean_room_copy: ['../escape']\n",    # '..' component
+    "  clean_room_copy: ['../../escape']\n",    # '..' escape beyond parent
     "  clean_room_copy: ['ok', 42]\n",       # non-string entry
     "  clean_room_copy: ['']\n",             # empty entry
 ])

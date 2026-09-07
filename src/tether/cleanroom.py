@@ -188,12 +188,13 @@ def materialize_clean_room(
         # Resolve the source path.  For sibling-repo entries (../<name>),
         # this resolves to a directory one level above project_root.
         src = (project_dir / entry).resolve()
-        if not src.exists():
-            continue
-        is_sibling = (pure.parts[0] == ".." and len(pure.parts) == 2)
+        is_sibling = (pure.parts[0] == ".." and len(pure.parts) == 2
+                      and ".." not in pure.parts[1:])
         if not is_sibling and not _contained(src, project_root):
             raise CleanRoomError(
                 f"clean_room_copy entry escapes the project dir: {entry!r}")
+        if not src.exists():
+            continue
         if is_sibling:
             # For sibling repos, the target mirrors the relative structure
             # (e.g. ../QED -> <dest>/../QED -> <dest_parent>/QED).
