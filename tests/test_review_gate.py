@@ -258,6 +258,31 @@ def test_review_prompt_carries_goal_and_diff_excerpt(tmp_path):
     assert "+changed by agent" in prompt      # bounded excerpt of the diff
 
 
+def test_review_includes_untracked_file_content(tmp_path):
+    """Untracked file contents appear in the review prompt (dogfood-43)."""
+    _git_repo(tmp_path)
+    mp = tmp_path / "m.yaml"
+    mp.write_text(
+        f"mission:\n  name: rev\n  goal: THE-GOAL-TEXT\n"
+        f"verification:\n  commands:\n    - {PASS_CMD}\n"
+        f"adapter: mock\nreview:\n  enabled: true\n"
+    )
+    subprocess.run(["git", "-C", str(tmp_path), "add", "m.yaml"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "mission"],
+                   check=True)
+    # Create an untracked file (not added to git) after the commit
+    untracked = tmp_path / "new_file.py"
+    untracked.write_text("def hello(): return 42\n")
+    adapter = _ReviewingAdapter(REVIEW_APPROVED)
+    cfg = TetherConfig(audit_dir=".tether/sessions")
+    Orchestrator(adapter, cfg, tmp_path).run(load_mission(mp), allow_dirty=True)
+    assert len(adapter.review_prompts) == 1
+    prompt = adapter.review_prompts[0]
+    # Untracked file content should be embedded in the review prompt
+    assert "--- untracked: new_file.py ---" in prompt
+    assert "def hello(): return 42" in prompt
+
+
 def test_review_event_prompt_response_persisted(tmp_path):
     report = _run(tmp_path, "review:\n  enabled: true\n")
     events, d = _events(tmp_path, report)
