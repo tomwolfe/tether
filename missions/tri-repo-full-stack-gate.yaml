@@ -18,7 +18,7 @@ mission:
       - Merkle provenance chain (tether session + QED proofs + benchmarks)
 context:
   - "QED lakefile.lean declares mathlib4 from leanprover-community/mathlib4"
-  - "QED agentic_pipeline.py uses `lake env lean` for hermetic Mathlib compilation"
+  - "QED agentic_pipeline.py invokes the pinned toolchain's lean directly with an explicit LEAN_PATH (lake env is bypassed: it SIGTRAPs under this Lake/Lean combination)"
   - "QED Compartmental.lean: pbpk_is_metzler, pbpk_diag_nonpos/neg, mass dissipation"
   - "VeriTrial export_pbpk_to_qed.py --lean-out emits the AST<->Lean isomorphism file"
   - "VeriTrial formal_verification.py embeds SHA-256 hashes of verified Lean code"
@@ -31,7 +31,6 @@ constraints:
   - "Cross-repo orchestration via clean_room_copy with sibling repos"
   - "Every exported lemma MUST verify; a single failure fails the whole mission"
   - "No jnp.maximum concentration clamping; non-negativity via dt bound only"
-clean_room: true
 git_state_guard: true
 mutation:
   enabled: true
@@ -41,6 +40,10 @@ review:
   required: true
   retry_on_rejection: true
 verification:
+  clean_room: true
+  clean_room_copy:
+    - "../QED"
+    - "../VeriTrial"
   commands:
     - "python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --lean-out ../QED/VeriTrialExport.lean --out /tmp/pbpk_lemmas.txt"
     - "python3 ../VeriTrial/scripts/verify_formal_gate.py /tmp/pbpk_lemmas.txt"

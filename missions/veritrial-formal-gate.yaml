@@ -5,18 +5,20 @@ mission:
 
     This mission closes the gap between "algebraic identity checking" and
     "formal ODE verification": it runs the VeriTrial -> QED semantic bridge to
-    export PBPK mass-conservation lemmas (including a non-trivial, genuinely
-    non-reflexive perfusion-limited uptake witness) and then forces every
-    exported lemma through QED's agentic pipeline. The mission FAILS unless
-    QED proves ALL lemmas with no `sorry`.
+    export parametric PBPK mass-conservation theorems (Metzler positivity,
+    boundary inflow invariants, the parametric mass-conservation sum, and
+    mass dissipation) and then forces every exported theorem through QED's
+    agentic pipeline over [LinearOrderedField R] / [Field R] with Mathlib.
+    The mission FAILS unless QED proves ALL theorems with no `sorry`.
 
     Concretely the gate:
-      1. exports lemmas from the CURRENT PBPK source via
+      1. exports parametric theorems from the CURRENT PBPK source via
          VeriTrial/scripts/export_pbpk_to_qed.py (this also runs a structural
          mass-balance check and aborts if conservation is broken);
-      2. verifies each lemma with QED/verify_pbpk_lemmas.py, which proves them
-         with real Lean 4 tactics (rfl for identities, decide for the closed
-         numeric perfusion witnesses) under the strict no-sorry policy.
+      2. verifies each theorem with QED/verify_pbpk_lemmas.py, which proves them
+         with real Lean 4 tactics (positivity, field_simp, ring) under the
+         strict no-sorry policy. Static numeric witnesses are banned: the
+         bridge emits ONLY parametric theorems.
 
     Clean-room isolation ensures the bridge/lemma proofs are checked against a
     pristine checkout plus only this session's captured change, never against
@@ -25,25 +27,28 @@ mission:
 context:
   - "VeriTrial PBPK model uses perfusion-limited ODEs (src/insilico_trial/pbpk/model.py)"
   - "State vector: [A_gut, A_liver, A_central, A_periph, A_effect, A_elim]"
-  - "QED ODE tactic policy (agentic_pipeline.get_tactic_candidates) now prioritizes dsimp / field_simp / ring for derivative / rate-of-change inputs"
+  - "QED ODE tactic policy (agentic_pipeline.get_tactic_candidates) prioritizes positivity / field_simp / ring for parametric rate-of-change inputs"
   - "QED parser recognizes d<var>/dt = <rhs> ODEs (parser.is_ode / parse_ode / involves_derivative)"
-  - "Semantic bridge: VeriTrial/scripts/export_pbpk_to_qed.py -> QED-parseable lemmas"
-  - "Verifier: QED/verify_pbpk_lemmas.py (exits non-zero if ANY lemma fails, no sorry)"
-  - "Bare Lean 4 (no Mathlib here) proves identities by rfl and closed numeric field equalities by decide"
-  - "Symbolic perfusion/distributive lemmas require Mathlib (field_simp/ring); emit them only with --ode-lemmas in a Mathlib-backed CI"
+  - "Semantic bridge: VeriTrial/scripts/export_pbpk_to_qed.py -> QED-parseable parametric theorems"
+  - "Verifier: QED/verify_pbpk_lemmas.py (exits non-zero if ANY theorem fails, no sorry)"
+  - "Parametric theorems over [LinearOrderedField R] / [Field R] prove via positivity / field_simp+ring with auto-generated positivity hypotheses"
+  - "Static numeric witnesses (129 = 129, closed arithmetic sums, reflexive x = x) are banned from the bridge and fail the gate in --strict mode"
 constraints:
   - "Do NOT modify Tether's core orchestration logic"
   - "Do NOT introduce sorry axioms in QED output; the no-sorry gate must remain strict"
   - "Keep all changes backward compatible with existing VeriTrial simulations"
   - "Every exported lemma MUST verify; a single failure fails the whole mission"
-  - "Do NOT pass --ode-lemmas in this Mathlib-free environment (symbolic lemmas would fail)"
+  - "Parametric export is the default (Mathlib-backed CI proves field_simp/ring goals hermetically)"
 verification:
   # Clean-room: verify the bridge + lemmas against a pristine checkout plus
   # only this session's captured change. QED lives in a sibling repo; it is
   # located portably by scripts/verify_formal_gate.py (via $QED_DIR or a
   # sibling-of-repo fallback) -- NO machine-specific absolute paths are
-  # hardcoded here.
+  # hardcoded here. The sibling copy below materializes ../QED alongside the
+  # clean-room checkout so the fallback resolves inside the clean room.
   clean_room: true
+  clean_room_copy:
+    - "../QED"
   commands:
     # 1) Generate fresh lemmas from the CURRENT PBPK source (also enforces the
     #    structural mass-balance invariant; exits non-zero if broken).
@@ -52,35 +57,28 @@ verification:
     #    which fails the mission if ANY lemma cannot be verified (no sorry).
     - "python3 scripts/verify_formal_gate.py /tmp/pbpk_lemmas.txt"
   assertions:
-    # The formal spec must document the perfusion-limited uptake lemma.
+    # The formal spec must document the parametric mass-conservation identity.
     - path: "formal_specs/pbpk_mass_conservation.tex"
-      contains: "Lemma 2"
-    # The formal spec must also document the closed numeric mass-conservation
-    # witness (Lemma 3b) -- the genuine, non-reflexive formal-ODE proof.
+      contains: "Lemma 3c"
+    # The formal spec must also document the boundary inflow invariant.
     - path: "formal_specs/pbpk_mass_conservation.tex"
-      contains: "Lemma 3b"
+      contains: "Lemma 4"
   probes:
-    # The exported lemma set must contain the non-trivial perfusion witness
-    # (a closed numeric field identity proved by decide, beyond reflexivity).
+    # The exported theorem set must contain the Metzler positivity invariant.
     - command: "python3 scripts/export_pbpk_to_qed.py"
-      contains: "3 * (5 - 4 / 2) = 3 * 5 - 3 * 4 / 2"
-    # The exported lemma set must contain the genuine mass-conservation witness
-    # (sum of derivative RHS terms = 0), proved non-reflexively by QED.
+      contains: "Q_liver / (V_liver * Kp_liver) > 0"
+    # The exported theorem set must contain the mass dissipation inequality.
     - command: "python3 scripts/export_pbpk_to_qed.py"
-      contains: "-6 + 9 + -13 + 4 + 6 + 0 = 0"
-    # Lemma content assertion: the bridge must emit references to dA_central
-    # (the central compartment derivative that ties the mass-balance together).
+      contains: "CL * C_p > 0"
+    # The exported theorem set must contain a boundary inflow invariant.
     - command: "python3 scripts/export_pbpk_to_qed.py"
-      contains: "dA_central"
-    # The export bridge must emit exactly 9 lemmas.
+      contains: "(Q_liver / (V_central * Kp_liver)) * A_central >= 0"
+    # The parametric sum uses compartment-specific symbolic rates.
+    - command: "python3 scripts/export_pbpk_to_qed.py"
+      contains: "ka_rate"
+    # The export bridge must emit exactly 16 parametric theorems.
     - command: "python3 scripts/export_pbpk_to_qed.py | wc -l | tr -d ' '"
-      equals: "9"
-    # The export bridge must emit the reflexive gut absorption identity.
-    - command: "python3 scripts/export_pbpk_to_qed.py"
-      contains: "ka * A_gut = ka * A_gut"
-    # The export bridge must emit the Rodgers-Rowland Kp witness.
-    - command: "python3 scripts/export_pbpk_to_qed.py"
-      contains: "129 = 129"
+      equals: "16"
   # High-stakes gate: mutation-test the change so the gate has real "teeth"
   # (a trivially-passing gate would be mutated to still pass -> fail_below).
   mutation:
