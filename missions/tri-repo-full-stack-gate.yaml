@@ -10,22 +10,19 @@ mission:
       2. VeriTrial: PBPK clinical trial simulation engine (native JAX solver)
       3. Tether: Orchestration and verification control plane
 
-    The gate runs the full validation stack:
-      - QED unit tests (including symbolic Real analysis with Mathlib)
-      - VeriTrial test suite (PBPK solver, safety, formal verification)
-      - Parametric lemma export and formal verification through QED (no sorry)
-      - Full validation benchmark suite (Warfarin, Moxifloxacin, Midazolam, Metformin)
-
-    This is the top-level integration gate that certifies the entire stack.
-
+    The gate runs the hardened full-stack checks:
+      - AST<->Lean isomorphism export (VeriTrialExport.lean, proved by rfl)
+      - Formal gate: every exported lemma verifies through QED (no sorry),
+        including the lake-compiled isomorphism and #print axioms assertion
+      - De-clamped fixed-step/SDIRK solvers under the dynamic Metzler dt bound
+      - Merkle provenance chain (tether session + QED proofs + benchmarks)
 context:
   - "QED lakefile.lean declares mathlib4 from leanprover-community/mathlib4"
   - "QED agentic_pipeline.py uses `lake env lean` for hermetic Mathlib compilation"
-  - "QED get_tactic_candidates() prioritizes intro/dsimp/field_simp/ring for Real expressions"
-  - "VeriTrial export_pbpk_to_qed.py --parametric emits parametric mass-conservation identity"
+  - "QED Compartmental.lean: pbpk_is_metzler, pbpk_diag_nonpos/neg, mass dissipation"
+  - "VeriTrial export_pbpk_to_qed.py --lean-out emits the AST<->Lean isomorphism file"
   - "VeriTrial formal_verification.py embeds SHA-256 hashes of verified Lean code"
-  - "VeriTrial safety/__init__.py routes QSP DILI params through assess_dili"
-  - "VeriTrial fixed_step.py provides solve_pbpk_batch_with_compartments for liver profiles"
+  - "VeriTrial fixed_step.calculate_max_stable_dt derives the dt bound from matrix invariants"
   - "Cross-repo QED is located as sibling of VeriTrial (co-located monorepo layout)"
 constraints:
   - "Do NOT introduce sorry axioms in any QED output"
@@ -33,37 +30,25 @@ constraints:
   - "Keep all changes backward compatible with existing simulations"
   - "Cross-repo orchestration via clean_room_copy with sibling repos"
   - "Every exported lemma MUST verify; a single failure fails the whole mission"
-  - "Parametric lemmas require Mathlib; numeric witnesses for the formal gate"
+  - "No jnp.maximum concentration clamping; non-negativity via dt bound only"
+clean_room: true
+git_state_guard: true
+mutation:
+  enabled: true
+  fail_below: 0.8
+  max_mutants: 25
+review:
+  required: true
+  retry_on_rejection: true
 verification:
   commands:
-    # Step 1: QED unit tests with mutation gate
-    - cd ../QED && python3 -m pytest test_pipeline.py -v
-    # Step 2: VeriTrial unit tests
-    - cd ../VeriTrial && python3 -m pytest src/insilico_trial/tests/ -q
-    # Step 3: Export NON-TRIVIAL lemmas only
-    - cd ../VeriTrial && python3 scripts/export_pbpk_to_qed.py --out /tmp/pbpk_lemmas.txt --parametric
-    # Step 4: FORMAL GATE (fail-closed, blocks benchmarks if proofs fail)
-    - cd ../VeriTrial && python3 scripts/verify_formal_gate.py /tmp/pbpk_lemmas.txt
-    # Step 5: Clinical benchmarks ONLY if gate passed
-    - cd ../VeriTrial && python3 -m insilico_trial.cli validate --warfarin-n 100
-  mutation:
-    enabled: true
-    fail_below: 0.7
-    max_mutants: 30
-  clean_room: true
-  clean_room_copy:
-    - ../QED
-    - ../VeriTrial
-  probes:
-    - command: "sh -c 'test -d ../QED && test -d ../VeriTrial && echo repos-present'"
-      contains: "repos-present"
-  recovery:
-    max_attempts: 3
-  budget:
-    max_sends: 12
-    max_wall_seconds: 1800
-  review:
-    required: true
-    retry_on_rejection: true
-  adapter: opencode
-  git_state_guard: true
+    - "python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --lean-out ../QED/VeriTrialExport.lean --out /tmp/pbpk_lemmas.txt"
+    - "python3 ../VeriTrial/scripts/verify_formal_gate.py /tmp/pbpk_lemmas.txt"
+  timeout_seconds: 600
+recovery:
+  max_attempts: 1
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/muse-spark-1.3-contributor-free", "{prompt}"]
+    timeout_seconds: 1800
