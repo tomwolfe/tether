@@ -190,6 +190,8 @@ class MissionContract(BaseModel):
     # checkpoint ref still resolves to it. None (absent) = OFF: existing
     # missions validate and behave byte-identically.
     git_state_guard: Optional[bool] = None
+    # Multi-repo workspace: sibling repos verified atomically with primary.
+    workspace_repos: Optional[List[str]] = None
 
     @field_validator("name")
     @classmethod

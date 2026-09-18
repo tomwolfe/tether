@@ -634,3 +634,33 @@ def make_file_backup(project_dir: Path, backup_root: Path, session_id: str) -> s
             except OSError:
                 pass
         raise RuntimeError(f"Failed to create file backup at {dest}: {e}") from e
+
+
+# --- Multi-repo workspace extension ---
+def resolve_workspace_repos(project_dir, workspace_repos):
+    from pathlib import Path as _P
+    base = _P(project_dir).resolve()
+    out = []
+    for r in workspace_repos or []:
+        out.append((base / r).resolve())
+    return out
+
+def workspace_create_checkpoint(project_dir, session_id, workspace_repos=None, allow_dirty=False, write_ref=True):
+    infos = {str(project_dir): create_checkpoint(project_dir, session_id, allow_dirty=allow_dirty, write_ref=write_ref)}
+    for repo in resolve_workspace_repos(project_dir, workspace_repos):
+        infos[str(repo)] = create_checkpoint(repo, session_id, allow_dirty=allow_dirty, write_ref=write_ref)
+    return infos
+
+def workspace_is_dirty(project_dir, workspace_repos=None):
+    if is_dirty(project_dir): return True
+    return any(is_dirty(r) for r in resolve_workspace_repos(project_dir, workspace_repos))
+
+def workspace_rollback(project_dir, session_id, workspace_repos=None, audit_dir=".tether/sessions", clean=False, preserve=None):
+    results = {}
+    ok_all = True; msgs = []
+    ok, msg = rollback(project_dir, session_id, audit_dir=audit_dir, clean=clean, preserve=preserve)
+    results[str(project_dir)] = (ok, msg); ok_all = ok_all and ok; msgs.append(msg)
+    for repo in resolve_workspace_repos(project_dir, workspace_repos):
+        ok2, msg2 = rollback(repo, session_id, audit_dir=audit_dir, clean=clean, preserve=preserve)
+        results[str(repo)] = (ok2, msg2); ok_all = ok_all and ok2; msgs.append(msg2)
+    return ok_all, "\n".join(msgs)
