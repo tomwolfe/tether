@@ -1071,3 +1071,14 @@ def test_review_prompt_carries_verification_evidence(tmp_path):
     assert "PASS exit=0" in prompt
     assert "mutation: not run (not enabled)" in prompt
     assert "vacuous" in prompt
+
+
+def test_review_evidence_includes_output_tails():
+    from tether.models import VerificationResult
+    from tether.orchestrator import Orchestrator
+    vr = [VerificationResult(command="gate", exit_code=0, passed=True,
+                             stdout="line1\nFORMAL GATE PASSED",
+                             stderr="")]
+    ev = Orchestrator._review_evidence(vr, None, [])
+    assert "output tail:" in ev
+    assert "FORMAL GATE PASSED" in ev

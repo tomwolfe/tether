@@ -1143,24 +1143,39 @@ class Orchestrator:
                 + clip_output(artifact.strip(), FORENSIC_EXCERPT_BUDGET))
         return "\n\n".join(lines)
 
-    def _mutation_targets(self, mission: Any, changed: list[str]) -> list[str]:
+    def _mutation_targets(self, mission: Any, changed: list[str],
+                            spec: Optional[MutationSpec] = None) -> list[str]:
         """Changed files eligible for mutation (dogfood-22).
 
         Only ``.py`` files are ever mutated; anything under ``.tether/`` is
         dropped, and the write-sandbox rules apply unchanged: forbidden-glob
         matches and — when allowed_paths is set — non-matching paths are
-        excluded.
+        excluded. When no changed-file targets survive and ``spec`` carries
+        ``baseline_targets`` (verify-only missions), the baseline list is
+        filtered identically and used instead so the meta-check is never
+        vacuous; the ``mutation`` audit event records which source applied.
         """
         allowed = list(getattr(mission, "allowed_paths", None) or [])
         forbidden = list(getattr(mission, "forbidden_paths", None) or [])
-        targets: list[str] = []
-        for rel in sorted(changed):
+
+        def _ok(rel: str) -> bool:
             posix = Path(rel).as_posix()
             if not posix.endswith(".py"):
-                continue
-            if sandbox_write_violation(posix, allowed, forbidden) is not None:
-                continue
-            targets.append(posix)
+                return False
+            if posix == ".tether" or posix.startswith(".tether/"):
+                return False
+            return sandbox_write_violation(posix, allowed, forbidden) is None
+
+        targets = [Path(r).as_posix() for r in sorted(changed) if _ok(r)]
+        source = "changed"
+        if not targets and spec is not None:
+            baseline = list(getattr(spec, "baseline_targets", None) or [])
+            targets = [Path(r).as_posix() for r in sorted(baseline) if _ok(r)]
+            if targets:
+                source = "baseline"
+        if source == "baseline":
+            log.warning("mutation targets fall back to baseline_targets "
+                        "(agent changed nothing mutatable)")
         return targets
 
     def _run_mutation_check(
@@ -1203,8 +1218,10 @@ class Orchestrator:
             return True, ""
 
         mutants: list[MutantResult] = []
+        changed_targets = self._mutation_targets(mission, changed)
+        targets = self._mutation_targets(mission, changed, spec)
         summary = run_mutation_testing(
-            spec, self._mutation_targets(mission, changed), target,
+            spec, targets, target,
             run_suite, timeout_seconds=timeout, collect_results=mutants)
         try:
             (audit.dir / "verification" / "mutation.json").write_text(
@@ -1215,7 +1232,9 @@ class Orchestrator:
             log.debug("Mutation detail capture failed: %s", e)
         audit.log_event("mutation", {
             "enabled": True,
-            "targets": self._mutation_targets(mission, changed),
+            "targets": targets,
+            "target_source": ("changed" if changed_targets else
+                                ("baseline" if targets else "none")),
             "fail_below": spec.fail_below,
             **summary.model_dump(),
             "survived_operators": sorted(
@@ -1377,6 +1396,14 @@ class Orchestrator:
                 ok = bool(getattr(r, "passed", False))
                 lines.append(
                     f"  - [{'PASS' if ok else 'FAIL'} exit={code}] {cmd}")
+                # Bounded output tail: exit codes alone starve the reviewer
+                # of substance (proofs, benchmark verdicts, Merkle roots).
+                # Last 300 chars carry the verdict lines of these commands.
+                out = (str(getattr(r, "stdout", "") or "")
+                       + "\n" + str(getattr(r, "stderr", "") or "")).strip()
+                if out:
+                    tail = out[-300:].replace("\n", " | ")
+                    lines.append(f"    output tail: {tail}")
             if mutation_summary is None:
                 lines.append("- mutation: not run (not enabled)")
             else:

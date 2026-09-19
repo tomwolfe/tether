@@ -53,6 +53,12 @@ class MutationSpec(BaseModel):
     max_mutants: int = Field(default=20, gt=0)
     # Kill-rate gate in [0, 1]; None = advisory only (never fails an attempt).
     fail_below: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    # Baseline regression net for verify-only missions: when the agent
+    # changed nothing (no mutation targets), these repo-relative ``.py``
+    # paths (``../<repo>/...`` sibling paths allowed) are mutated instead
+    # so the meta-check is never vacuous. Ignored whenever changed-file
+    # targets exist. Same .py/sandbox filtering applies.
+    baseline_targets: Optional[List[str]] = None
 
 
 class AutoProbesSpec(BaseModel):

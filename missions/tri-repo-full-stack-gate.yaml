@@ -13,7 +13,8 @@ mission:
     The gate runs the hardened full-stack checks:
       - AST<->Lean isomorphism export (VeriTrialExport.lean, proved by rfl)
       - Formal gate: every exported lemma verifies through QED (no sorry),
-        including the lake-compiled isomorphism and #print axioms assertion
+        including the direct-lean-compiled isomorphism (lake env is bypassed:
+        it SIGTRAPs) and #print axioms assertion
       - De-clamped fixed-step/SDIRK solvers under the dynamic Metzler dt bound
       - Merkle provenance chain (tether session + QED proofs + benchmarks)
 context:
@@ -43,12 +44,18 @@ verification:
   mutation:
     enabled: true
     fail_below: 0.8
-    max_mutants: 25
+    max_mutants: 6
+    # Regression net for verify-only runs: when the agent changes nothing,
+    # mutate the gate-critical bridge scripts instead of passing vacuously.
+    # Each mutant re-runs the full 4-command suite (~6 min), hence the cap.
+    baseline_targets:
+      - "../VeriTrial/scripts/export_pbpk_to_qed.py"
+      - "../VeriTrial/scripts/verify_formal_gate.py"
   commands:
     - "python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --lean-out ../QED/VeriTrialExport.lean --out /tmp/pbpk_lemmas.txt"
     - "python3 ../VeriTrial/scripts/rebuild_qed_oleans.py"
     - "python3 ../VeriTrial/scripts/verify_formal_gate.py /tmp/pbpk_lemmas.txt"
-    - "python3 -c \"import sys, os; os.chdir(os.path.join(os.getcwd(), '../VeriTrial')); sys.path.insert(0, 'src'); from insilico_trial.validation import run_all_validations, build_regulatory_provenance; run_all_validations(); build_regulatory_provenance()\""
+    - "python3 -c \"import sys, os; os.chdir(os.path.join(os.getcwd(), '../VeriTrial')); sys.path.insert(0, 'src'); from insilico_trial.validation import run_all_validations, build_regulatory_provenance; run_all_validations(); print('PROVENANCE_MERKLE=' + build_regulatory_provenance()['merkle_root'])\""
   timeout_seconds: 3600
 review:
   enabled: true

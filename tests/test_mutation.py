@@ -322,6 +322,8 @@ def test_full_mutation_block_parses(tmp_path):
     "  mutation:\n    fail_below: high\n",       # not numeric
     "  mutation:\n    enabled: yes-please\n",    # not a boolean
     "  mutation:\n    unknow: 1\n",              # typo'd key must not no-op
+    "  mutation:\n    baseline_targets: x.py\n",  # not a list
+    "  mutation:\n    baseline_targets: [42]\n",  # not strings
 ])
 def test_invalid_mutation_raises_mission_error(tmp_path, block):
     text = ("mission:\n  name: m\n  goal: g\nverification:\n" + block)
@@ -569,3 +571,34 @@ def test_readme_documents_mutation_testing():
     limitations = readme.split("## Current limitations", 1)[1]
     assert "Python-only" in limitations
     assert "advisory by default" in limitations
+
+
+def test_mutation_baseline_targets_when_nothing_changed(tmp_path):
+    from tether.models import MutationSpec
+    from tether.orchestrator import Orchestrator
+    from tether.models import TetherConfig
+    from tether.adapters.mock import MockAdapter
+    orch = Orchestrator(MockAdapter(), TetherConfig(), tmp_path)
+    mission = type("M", (), {"allowed_paths": None, "forbidden_paths": None})()
+    spec = MutationSpec(enabled=True,
+                        baseline_targets=["../VeriTrial/scripts/a.py", "notes.txt"])
+    assert orch._mutation_targets(mission, [], spec) == \
+        ["../VeriTrial/scripts/a.py"]
+    # Changed files win whenever any survive filtering.
+    assert orch._mutation_targets(mission, ["src/b.py"], spec) == ["src/b.py"]
+    # No spec, no changed => still empty (old behavior preserved).
+    assert orch._mutation_targets(mission, []) == []
+
+
+def test_mutation_baseline_targets_parsed(tmp_path):
+    text = ("mission:\n  name: m\n  goal: g\nverification:\n"
+            "  mutation:\n"
+            "    enabled: true\n"
+            "    max_mutants: 6\n"
+            "    fail_below: 0.8\n"
+            "    baseline_targets:\n"
+            "      - ../VeriTrial/scripts/a.py\n")
+    spec = _write_mission(tmp_path, text).verification.mutation
+    assert spec is not None
+    assert spec.baseline_targets == ["../VeriTrial/scripts/a.py"]
+    assert spec.max_mutants == 6

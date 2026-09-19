@@ -168,11 +168,13 @@ def load_mission(path: str | Path) -> MissionContract:
         if not isinstance(raw_mutation, dict):
             raise MissionError("'verification.mutation' must be a mapping")
         unknown = set(raw_mutation) - {
-            "enabled", "operators", "max_mutants", "fail_below"}
+            "enabled", "operators", "max_mutants", "fail_below",
+            "baseline_targets"}
         if unknown:
             raise MissionError(
                 "'verification.mutation' accepts only 'enabled', "
-                "'operators', 'max_mutants', and 'fail_below'; got: "
+                "'operators', 'max_mutants', 'fail_below', and "
+                "'baseline_targets'; got: "
                 + ", ".join(sorted(unknown)))
         enabled = raw_mutation.get("enabled")
         if "enabled" in raw_mutation and not isinstance(enabled, bool):
@@ -207,9 +209,18 @@ def load_mission(path: str | Path) -> MissionContract:
             raise MissionError(
                 "'verification.mutation.fail_below' must be a number "
                 "between 0 and 1")
+        baseline_targets = raw_mutation.get("baseline_targets")
+        if baseline_targets is not None:
+            if not isinstance(baseline_targets, list) or not all(
+                    isinstance(b, str) for b in baseline_targets):
+                raise MissionError(
+                    "'verification.mutation.baseline_targets' must be a "
+                    "list of strings")
         mutation_kwargs: Dict[str, Any] = {"enabled": bool(enabled)}
         if operators is not None:
             mutation_kwargs["operators"] = operators
+        if baseline_targets is not None:
+            mutation_kwargs["baseline_targets"] = baseline_targets
         if max_mutants is not None:
             mutation_kwargs["max_mutants"] = max_mutants
         if fail_below is not None:
