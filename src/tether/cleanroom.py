@@ -236,6 +236,25 @@ def materialize_clean_room(
                         _t = target / Path(_rel)
                         _t.parent.mkdir(parents=True, exist_ok=True)
                         _t.write_bytes(_s.read_bytes())
+                    # Pinned build environment: carry the host `.lake`
+                    # (dependency sources pinned by lake-manifest.json plus
+                    # cached oleans) so the gate can compile without network.
+                    # Tracked Lean sources always come from the archive+patch
+                    # above; freshness of our oleans is enforced by running
+                    # `lake build` in the mission before the formal gate
+                    # (lake rebuilds anything whose sources changed).
+                    _lake_src = src / ".lake"
+                    if _lake_src.is_dir():
+                        _lake_dst = target / ".lake"
+                        if _lake_dst.is_symlink() or _lake_dst.is_file():
+                            _lake_dst.unlink()
+                        elif _lake_dst.is_dir():
+                            shutil.rmtree(_lake_dst)
+                        try:
+                            shutil.copytree(_lake_src, _lake_dst, symlinks=True)
+                        except OSError as e:
+                            raise CleanRoomError(
+                                f"failed to carry .lake build env for {entry!r}: {e}") from e
                     continue
                 patterns = [".git", ".tether"]
                 shutil.copytree(src, target, symlinks=True,
