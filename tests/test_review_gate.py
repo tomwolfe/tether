@@ -1029,3 +1029,45 @@ def test_ansi_stripping_does_not_change_clean_output_semantics():
     # No marker at all: unchanged fail-safe diagnostic.
     assert _parse_review_verdict("\x1b[0mnothing here\x1b[0m") == \
         ("request_changes", "no valid review verdict found in reviewer output")
+
+
+def test_review_evidence_unit():
+    from tether.models import MutationSummary, VerificationResult
+    from tether.orchestrator import Orchestrator
+    vr = [VerificationResult(command="do-x", exit_code=0, passed=True),
+          VerificationResult(command="do-y", exit_code=1, passed=False)]
+    ms = MutationSummary(total=4, killed=3, survived=1, kill_rate=0.75)
+    ev = Orchestrator._review_evidence(vr, ms, ["a.py"])
+    assert "- commands: 1/2 passed" in ev
+    assert "[PASS exit=0] do-x" in ev
+    assert "[FAIL exit=1] do-y" in ev
+    assert "kill_rate=0.75" in ev
+    assert "a.py" in ev
+    ev2 = Orchestrator._review_evidence([], None, [])
+    assert "0/0" in ev2
+    assert "not run (not enabled)" in ev2
+    assert "(none)" in ev2
+
+
+def test_review_prompt_carries_verification_evidence(tmp_path):
+    """Review prompt embeds what ran: command results, mutation, vacuity rule."""
+    _git_repo(tmp_path)
+    mp = tmp_path / "m.yaml"
+    mp.write_text(
+        f"mission:\n  name: rev\n  goal: THE-GOAL-TEXT\n"
+        f"verification:\n  commands:\n    - {PASS_CMD}\n"
+        f"adapter: mock\nreview:\n  enabled: true\n"
+        f"  context: full\n"
+    )
+    subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "mission"],
+                   check=True)
+    adapter = _ReviewingAdapter(REVIEW_APPROVED)
+    cfg = TetherConfig(audit_dir=".tether/sessions")
+    Orchestrator(adapter, cfg, tmp_path).run(load_mission(mp))
+    assert len(adapter.review_prompts) == 1
+    prompt = adapter.review_prompts[0]
+    assert "Verification evidence" in prompt
+    assert "PASS exit=0" in prompt
+    assert "mutation: not run (not enabled)" in prompt
+    assert "vacuous" in prompt

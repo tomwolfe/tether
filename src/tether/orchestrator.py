@@ -1355,8 +1355,48 @@ class Orchestrator:
             return ({"verdict": "request_changes",
                      "reason": f"reviewer failed: {e!r}"}, state_json)
 
+    @staticmethod
+    def _review_evidence(verification_results: list,
+                         mutation_summary: Optional[MutationSummary],
+                         changed: list[str]) -> str:
+        """Bounded verification-evidence summary for the review prompt.
+
+        Lists each verification command with its exit code and pass/fail,
+        the mutation kill rate (or that no mutants ran), and the changed
+        files. Pure formatting; never raises on odd inputs.
+        """
+        try:
+            lines = []
+            cmds = list(verification_results or [])
+            passed = sum(1 for r in cmds
+                         if getattr(r, "passed", False) is True)
+            lines.append(f"- commands: {passed}/{len(cmds)} passed")
+            for r in cmds:
+                cmd = str(getattr(r, "command", "?"))[:160]
+                code = getattr(r, "exit_code", None)
+                ok = bool(getattr(r, "passed", False))
+                lines.append(
+                    f"  - [{'PASS' if ok else 'FAIL'} exit={code}] {cmd}")
+            if mutation_summary is None:
+                lines.append("- mutation: not run (not enabled)")
+            else:
+                lines.append(
+                    f"- mutation: total={mutation_summary.total} "
+                    f"killed={mutation_summary.killed} "
+                    f"survived={mutation_summary.survived} "
+                    f"kill_rate={mutation_summary.kill_rate:.2f}")
+            if changed:
+                lines.append(f"- changed files ({len(changed)}): "
+                             + ", ".join(changed[:20]))
+            else:
+                lines.append("- changed files: (none)")
+            return "\n".join(lines)
+        except Exception:
+            return ""
+
     def _run_review_gate(self, audit: AuditTrail, mission: Any,
-                         checkpoint: CheckpointInfo) -> Dict[str, Any]:
+                         checkpoint: CheckpointInfo,
+                         evidence: Optional[str] = None) -> Dict[str, Any]:
         """Adversarial review gate over the captured change (dogfood-15).
 
         With no ``review.reviewers`` configured, consults the single
@@ -1437,12 +1477,34 @@ class Orchestrator:
             verdict_instruction = (
                 "Cite specific hunks or lines from the captured change when "
                 "raising concerns.\n" + verdict_instruction)
+        # Verification evidence (dogfood-47): the reviewer previously saw
+        # ONLY the diff, so verify-only missions with an empty change were
+        # unjudgeable and failed by default. Embed a bounded summary of what
+        # actually ran — commands with exit codes, mutation kill rate, and
+        # the changed-file set — so the verdict can rest on evidence. A
+        # vacuous run (no commands, no mutants, no evidence of exercised
+        # gates) must still be rejected.
+        evidence_block = ""
+        if evidence and evidence.strip():
+            evidence_block = (
+                "Verification evidence (what actually ran in isolation):\n"
+                + clip_output(evidence.strip(), REVIEW_EXCERPT_BUDGET)
+                + "\n\n"
+            )
+        vacuity_instruction = (
+            "When no change was captured, judge whether the verification "
+            "evidence above actually exercises the mission goal; approve "
+            "only if named gates ran green with substantive evidence "
+            "(passing commands, proofs, measured kill rates). A vacuous "
+            "run with no evidence must be rejected.\n"
+        )
         prompt = (
             "You are acting as an adversarial code reviewer. Judge whether "
             "the captured change below actually accomplishes the mission "
             "goal. Verification passing is NOT proof of correctness.\n\n"
             f"Mission goal:\n{mission.goal}\n\n"
             f"Captured change ({name}):\n{excerpt or '(no change captured)'}\n\n"
+            + evidence_block + vacuity_instruction
             + verdict_instruction
         )
         audit.save_prompt("review", prompt)
@@ -2352,7 +2414,12 @@ class Orchestrator:
                             audit.log_event("review", review_result)
                         else:
                             review_result = self._run_review_gate(
-                                audit, mission, checkpoint)
+                                audit, mission, checkpoint,
+                                evidence=self._review_evidence(
+                                    verification_results,
+                                    mutation_summary
+                                    if not dry_run else None,
+                                    changed))
                         if (review_result["verdict"] == "request_changes"
                                 and review_spec.required):
                             if (getattr(review_spec, "retry_on_rejection",
