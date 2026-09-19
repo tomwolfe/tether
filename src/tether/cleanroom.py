@@ -211,9 +211,37 @@ def materialize_clean_room(
                     target.unlink()
                 elif target.is_dir():
                     shutil.rmtree(target)
+                patterns = [".tether"] if is_sibling else [".git", ".tether"]
                 shutil.copytree(src, target, symlinks=True,
-                                ignore=shutil.ignore_patterns(
-                                    ".git", ".tether"))
+                                ignore=shutil.ignore_patterns(*patterns))
+                if is_sibling:
+                    # Preserve .git HEAD metadata so `git rev-parse HEAD`
+                    # and sibling-state checks function inside clean rooms.
+                    git_src = src / ".git"
+                    git_dst = target / ".git"
+                    if git_src.is_dir() and not git_dst.exists():
+                        try:
+                            shutil.copytree(git_src, git_dst, symlinks=True)
+                        except OSError:
+                            # Minimal fallback: HEAD + refs so rev-parse works.
+                            try:
+                                git_dst.mkdir(parents=True, exist_ok=True)
+                                for name in ("HEAD", "refs", "packed-refs",
+                                             "objects", "config"):
+                                    s = git_src / name
+                                    d = git_dst / name
+                                    if s.is_file() and not d.exists():
+                                        shutil.copy2(s, d)
+                                    elif s.is_dir() and not d.exists():
+                                        shutil.copytree(s, d, symlinks=True)
+                            except OSError:
+                                pass
+                    elif git_src.is_file() and not git_dst.exists():
+                        # Worktree-style gitlink pointer.
+                        try:
+                            shutil.copy2(git_src, git_dst)
+                        except OSError:
+                            pass
             else:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, target)

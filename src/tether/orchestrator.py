@@ -40,6 +40,9 @@ from tether.git_safety import (
     make_file_backup,
     restore_from_backup,
     sandbox_write_violation,
+    workspace_create_checkpoint,
+    workspace_is_dirty,
+    workspace_rollback,
 )
 from tether.git_safety import rollback as git_rollback
 from tether.manifest import diff_manifests, snapshot_manifest
@@ -1460,8 +1463,9 @@ class Orchestrator:
         return info
 
     def _auto_rollback(self, checkpoint: CheckpointInfo,
-                       pre_existing_untracked: Optional[list[str]] = None
-                       ) -> Dict[str, Any]:
+                       pre_existing_untracked: Optional[list[str]] = None,
+                       mission: Any = None,
+                        ) -> Dict[str, Any]:
         """Scoped automatic rollback for a failed/cancelled mission.
 
         Git projects get the scoped clean rollback (reset to the checkpoint
@@ -1470,8 +1474,9 @@ class Orchestrator:
         are not attributable to the session are never removed.
         """
         if checkpoint.is_git_repo:
-            ok, message = git_rollback(
+            ok, message = workspace_rollback(
                 self.project_dir, self.session_id,
+                getattr(mission, "workspace_repos", None),
                 audit_dir=self.config.audit_dir, clean=True,
                 preserve=pre_existing_untracked,
             )
@@ -1728,12 +1733,32 @@ class Orchestrator:
             )
 
         # Checkpoint / safety phase. Dry-run must not mutate the target project.
-        checkpoint = create_checkpoint(
-            self.project_dir, self.session_id,
+        _workspace_repos = getattr(mission, "workspace_repos", None)
+        _workspace_infos: Dict[str, Any] = workspace_create_checkpoint(
+            self.project_dir, self.session_id, _workspace_repos,
             allow_dirty=allow_dirty, write_ref=not dry_run,
         )
-        audit.save_json("checkpoint.json", checkpoint.model_dump())
-        audit.log_event("checkpoint", checkpoint.model_dump())
+        checkpoint = _workspace_infos.get(str(self.project_dir)) or _workspace_infos.get(
+            str(self.project_dir.resolve())) or next(iter(_workspace_infos.values()))
+        # Surface workspace-wide dirty state on the primary checkpoint so the
+        # P0 gate below fails when any sibling repo is dirty.
+        try:
+            if workspace_is_dirty(self.project_dir, _workspace_repos):
+                checkpoint.dirty = True
+        except Exception:
+            pass
+
+        def _checkpoint_info() -> Dict[str, Any]:
+            info = checkpoint.model_dump()
+            if _workspace_infos and len(_workspace_infos) > 1:
+                info["workspace"] = {
+                    repo: (ci.model_dump() if hasattr(ci, "model_dump")
+                           else ci)
+                    for repo, ci in _workspace_infos.items()
+                }
+            return info
+        audit.save_json("checkpoint.json", _checkpoint_info())
+        audit.log_event("checkpoint", _checkpoint_info())
         if checkpoint.warning:
             log.warning("%s", checkpoint.warning)
         elif checkpoint.created:
@@ -1782,7 +1807,7 @@ class Orchestrator:
                 "verification_results": [],
                 "recovery_attempts": [],
                 "changed_files": [],
-                "checkpoint_info": checkpoint.model_dump(),
+                "checkpoint_info": _checkpoint_info(),
                 "plan": "",
                 "next_steps": [
                     "Working tree is dirty; refusing to start the agent. "
@@ -1814,7 +1839,7 @@ class Orchestrator:
                     "verification_results": [],
                     "recovery_attempts": [],
                     "changed_files": [],
-                    "checkpoint_info": checkpoint.model_dump(),
+                    "checkpoint_info": _checkpoint_info(),
                     "plan": "",
                     "next_steps": [f"{e} Fix the backup location or use a git "
                                    "repository for safe rollback."],
@@ -1867,7 +1892,7 @@ class Orchestrator:
                     "verification_results": [],
                     "recovery_attempts": [],
                     "changed_files": [],
-                    "checkpoint_info": checkpoint.model_dump(),
+                    "checkpoint_info": _checkpoint_info(),
                     "plan": "",
                     "next_steps": ["Mission aborted: invalid context_files. "
                                    + "; ".join(reasons)],
@@ -2575,7 +2600,7 @@ class Orchestrator:
             "sandbox_violations": sandbox_violations,
             "usage": state.usage if state is not None else None,
             "cumulative_usage": cumulative_report,
-            "checkpoint_info": checkpoint.model_dump(),
+            "checkpoint_info": _checkpoint_info(),
             "plan": plan_text[:2000],
             "next_steps": next_steps,
             "audit_dir": str(audit.dir),
@@ -2599,7 +2624,7 @@ class Orchestrator:
         if (self.config.auto_rollback and not dry_run
                 and status in ("failed", "cancelled")):
             report["auto_rollback"] = self._auto_rollback(
-                checkpoint, pre_existing_untracked)
+                checkpoint, pre_existing_untracked, mission)
             report_path = audit.write_report(report)
             audit.log_event("auto_rollback", report["auto_rollback"])
 

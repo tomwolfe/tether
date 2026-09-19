@@ -24,6 +24,9 @@ context:
   - "VeriTrial formal_verification.py embeds SHA-256 hashes of verified Lean code"
   - "VeriTrial fixed_step.calculate_max_stable_dt derives the dt bound from matrix invariants"
   - "Cross-repo QED is located as sibling of VeriTrial (co-located monorepo layout)"
+workspace_repos:
+  - "../QED"
+  - "../VeriTrial"
 constraints:
   - "Do NOT introduce sorry axioms in any QED output"
   - "Do NOT modify existing test expectations without justification"
@@ -32,22 +35,23 @@ constraints:
   - "Every exported lemma MUST verify; a single failure fails the whole mission"
   - "No jnp.maximum concentration clamping; non-negativity via dt bound only"
 git_state_guard: true
-mutation:
-  enabled: true
-  fail_below: 0.8
-  max_mutants: 25
-review:
-  required: true
-  retry_on_rejection: true
 verification:
   clean_room: true
   clean_room_copy:
     - "../QED"
     - "../VeriTrial"
+  mutation:
+    enabled: true
+    fail_below: 0.8
+    max_mutants: 25
   commands:
     - "python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --lean-out ../QED/VeriTrialExport.lean --out /tmp/pbpk_lemmas.txt"
     - "python3 ../VeriTrial/scripts/verify_formal_gate.py /tmp/pbpk_lemmas.txt"
+    - "python3 -c \"import sys, os; sys.path.insert(0, os.path.join(os.getcwd(), '../VeriTrial/src')); from insilico_trial.validation import run_all_validations, build_regulatory_provenance; run_all_validations(); build_regulatory_provenance()\""
   timeout_seconds: 600
+review:
+  required: true
+  retry_on_rejection: true
 recovery:
   max_attempts: 1
 adapter: opencode

@@ -470,6 +470,15 @@ def load_mission(path: str | Path) -> MissionContract:
         if not isinstance(asettings, dict):
             raise MissionError(f"'adapters.{aname}' must be a mapping of settings")
 
+    raw_workspace = data.get("workspace_repos")
+    workspace_repos: list[str] | None = None
+    if raw_workspace is not None:
+        if not isinstance(raw_workspace, list) or not all(
+                isinstance(x, str) and x.strip() for x in raw_workspace):
+            raise MissionError(
+                "'workspace_repos' must be a list of relative paths")
+        workspace_repos = list(raw_workspace)
+
     try:
         return MissionContract(
             mission=data["mission"],
@@ -501,6 +510,7 @@ def load_mission(path: str | Path) -> MissionContract:
             allowed_paths=sandbox_globs.get("allowed_paths"),
             forbidden_paths=sandbox_globs.get("forbidden_paths"),
             context_files=context_files,
+            workspace_repos=workspace_repos,
         )
     except ValidationError as e:
         raise MissionError(_format_validation_error(e)) from e
