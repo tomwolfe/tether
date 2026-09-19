@@ -1,0 +1,583 @@
+[
+ {
+  "file": "scripts/audit_system_state.py",
+  "operator": "arithmetic",
+  "site": "20:16",
+  "status": "killed",
+  "detail": "_records_head_a0')\nmonkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x1060b4250>\n\n    def test_audit_repo_records_head_and_merkle_determinism(tmp_path, monkeypatch):\n>       mod = _load()\n              ^^^^^^^\n\ntests/test_audit_system_state.p\n... [truncated 1500 characters; full output in audit] ...\nstate.py::test_non_qed_sorry_free_is_unknown\nFAILED tests/test_audit_system_state.py::test_main_end_to_end_writes_sorted_merkle\nFAILED tests/test_audit_system_state.py::test_audit_repo_records_head_and_merkle_determinism\n9 failed, 39 passed in 9.22s\n"
+ },
+ {
+  "file": "scripts/audit_system_state.py",
+  "operator": "break_return",
+  "site": "21:12",
+  "status": "killed",
+  "detail": ".........................................F......                         [100%]\n=================================== FAILURES ===================================\n___________________ test_module_root_resolves_real_workspace ___________________\n\n    def\n... [truncated 507 characters; full output in audit] ...\nand 'str'\n\ntests/test_audit_system_state.py:68: TypeError\n=========================== short test summary info ============================\nFAILED tests/test_audit_system_state.py::test_module_root_resolves_real_workspace\n1 failed, 47 passed in 9.83s\n"
+ },
+ {
+  "file": "scripts/audit_system_state.py",
+  "operator": "flip_bool",
+  "site": "29:75",
+  "status": "killed",
+  "detail": "_a0')\nmonkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x1060bb150>\n\n    def test_audit_repo_records_head_and_merkle_determinism(tmp_path, monkeypatch):\n        mod = _load()\n        ws = tmp_path / \"ws\"\n        for r in (\"tether\", \"QED\", \"Ve\n... [truncated 1500 characters; full output in audit] ...\nstate.py::test_non_qed_sorry_free_is_unknown\nFAILED tests/test_audit_system_state.py::test_main_end_to_end_writes_sorted_merkle\nFAILED tests/test_audit_system_state.py::test_audit_repo_records_head_and_merkle_determinism\n3 failed, 45 passed in 9.62s\n"
+ },
+ {
+  "file": "scripts/audit_system_state.py",
+  "operator": "flip_bool",
+  "site": "29:86",
+  "status": "killed",
+  "detail": "^^^^^^^^^^^^^^^^^^^\n\ntests/test_audit_system_state.py:143: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n/opt/homebrew/Caskroom/miniforge/base/lib/python3.13/json/__init__.py:242: in dumps\n    **kw).encode(obj)\n   \n... [truncated 1500 characters; full output in audit] ...\nst summary info ============================\nFAILED tests/test_audit_system_state.py::test_main_end_to_end_writes_sorted_merkle\nFAILED tests/test_audit_system_state.py::test_audit_repo_records_head_and_merkle_determinism\n2 failed, 46 passed in 9.96s\n"
+ },
+ {
+  "file": "scripts/audit_system_state.py",
+  "operator": "break_return",
+  "site": "30:8",
+  "status": "killed",
+  "detail": "============================\n______________________ test_non_qed_sorry_free_is_unknown ______________________\n\ntmp_path = PosixPath('/private/var/folders/02/4rz8kd3n3m76nh_6gnwyhq340000gn/T/pytest-of-tom/pytest-280/test_non_qed_sorry_free_is_unk0')\n\n\n... [truncated 1500 characters; full output in audit] ...\nhort test summary info ============================\nFAILED tests/test_audit_system_state.py::test_non_qed_sorry_free_is_unknown\nFAILED tests/test_audit_system_state.py::test_audit_repo_records_head_and_merkle_determinism\n2 failed, 46 passed in 9.98s\n"
+ },
+ {
+  "file": "scripts/audit_system_state.py",
+  "operator": "negate_compare",
+  "site": "30:35",
+  "status": "killed",
+  "detail": "=============== FAILURES ===================================\n______________________ test_non_qed_sorry_free_is_unknown ______________________\n\ntmp_path = PosixPath('/private/var/folders/02/4rz8kd3n3m76nh_6gnwyhq340000gn/T/pytest-of-tom/pytest-281/tes\n... [truncated 1500 characters; full output in audit] ...\nhort test summary info ============================\nFAILED tests/test_audit_system_state.py::test_non_qed_sorry_free_is_unknown\nFAILED tests/test_audit_system_state.py::test_audit_repo_records_head_and_merkle_determinism\n2 failed, 46 passed in 9.95s\n"
+ },
+ {
+  "file": "scripts/audit_system_state.py",
+  "operator": "break_return",
+  "site": "32:8",
+  "status": "killed",
+  "detail": "...........................................F....                         [100%]\n=================================== FAILURES ===================================\n________________________ test_run_oserror_returns_empty ________________________\n\nmonkeyp\n... [truncated 1038 characters; full output in audit] ...\nlib')\n\ntests/test_audit_system_state.py:87: AssertionError\n=========================== short test summary info ============================\nFAILED tests/test_audit_system_state.py::test_run_oserror_returns_empty - Ass...\n1 failed, 47 passed in 9.84s\n"
+ },
+ {
+  "file": "scripts/audit_system_state.py",
+  "operator": "arithmetic",
+  "site": "35:11",
+  "status": "killed",
+  "detail": "        monkeypatch.setattr(mod, \"ROOT\", ws)\n>       assert mod.main() == 0\n               ^^^^^^^^^^\n\ntests/test_audit_system_state.py:121: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \nscripts/audit_system_state.\n... [truncated 1500 characters; full output in audit] ...\nstate.py::test_non_qed_sorry_free_is_unknown\nFAILED tests/test_audit_system_state.py::test_main_end_to_end_writes_sorted_merkle\nFAILED tests/test_audit_system_state.py::test_audit_repo_records_head_and_merkle_determinism\n3 failed, 45 passed in 9.65s\n"
+ },
+ {
+  "file": "scripts/audit_system_state.py",
+  "operator": "break_return",
+  "site": "38:4",
+  "status": "killed",
+  "detail": "===================== FAILURES ===================================\n______________________ test_non_qed_sorry_free_is_unknown ______________________\n\ntmp_path = PosixPath('/private/var/folders/02/4rz8kd3n3m76nh_6gnwyhq340000gn/T/pytest-of-tom/pytest-2\n... [truncated 1500 characters; full output in audit] ...\nhort test summary info ============================\nFAILED tests/test_audit_system_state.py::test_non_qed_sorry_free_is_unknown\nFAILED tests/test_audit_system_state.py::test_audit_repo_records_head_and_merkle_determinism\n2 failed, 46 passed in 9.91s\n"
+ },
+ {
+  "file": "scripts/audit_system_state.py",
+  "operator": "negate_compare",
+  "site": "39:39",
+  "status": "killed",
+  "detail": ".............................................F..                         [100%]\n=================================== FAILURES ===================================\n______________________ test_non_qed_sorry_free_is_unknown ______________________\n\ntmp_pat\n... [truncated 558 characters; full output in audit] ...\nunknown'\n\ntests/test_audit_system_state.py:110: AssertionError\n=========================== short test summary info ============================\nFAILED tests/test_audit_system_state.py::test_non_qed_sorry_free_is_unknown\n1 failed, 47 passed in 10.09s\n"
+ },
+ {
+  "file": "scripts/audit_system_state.py",
+  "operator": "arithmetic",
+  "site": "45:17",
+  "status": "killed",
+  "detail": "r/folders/02/4rz8kd3n3m76nh_6gnwyhq340000gn/T/pytest-of-tom/pytest-286/test_audit_repo_records_head_a0')\nmonkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x105ce7450>\n\n    def test_audit_repo_records_head_and_merkle_determinism(tmp_path, monk\n... [truncated 1500 characters; full output in audit] ...\n.py::test_sorry_check_oserror_is_false - ...\nFAILED tests/test_audit_system_state.py::test_main_end_to_end_writes_sorted_merkle\nFAILED tests/test_audit_system_state.py::test_audit_repo_records_head_and_merkle_determinism\n4 failed, 44 passed in 9.82s\n"
+ },
+ {
+  "file": "scripts/audit_system_state.py",
+  "operator": "arithmetic",
+  "site": "45:46",
+  "status": "killed",
+  "detail": "/folders/02/4rz8kd3n3m76nh_6gnwyhq340000gn/T/pytest-of-tom/pytest-287/test_audit_repo_records_head_a0')\nmonkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x105bfb450>\n\n    def test_audit_repo_records_head_and_merkle_determinism(tmp_path, monke\n... [truncated 1500 characters; full output in audit] ...\n.py::test_sorry_check_oserror_is_false - ...\nFAILED tests/test_audit_system_state.py::test_main_end_to_end_writes_sorted_merkle\nFAILED tests/test_audit_system_state.py::test_audit_repo_records_head_and_merkle_determinism\n4 failed, 44 passed in 9.86s\n"
+ },
+ {
+  "file": "scripts/audit_system_state.py",
+  "operator": "flip_bool",
+  "site": "46:15",
+  "status": "killed",
+  "detail": "........................................F.......                         [100%]\n=================================== FAILURES ===================================\n______________________ test_sorry_audit_ignores_comments _______________________\n\ntmp_pat\n... [truncated 959 characters; full output in audit] ...\nsorry\n\ntests/test_audit_system_state.py:61: AssertionError\n=========================== short test summary info ============================\nFAILED tests/test_audit_system_state.py::test_sorry_audit_ignores_comments - ...\n1 failed, 47 passed in 9.88s\n"
+ },
+ {
+  "file": "scripts/audit_system_state.py",
+  "operator": "flip_bool",
+  "site": "50:50",
+  "status": "killed",
+  "detail": "........................................F.......                         [100%]\n=================================== FAILURES ===================================\n______________________ test_sorry_audit_ignores_comments _______________________\n\ntmp_pat\n... [truncated 959 characters; full output in audit] ...\nsorry\n\ntests/test_audit_system_state.py:61: AssertionError\n=========================== short test summary info ============================\nFAILED tests/test_audit_system_state.py::test_sorry_audit_ignores_comments - ...\n1 failed, 47 passed in 9.95s\n"
+ },
+ {
+  "file": "scripts/audit_system_state.py",
+  "operator": "break_return",
+  "site": "53:8",
+  "status": "killed",
+  "detail": "........................................F.......                         [100%]\n=================================== FAILURES ===================================\n______________________ test_sorry_audit_ignores_comments _______________________\n\ntmp_pat\n... [truncated 958 characters; full output in audit] ...\norry\n\ntests/test_audit_system_state.py:61: AssertionError\n=========================== short test summary info ============================\nFAILED tests/test_audit_system_state.py::test_sorry_audit_ignores_comments - ...\n1 failed, 47 passed in 10.03s\n"
+ },
+ {
+  "file": "scripts/audit_system_state.py",
+  "operator": "flip_bool",
+  "site": "53:15",
+  "status": "killed",
+  "detail": "........................................F.......                         [100%]\n=================================== FAILURES ===================================\n______________________ test_sorry_audit_ignores_comments _______________________\n\ntmp_pat\n... [truncated 954 characters; full output in audit] ...\norry\n\ntests/test_audit_system_state.py:61: AssertionError\n=========================== short test summary info ============================\nFAILED tests/test_audit_system_state.py::test_sorry_audit_ignores_comments - ...\n1 failed, 47 passed in 10.05s\n"
+ },
+ {
+  "file": "scripts/audit_system_state.py",
+  "operator": "break_return",
+  "site": "55:8",
+  "status": "killed",
+  "detail": "............................................F...                         [100%]\n=================================== FAILURES ===================================\n______________________ test_sorry_check_oserror_is_false _______________________\n\nmonkeyp\n... [truncated 947 characters; full output in audit] ...\nsorry\n\ntests/test_audit_system_state.py:96: AssertionError\n=========================== short test summary info ============================\nFAILED tests/test_audit_system_state.py::test_sorry_check_oserror_is_false - ...\n1 failed, 47 passed in 9.88s\n"
+ },
+ {
+  "file": "scripts/audit_system_state.py",
+  "operator": "flip_bool",
+  "site": "55:15",
+  "status": "killed",
+  "detail": "............................................F...                         [100%]\n=================================== FAILURES ===================================\n______________________ test_sorry_check_oserror_is_false _______________________\n\nmonkeyp\n... [truncated 947 characters; full output in audit] ...\nsorry\n\ntests/test_audit_system_state.py:96: AssertionError\n=========================== short test summary info ============================\nFAILED tests/test_audit_system_state.py::test_sorry_check_oserror_is_false - ...\n1 failed, 47 passed in 9.88s\n"
+ },
+ {
+  "file": "scripts/audit_system_state.py",
+  "operator": "flip_bool",
+  "site": "59:39",
+  "status": "killed",
+  "detail": "pytest-of-tom/pytest-294/test_main_end_to_end_writes_so0')\nmonkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x11132a580>\ncapsys = <_pytest.capture.CaptureFixture object at 0x110dc6ba0>\n\n    def test_main_end_to_end_writes_sorted_merkle(tmp_pa\n... [truncated 1500 characters; full output in audit] ...\n27f7851d9fabb34cf11347f66a61e83077ea0ff29041b2e98a197\"\n}\n=========================== short test summary info ============================\nFAILED tests/test_audit_system_state.py::test_main_end_to_end_writes_sorted_merkle\n1 failed, 47 passed in 9.98s\n"
+ },
+ {
+  "file": "scripts/audit_system_state.py",
+  "operator": "arithmetic",
+  "site": "62:5",
+  "status": "killed",
+  "detail": "..............................................F.                         [100%]\n=================================== FAILURES ===================================\n__________________ test_main_end_to_end_writes_sorted_merkle ___________________\n\ntmp_pat\n... [truncated 1199 characters; full output in audit] ...\n'PosixPath'\n\nscripts/audit_system_state.py:56: TypeError\n=========================== short test summary info ============================\nFAILED tests/test_audit_system_state.py::test_main_end_to_end_writes_sorted_merkle\n1 failed, 47 passed in 9.92s\n"
+ },
+ {
+  "file": "scripts/audit_system_state.py",
+  "operator": "arithmetic",
+  "site": "62:5",
+  "status": "killed",
+  "detail": "..............................................F.                         [100%]\n=================================== FAILURES ===================================\n__________________ test_main_end_to_end_writes_sorted_merkle ___________________\n\ntmp_pat\n... [truncated 1178 characters; full output in audit] ...\nPosixPath'\n\nscripts/audit_system_state.py:56: TypeError\n=========================== short test summary info ============================\nFAILED tests/test_audit_system_state.py::test_main_end_to_end_writes_sorted_merkle\n1 failed, 47 passed in 10.13s\n"
+ },
+ {
+  "file": "scripts/audit_system_state.py",
+  "operator": "break_return",
+  "site": "64:4",
+  "status": "killed",
+  "detail": "..............................................F.                         [100%]\n=================================== FAILURES ===================================\n__________________ test_main_end_to_end_writes_sorted_merkle ___________________\n\ntmp_pat\n... [truncated 1495 characters; full output in audit] ...\n2099d7609f430eb4cfd464c4c297ea4b5770407f475c5779d5566\"\n}\n=========================== short test summary info ============================\nFAILED tests/test_audit_system_state.py::test_main_end_to_end_writes_sorted_merkle\n1 failed, 47 passed in 9.83s\n"
+ },
+ {
+  "file": "scripts/audit_system_state.py",
+  "operator": "negate_compare",
+  "site": "66:3",
+  "status": "killed",
+  "detail": "turn False\n    \n    def main() -> int:\n        repos = [audit_repo(r) for r in REPOS]\n        blob = json.dumps(repos, sort_keys=True).encode()\n        merkle = hashlib.sha256(blob).hexdigest()\n        state = {'repos': repos, 'merkle_root': merkle}\n\n... [truncated 1500 characters; full output in audit] ...\nstate.py::test_non_qed_sorry_free_is_unknown\nFAILED tests/test_audit_system_state.py::test_main_end_to_end_writes_sorted_merkle\nFAILED tests/test_audit_system_state.py::test_audit_repo_records_head_and_merkle_determinism\n9 failed, 39 passed in 9.80s\n"
+ },
+ {
+  "file": "src/tether/cleanroom.py",
+  "operator": "break_return",
+  "site": "28:4",
+  "status": "killed",
+  "detail": "tly). Raises :class:`CleanRoomError` on any failure.\n        \"\"\"\n        try:\n            proc = _git(project_dir, 'archive', checkpoint_ref)\n        except OSError as e:\n            raise CleanRoomError(f'git archive failed: {e}') from e\n>       if \n... [truncated 1500 characters; full output in audit] ...\nfile_copy_entry_overwrites_archive_bytes\nFAILED tests/test_multirepo_capture.py::test_cleanroom_sibling_archive_plus_patch_and_lake\nFAILED tests/test_multirepo_capture.py::test_cleanroom_sibling_without_git_fails_closed\n17 failed, 31 passed in 7.17s\n"
+ },
+ {
+  "file": "src/tether/cleanroom.py",
+  "operator": "flip_bool",
+  "site": "30:35",
+  "status": "killed",
+  "detail": "pture_output.')\n            kwargs['stdout'] = PIPE\n            kwargs['stderr'] = PIPE\n    \n        with Popen(*popenargs, **kwargs) as process:\n            try:\n                stdout, stderr = process.communicate(input, timeout=timeout)\n          \n... [truncated 1500 characters; full output in audit] ...\nort test summary info ============================\nFAILED tests/test_cleanroom.py::test_bad_checkpoint_ref_fails_closed - subpro...\nFAILED tests/test_multirepo_capture.py::test_cleanroom_sibling_without_git_fails_closed\n2 failed, 46 passed in 10.00s\n"
+ },
+ {
+  "file": "src/tether/cleanroom.py",
+  "operator": "flip_bool",
+  "site": "36:44",
+  "status": "killed",
+  "detail": "ession\"\n        session.mkdir()\n        (session / \"patch.diff\").write_text(\"*** total garbage ***\\n\",\n                                            encoding=\"utf-8\")\n        with pytest.raises(CleanRoomError):\n>           materialize_clean_room(projec\n... [truncated 1500 characters; full output in audit] ...\nor: No valid patches in input (allow with \"--allow-empty\")\n=========================== short test summary info ============================\nFAILED tests/test_cleanroom.py::test_corrupt_or_missing_patch_diff_fails_closed\n1 failed, 47 passed in 10.07s\n"
+ },
+ {
+  "file": "src/tether/cleanroom.py",
+  "operator": "negate_compare",
+  "site": "52:7",
+  "status": "killed",
+  "detail": "diff\").write_bytes(b\"\")\n        (session / \"untracked.txt\").write_text(\"\")\n        # Session patch for the sibling: tracked change applied post-archive.\n        diff = subprocess.run(\n            [\"git\", \"-C\", str(sib), \"diff\", ref], capture_output=T\n... [truncated 1500 characters; full output in audit] ...\napplies_untracked_carries_ignored_helper_excluded\nFAILED tests/test_cleanroom.py::test_corrupt_or_missing_patch_diff_fails_closed\nFAILED tests/test_multirepo_capture.py::test_cleanroom_sibling_archive_plus_patch_and_lake\n5 failed, 43 passed in 9.48s\n"
+ },
+ {
+  "file": "src/tether/cleanroom.py",
+  "operator": "flip_bool",
+  "site": "71:50",
+  "status": "killed",
+  "detail": "rr = process.communicate(input, timeout=timeout)\n            except TimeoutExpired as exc:\n                process.kill()\n                if _mswindows:\n                    # Windows accumulates the output in a single blocking\n                    # r\n... [truncated 1500 characters; full output in audit] ...\nlisting_escapes_are_skipped_silently\nFAILED tests/test_cleanroom.py::test_gitignored_paths_empty_listing_is_provably_not_ignored\nFAILED tests/test_multirepo_capture.py::test_cleanroom_sibling_archive_plus_patch_and_lake\n4 failed, 44 passed in 10.03s\n"
+ },
+ {
+  "file": "src/tether/cleanroom.py",
+  "operator": "break_return",
+  "site": "74:8",
+  "status": "survived",
+  "detail": ""
+ },
+ {
+  "file": "src/tether/cleanroom.py",
+  "operator": "break_return",
+  "site": "89:4",
+  "status": "killed",
+  "detail": "^^^^^^^^^^^^^^^\n/opt/homebrew/Caskroom/miniforge/base/lib/python3.13/pathlib/_abc.py:632: in read_text\n    with self.open(mode='r', encoding=encoding, errors=errors, newline=newline) as f:\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n... [truncated 1500 characters; full output in audit] ...\n_file_copy_entry_creates_missing_target_dirs\nFAILED tests/test_cleanroom.py::test_plain_file_copy_entry_overwrites_archive_bytes\nFAILED tests/test_multirepo_capture.py::test_cleanroom_sibling_archive_plus_patch_and_lake\n6 failed, 42 passed in 10.03s\n"
+ },
+ {
+  "file": "src/tether/cleanroom.py",
+  "operator": "break_return",
+  "site": "94:4",
+  "status": "killed",
+  "detail": "632: in read_text\n    with self.open(mode='r', encoding=encoding, errors=errors, newline=newline) as f:\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n... [truncated 1500 characters; full output in audit] ...\n_file_copy_entry_creates_missing_target_dirs\nFAILED tests/test_cleanroom.py::test_plain_file_copy_entry_overwrites_archive_bytes\nFAILED tests/test_multirepo_capture.py::test_cleanroom_sibling_archive_plus_patch_and_lake\n7 failed, 41 passed in 10.23s\n"
+ },
+ {
+  "file": "src/tether/cleanroom.py",
+  "operator": "flip_bool",
+  "site": "125:27",
+  "status": "killed",
+  "detail": "(project_dir: Path, checkpoint_ref: str, session_dir: Path, copies: Optional[List[str]], dest: Path) -> None:\n        \"\"\"Materialize a clean room into ``dest`` (which is created).\n    \n        Steps: pristine ``git archive`` of ``checkpoint_ref`` ext\n... [truncated 1500 characters; full output in audit] ...\nort test summary info ============================\nFAILED tests/test_cleanroom.py::test_materialize_creates_missing_dest_parents\nFAILED tests/test_multirepo_capture.py::test_cleanroom_sibling_archive_plus_patch_and_lake\n2 failed, 46 passed in 10.09s\n"
+ },
+ {
+  "file": "src/tether/cleanroom.py",
+  "operator": "flip_bool",
+  "site": "168:55",
+  "status": "killed",
+  "detail": " to extract checkpoint into clean room: {e}') from e\n        patch = session_dir / 'patch.diff'\n        if not patch.is_file():\n            raise CleanRoomError(f'missing change artifact: {patch}')\n        try:\n            _apply_patch(dest, patch)\n \n... [truncated 1500 characters; full output in audit] ...\n'\n\nsrc/tether/cleanroom.py:128: CleanRoomError\n=========================== short test summary info ============================\nFAILED tests/test_cleanroom.py::test_patch_applies_untracked_carries_ignored_helper_excluded\n1 failed, 47 passed in 9.94s\n"
+ },
+ {
+  "file": "src/tether/cleanroom.py",
+  "operator": "flip_bool",
+  "site": "180:11",
+  "status": "killed",
+  "detail": "ad_text(encoding='utf-8').splitlines() if line.strip()]\n        except OSError:\n            rels = []\n        ignored: Optional[Set[str]] = None\n        if rels:\n            ignored = _gitignored_paths(project_dir, rels)\n        project_root = projec\n... [truncated 1500 characters; full output in audit] ...\nt_file_copy_entry_creates_missing_target_dirs\nFAILED tests/test_cleanroom.py::test_plain_file_copy_entry_overwrites_archive_bytes\nFAILED tests/test_multirepo_capture.py::test_cleanroom_sibling_archive_plus_patch_and_lake\n6 failed, 42 passed in 9.92s\n"
+ },
+ {
+  "file": "src/tether/cleanroom.py",
+  "operator": "arithmetic",
+  "site": "190:15",
+  "status": "killed",
+  "detail": "     top = PurePosixPath(rel.replace('\\\\', '/')).parts[0]\n            if top in ('.tether', '.git'):\n                continue\n            if ignored is None or rel in ignored:\n                continue\n            src = project_dir / Path(rel)\n       \n... [truncated 1500 characters; full output in audit] ...\n_file_copy_entry_overwrites_archive_bytes\nFAILED tests/test_multirepo_capture.py::test_cleanroom_sibling_archive_plus_patch_and_lake\nFAILED tests/test_multirepo_capture.py::test_cleanroom_sibling_without_git_fails_closed\n7 failed, 41 passed in 9.83s\n"
+ },
+ {
+  "file": "src/tether/cleanroom.py",
+  "operator": "negate_compare",
+  "site": "191:22",
+  "status": "killed",
+  "detail": "       ignored: Optional[Set[str]] = None\n        if rels:\n            ignored = _gitignored_paths(project_dir, rels)\n        project_root = project_dir.resolve()\n        for rel in rels:\n            if not _is_relative(rel):\n                continue\n... [truncated 1500 characters; full output in audit] ...\nib'\n\nsrc/tether/cleanroom.py:138: CleanRoomError\n=========================== short test summary info ============================\nFAILED tests/test_multirepo_capture.py::test_cleanroom_sibling_archive_plus_patch_and_lake\n1 failed, 47 passed in 9.93s\n"
+ },
+ {
+  "file": "src/tether/cleanroom.py",
+  "operator": "negate_compare",
+  "site": "191:48",
+  "status": "killed",
+  "detail": "       ignored: Optional[Set[str]] = None\n        if rels:\n            ignored = _gitignored_paths(project_dir, rels)\n        project_root = project_dir.resolve()\n        for rel in rels:\n            if not _is_relative(rel):\n                continue\n... [truncated 1500 characters; full output in audit] ...\nib'\n\nsrc/tether/cleanroom.py:138: CleanRoomError\n=========================== short test summary info ============================\nFAILED tests/test_multirepo_capture.py::test_cleanroom_sibling_archive_plus_patch_and_lake\n1 failed, 47 passed in 9.96s\n"
+ },
+ {
+  "file": "src/tether/cleanroom.py",
+  "operator": "flip_bool",
+  "site": "196:11",
+  "status": "killed",
+  "detail": "^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nE       FileNotFoundError: [Errno 2] No such file or directory: '/private/var/folders/02/4rz8kd3n3m76nh_6gnwyhq340000gn/T/pytest-of-tom/pytest-313/test_cleanroom_sibling_archive0/clean/sib/f.txt'\n\n/opt/homebr\n... [truncated 1500 characters; full output in audit] ...\n_file_copy_entry_overwrites_archive_bytes\nFAILED tests/test_multirepo_capture.py::test_cleanroom_sibling_archive_plus_patch_and_lake\nFAILED tests/test_multirepo_capture.py::test_cleanroom_sibling_without_git_fails_closed\n6 failed, 42 passed in 9.91s\n"
+ },
+ {
+  "file": "src/tether/cleanroom.py",
+  "operator": "arithmetic",
+  "site": "199:21",
+  "status": "killed",
+  "detail": "            top = PurePosixPath(rel.replace('\\\\', '/')).parts[0]\n            if top in ('.tether', '.git'):\n                continue\n            if ignored is None or rel in ignored:\n                continue\n            src = project_dir / Path(rel)\n\n... [truncated 1500 characters; full output in audit] ...\nsummary info ============================\nFAILED tests/test_multirepo_capture.py::test_cleanroom_sibling_archive_plus_patch_and_lake\nFAILED tests/test_multirepo_capture.py::test_cleanroom_sibling_without_git_fails_closed\n2 failed, 46 passed in 9.88s\n"
+ },
+ {
+  "file": "src/tether/cleanroom.py",
+  "operator": "arithmetic",
+  "site": "201:21",
+  "status": "killed",
+  "detail": " Path(rel)\n            if not _contained(src, project_root) or not src.is_file():\n                continue\n            target = dest / Path(*PurePosixPath(rel.replace('\\\\', '/')).parts)\n            try:\n                target.parent.mkdir(parents=Tru\n... [truncated 1500 characters; full output in audit] ...\nt_dir_copy_preserves_symlinks_instead_of_dereferencing\nFAILED tests/test_cleanroom.py::test_file_copy_entry_creates_missing_target_dirs\nFAILED tests/test_cleanroom.py::test_plain_file_copy_entry_overwrites_archive_bytes\n4 failed, 44 passed in 10.01s\n"
+ },
+ {
+  "file": "src/tether/cleanroom.py",
+  "operator": "negate_compare",
+  "site": "214:23",
+  "status": "killed",
+  "detail": "True)\n                target.write_bytes(src.read_bytes())\n            except OSError as e:\n                raise CleanRoomError(f'failed to carry untracked file {rel!r}: {e}') from e\n        for entry in copies or []:\n            if not _is_relative\n... [truncated 1500 characters; full output in audit] ...\nb':\n\nsrc/tether/cleanroom.py:154: CleanRoomError\n=========================== short test summary info ============================\nFAILED tests/test_multirepo_capture.py::test_cleanroom_sibling_archive_plus_patch_and_lake\n1 failed, 47 passed in 9.98s\n"
+ },
+ {
+  "file": "src/tether/cleanroom.py",
+  "operator": "negate_compare",
+  "site": "220:23",
+  "status": "killed",
+  "detail": "         raise CleanRoomError(f'clean_room_copy entry must be a relative path: {entry!r}')\n            pure = PurePosixPath(entry.replace('\\\\', '/'))\n            if pure.parts[0] in ('.git', '.tether'):\n                raise CleanRoomError(f'refusing\n... [truncated 1500 characters; full output in audit] ...\nib'\n\nsrc/tether/cleanroom.py:158: CleanRoomError\n=========================== short test summary info ============================\nFAILED tests/test_multirepo_capture.py::test_cleanroom_sibling_archive_plus_patch_and_lake\n1 failed, 47 passed in 9.99s\n"
+ },
+ {
+  "file": "src/tether/cleanroom.py",
+  "operator": "negate_compare",
+  "site": "225:48",
+  "status": "killed",
+  "detail": "ore\"], cwd=str(sib), check=True,\n                       capture_output=True)\n        subprocess.run([\"git\", \"commit\", \"-m\", \"ignore\"], cwd=str(sib), check=True,\n                       capture_output=True)\n        ref = head_sha(sib)\n        assert re\n... [truncated 1500 characters; full output in audit] ...\nts/test_multirepo_capture.py:125: AssertionError\n=========================== short test summary info ============================\nFAILED tests/test_multirepo_capture.py::test_cleanroom_sibling_archive_plus_patch_and_lake\n1 failed, 47 passed in 9.91s\n"
+ },
+ {
+  "file": "src/tether/cleanroom.py",
+  "operator": "arithmetic",
+  "site": "227:31",
+  "status": "killed",
+  "detail": "contained(src, project_root)):\n                raise CleanRoomError(f'clean_room_copy entry escapes the project dir: {entry!r}')\n            if not src.exists():\n                continue\n            if is_sibling:\n                target = dest.parent\n... [truncated 1500 characters; full output in audit] ...\nsixPath'\n\nsrc/tether/cleanroom.py:164: TypeError\n=========================== short test summary info ============================\nFAILED tests/test_multirepo_capture.py::test_cleanroom_sibling_archive_plus_patch_and_lake\n1 failed, 47 passed in 9.91s\n"
+ },
+ {
+  "file": "src/tether/cleanroom.py",
+  "operator": "flip_bool",
+  "site": "241:48",
+  "status": "killed",
+  "detail": " / '.git'\n                        if git_src.is_dir() and (not git_dst.exists()):\n                            try:\n                                shutil.copytree(git_src, git_dst, symlinks=True)\n                            except OSError:\n          \n... [truncated 1500 characters; full output in audit] ...\nd'\n\nsrc/tether/cleanroom.py:221: CleanRoomError\n=========================== short test summary info ============================\nFAILED tests/test_multirepo_capture.py::test_cleanroom_sibling_archive_plus_patch_and_lake\n1 failed, 47 passed in 10.00s\n"
+ },
+ {
+  "file": "src/tether/cleanroom.py",
+  "operator": "arithmetic",
+  "site": "252:36",
+  "status": "killed",
+  "detail": "returncode != 0:\n                            raise CleanRoomError(f'git archive failed for sibling {entry!r}')\n                        target.mkdir(parents=True, exist_ok=True)\n                        _extract_archive(_arch.stdout, target)\n          \n... [truncated 1500 characters; full output in audit] ...\nixPath'\n\nsrc/tether/cleanroom.py:182: TypeError\n=========================== short test summary info ============================\nFAILED tests/test_multirepo_capture.py::test_cleanroom_sibling_archive_plus_patch_and_lake\n1 failed, 47 passed in 10.03s\n"
+ },
+ {
+  "file": "src/tether/cleanroom.py",
+  "operator": "arithmetic",
+  "site": "269:30",
+  "status": "survived",
+  "detail": ""
+ },
+ {
+  "file": "src/tether/cleanroom.py",
+  "operator": "flip_bool",
+  "site": "271:44",
+  "status": "survived",
+  "detail": ""
+ },
+ {
+  "file": "src/tether/cleanroom.py",
+  "operator": "arithmetic",
+  "site": "280:40",
+  "status": "survived",
+  "detail": ""
+ },
+ {
+  "file": "src/tether/cleanroom.py",
+  "operator": "arithmetic",
+  "site": "281:40",
+  "status": "survived",
+  "detail": ""
+ },
+ {
+  "file": "src/tether/cleanroom.py",
+  "operator": "flip_bool",
+  "site": "282:55",
+  "status": "survived",
+  "detail": ""
+ },
+ {
+  "file": "src/tether/cleanroom.py",
+  "operator": "flip_bool",
+  "site": "288:47",
+  "status": "survived",
+  "detail": ""
+ },
+ {
+  "file": "src/tether/cleanroom.py",
+  "operator": "flip_bool",
+  "site": "295:59",
+  "status": "killed",
+  "detail": "                     git_dst = target / '.git'\n                        if git_src.is_dir() and (not git_dst.exists()):\n                            try:\n                                shutil.copytree(git_src, git_dst, symlinks=True)\n                 \n... [truncated 1500 characters; full output in audit] ...\nove0/room'\n\nsrc/tether/cleanroom.py:221: CleanRoomError\n=========================== short test summary info ============================\nFAILED tests/test_cleanroom.py::test_plain_file_copy_entry_overwrites_archive_bytes\n1 failed, 47 passed in 9.95s\n"
+ },
+ {
+  "file": "src/tether/orchestrator.py",
+  "operator": "break_return",
+  "site": "176:8",
+  "status": "survived",
+  "detail": ""
+ },
+ {
+  "file": "src/tether/orchestrator.py",
+  "operator": "break_return",
+  "site": "186:8",
+  "status": "survived",
+  "detail": ""
+ },
+ {
+  "file": "src/tether/orchestrator.py",
+  "operator": "arithmetic",
+  "site": "322:22",
+  "status": "killed",
+  "detail": "\n==================================== ERRORS ====================================\n___________________ ERROR collecting tests/test_cleanroom.py ___________________\ntests/test_cleanroom.py:12: in <module>\n    import tether.orchestrator as orch_module\ns\n... [truncated 729 characters; full output in audit] ...\n/test_cleanroom.py - TypeError: can't multiply sequence by non-int...\nERROR tests/test_multirepo_capture.py - TypeError: can't multiply sequence by...\n!!!!!!!!!!!!!!!!!!! Interrupted: 2 errors during collection !!!!!!!!!!!!!!!!!!!!\n2 errors in 0.27s\n"
+ },
+ {
+  "file": "src/tether/orchestrator.py",
+  "operator": "break_return",
+  "site": "344:8",
+  "status": "survived",
+  "detail": ""
+ },
+ {
+  "file": "src/tether/orchestrator.py",
+  "operator": "flip_bool",
+  "site": "345:7",
+  "status": "survived",
+  "detail": ""
+ },
+ {
+  "file": "src/tether/orchestrator.py",
+  "operator": "arithmetic",
+  "site": "391:24",
+  "status": "survived",
+  "detail": ""
+ },
+ {
+  "file": "src/tether/orchestrator.py",
+  "operator": "flip_bool",
+  "site": "437:50",
+  "status": "killed",
+  "detail": "e\\n\"))\n        adapter = Planter(_always({\"conftest.py\": CONFTEST}))\n        # Unset (default OFF): the planted gitignored helper games pytest.\n        report = _run(tmp_path, adapter, \"intree.yaml\")\n        assert report[\"status\"] == \"success\", repo\n... [truncated 1500 characters; full output in audit] ...\nython3.13/pathlib/_local.py:722: FileExistsError\n=========================== short test summary info ============================\nFAILED tests/test_cleanroom.py::test_in_tree_green_but_clean_room_fails_false_green_closed\n1 failed, 47 passed in 9.32s\n"
+ },
+ {
+  "file": "src/tether/orchestrator.py",
+  "operator": "break_return",
+  "site": "476:4",
+  "status": "killed",
+  "detail": "_________ test_gate_clean_sibling_yields_no_prefixed_changes ______________\n\ntmp_path = PosixPath('/private/var/folders/02/4rz8kd3n3m76nh_6gnwyhq340000gn/T/pytest-of-tom/pytest-335/test_gate_clean_sibling_yields0')\n\n    def test_gate_clean_sibling_yi\n... [truncated 1500 characters; full output in audit] ...\nattery_runs_against_the_clean_room\nFAILED tests/test_multirepo_capture.py::test_gate_captures_sibling_changes_with_prefixed_paths\nFAILED tests/test_multirepo_capture.py::test_gate_clean_sibling_yields_no_prefixed_changes\n5 failed, 43 passed in 7.72s\n"
+ },
+ {
+  "file": "src/tether/orchestrator.py",
+  "operator": "break_return",
+  "site": "488:8",
+  "status": "survived",
+  "detail": ""
+ },
+ {
+  "file": "src/tether/orchestrator.py",
+  "operator": "negate_compare",
+  "site": "489:7",
+  "status": "killed",
+  "detail": "...................................F............                         [100%]\n=================================== FAILURES ===================================\n____________ test_gate_captures_sibling_changes_with_prefixed_paths ____________\n\ntmp_pat\n... [truncated 1181 characters; full output in audit] ...\ntest_multirepo_capture.py:62: AssertionError\n=========================== short test summary info ============================\nFAILED tests/test_multirepo_capture.py::test_gate_captures_sibling_changes_with_prefixed_paths\n1 failed, 47 passed in 9.99s\n"
+ },
+ {
+  "file": "src/tether/orchestrator.py",
+  "operator": "break_return",
+  "site": "566:4",
+  "status": "survived",
+  "detail": ""
+ },
+ {
+  "file": "src/tether/orchestrator.py",
+  "operator": "arithmetic",
+  "site": "578:42",
+  "status": "survived",
+  "detail": ""
+ },
+ {
+  "file": "src/tether/orchestrator.py",
+  "operator": "arithmetic",
+  "site": "579:50",
+  "status": "survived",
+  "detail": ""
+ },
+ {
+  "file": "src/tether/orchestrator.py",
+  "operator": "break_return",
+  "site": "581:4",
+  "status": "survived",
+  "detail": ""
+ },
+ {
+  "file": "src/tether/orchestrator.py",
+  "operator": "flip_bool",
+  "site": "618:7",
+  "status": "survived",
+  "detail": ""
+ },
+ {
+  "file": "src/tether/orchestrator.py",
+  "operator": "break_return",
+  "site": "659:8",
+  "status": "killed",
+  "detail": "tration error\nTraceback (most recent call last):\n  File \"/Users/tom/Documents/apps/tether/src/tether/orchestrator.py\", line 1289, in _run_locked\n    exec_summary += '\\n\\nPlan:\\n' + plan_text\nTypeError: unsupported operand type(s) for +=: 'NoneType' a\n... [truncated 1500 characters; full output in audit] ...\noom.py::test_materialization_failure_fails_mission_closed\nFAILED tests/test_cleanroom.py::test_non_git_project_with_clean_room_fails_closed\nFAILED tests/test_cleanroom.py::test_dry_run_records_clean_room_as_skipped - ...\n6 failed, 42 passed in 6.26s\n"
+ },
+ {
+  "file": "src/tether/orchestrator.py",
+  "operator": "break_return",
+  "site": "694:12",
+  "status": "survived",
+  "detail": ""
+ },
+ {
+  "file": "src/tether/orchestrator.py",
+  "operator": "arithmetic",
+  "site": "1108:23",
+  "status": "killed",
+  "detail": "-tom/pytest-345/test_recovery_round_sees_refre0')\n\n    def test_recovery_round_sees_refreshed_change_in_fresh_room(tmp_path):\n        _git_repo(tmp_path)\n        _commit_mission(tmp_path, \"clean.yaml\",\n                        _mission_text(\"  clean_r\n... [truncated 1500 characters; full output in audit] ...\n't multiply sequence by non-int of type 'PosixPath'\n=========================== short test summary info ============================\nFAILED tests/test_cleanroom.py::test_recovery_round_sees_refreshed_change_in_fresh_room\n1 failed, 47 passed in 9.63s\n"
+ },
+ {
+  "file": "src/tether/orchestrator.py",
+  "operator": "arithmetic",
+  "site": "1132:16",
+  "status": "survived",
+  "detail": ""
+ },
+ {
+  "file": "src/tether/orchestrator.py",
+  "operator": "break_return",
+  "site": "1516:8",
+  "status": "survived",
+  "detail": ""
+ },
+ {
+  "file": "src/tether/orchestrator.py",
+  "operator": "break_return",
+  "site": "1608:12",
+  "status": "survived",
+  "detail": ""
+ },
+ {
+  "file": "src/tether/orchestrator.py",
+  "operator": "arithmetic",
+  "site": "1782:16",
+  "status": "survived",
+  "detail": ""
+ },
+ {
+  "file": "src/tether/orchestrator.py",
+  "operator": "break_return",
+  "site": "1812:12",
+  "status": "killed",
+  "detail": "s_clean_room_as_skipped(tmp_path):\n        _git_repo(tmp_path)\n        _commit_mission(tmp_path, \"clean.yaml\",\n                        _mission_text(\"  clean_room: true\\n\"))\n>       report = _run(tmp_path, Planter(_always({\"conftest.py\": CONFTEST})),\n... [truncated 1500 characters; full output in audit] ...\noom.py::test_materialization_failure_fails_mission_closed\nFAILED tests/test_cleanroom.py::test_non_git_project_with_clean_room_fails_closed\nFAILED tests/test_cleanroom.py::test_dry_run_records_clean_room_as_skipped - ...\n8 failed, 40 passed in 6.28s\n"
+ },
+ {
+  "file": "src/tether/orchestrator.py",
+  "operator": "negate_compare",
+  "site": "1912:41",
+  "status": "survived",
+  "detail": ""
+ },
+ {
+  "file": "src/tether/orchestrator.py",
+  "operator": "flip_bool",
+  "site": "2168:39",
+  "status": "survived",
+  "detail": ""
+ },
+ {
+  "file": "src/tether/orchestrator.py",
+  "operator": "flip_bool",
+  "site": "2220:54",
+  "status": "killed",
+  "detail": "t on.\n        real_mkdtemp = tempfile.mkdtemp\n        staged: list[Path] = []\n    \n        def tracking_mkdtemp(*args, **kwargs):\n            path = Path(real_mkdtemp(*args, **kwargs))\n            staged.append(path)\n            return path\n    \n    \n... [truncated 1500 characters; full output in audit] ...\n::test_recovery_round_sees_refreshed_change_in_fresh_room\nFAILED tests/test_cleanroom.py::test_mutation_battery_runs_against_the_clean_room\nFAILED tests/test_cleanroom.py::test_dry_run_records_clean_room_as_skipped - ...\n4 failed, 44 passed in 9.12s\n"
+ },
+ {
+  "file": "src/tether/orchestrator.py",
+  "operator": "negate_compare",
+  "site": "2356:28",
+  "status": "survived",
+  "detail": ""
+ },
+ {
+  "file": "src/tether/orchestrator.py",
+  "operator": "flip_bool",
+  "site": "2390:46",
+  "status": "survived",
+  "detail": ""
+ },
+ {
+  "file": "src/tether/orchestrator.py",
+  "operator": "negate_compare",
+  "site": "2475:19",
+  "status": "survived",
+  "detail": ""
+ },
+ {
+  "file": "src/tether/orchestrator.py",
+  "operator": "arithmetic",
+  "site": "2513:20",
+  "status": "killed",
+  "detail": "h_6gnwyhq340000gn/T/pytest-of-tom/pytest-357/test_recovery_round_sees_refre0')\n\n    def test_recovery_round_sees_refreshed_change_in_fresh_room(tmp_path):\n        _git_repo(tmp_path)\n        _commit_mission(tmp_path, \"clean.yaml\",\n                   \n... [truncated 1500 characters; full output in audit] ...\n unsupported operand type(s) for -: 'str' and 'str'\n=========================== short test summary info ============================\nFAILED tests/test_cleanroom.py::test_recovery_round_sees_refreshed_change_in_fresh_room\n1 failed, 47 passed in 9.78s\n"
+ }
+]

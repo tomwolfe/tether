@@ -211,7 +211,11 @@ def materialize_clean_room(
                     # patch_<repo>.diff and copy non-gitignored untracked
                     # files. Never copytree a dirty host directory.
                     _ref_proc = _git(src, "rev-parse", "HEAD")
-                    _ref = _ref_proc.stdout.decode().strip() if _ref_proc.returncode == 0 else "HEAD"
+                    if _ref_proc.returncode != 0:
+                        raise CleanRoomError(
+                            f"cannot resolve HEAD for sibling {entry!r}: "
+                            f"{_ref_proc.stderr.decode('utf-8', 'replace').strip()}")
+                    _ref = _ref_proc.stdout.decode().strip()
                     _arch = _git(src, "archive", _ref)
                     if _arch.returncode != 0:
                         raise CleanRoomError(f"git archive failed for sibling {entry!r}")

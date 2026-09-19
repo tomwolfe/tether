@@ -6,12 +6,21 @@ from pathlib import Path
 
 REPOS = ["tether", "QED", "VeriTrial"]
 
-def _find_workspace_root() -> Path:
-    """Walk up from this script until a dir containing all three repos."""
-    for parent in Path(__file__).resolve().parents:
+class WorkspaceNotFoundError(RuntimeError):
+    """No ancestor directory contains all three workspace repos."""
+
+
+def _find_workspace_root(start: Path | None = None) -> Path:
+    """Walk up from ``start`` until a dir containing all three repos.
+
+    Fail-closed: raises :class:`WorkspaceNotFoundError` instead of guessing.
+    """
+    anchor = (start or Path(__file__)).resolve()
+    for parent in anchor.parents:
         if all((parent / r).is_dir() for r in REPOS):
             return parent
-    return Path(__file__).resolve().parents[1]
+    raise WorkspaceNotFoundError(
+        f"no workspace root with {REPOS} found above {anchor}")
 
 ROOT = _find_workspace_root()
 
