@@ -51,6 +51,7 @@ verification:
     - "python3 -c \"import sys, os; os.chdir(os.path.join(os.getcwd(), '../VeriTrial')); sys.path.insert(0, 'src'); from insilico_trial.validation import run_all_validations, build_regulatory_provenance; run_all_validations(); build_regulatory_provenance()\""
   timeout_seconds: 3600
 review:
+  enabled: true
   required: true
   retry_on_rejection: true
 recovery:
