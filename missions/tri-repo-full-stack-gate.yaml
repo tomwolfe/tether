@@ -47,7 +47,7 @@ verification:
   commands:
     - "python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --lean-out ../QED/VeriTrialExport.lean --out /tmp/pbpk_lemmas.txt"
     - "python3 ../VeriTrial/scripts/verify_formal_gate.py /tmp/pbpk_lemmas.txt"
-    - "python3 -c \"import sys, os; sys.path.insert(0, os.path.join(os.getcwd(), '../VeriTrial/src')); from insilico_trial.validation import run_all_validations, build_regulatory_provenance; run_all_validations(); build_regulatory_provenance()\""
+    - "python3 -c \"import sys, os; os.chdir(os.path.join(os.getcwd(), '../VeriTrial')); sys.path.insert(0, 'src'); from insilico_trial.validation import run_all_validations, build_regulatory_provenance; run_all_validations(); build_regulatory_provenance()\""
   timeout_seconds: 600
 review:
   required: true
