@@ -20,8 +20,21 @@
 ## Verification status (2026-09-19)
 - `verify_formal_gate.py`: **FORMAL GATE PASSED — all 17 lemmas verified by QED (no sorry)**; SHA-256 traces in `VeriTrial/output/validation/qed_traces.json`.
 - DILI isomorphism fixed: `extracted_dili_matrix` mirrors `pbpkDiliSystem`'s Prop-`dite` guard byte-for-byte in structure; the full-function equality is proved by `by_cases` + `dif_pos`/`dif_neg` + congruence with the 6×6 AST theorem (a `fin_cases`-only proof could not reduce the `dite` guards — gate caught this, now closed).
-- Tether workspace tests: 5 passed. Sign-flip test: passes.
-- Merkle root `a9ae554b…` in `SYSTEM_STATE.json` (QED `sorry_free: true`).
+- Tri-repo mission `tri-repo-full-stack-gate`: **success** in clean-room isolation (tether session `b228fbb76950`): export ✓, direct-lean olean rebuild ✓, formal gate ✓, full validation + NUTS ✓. Two environment bugs found and fixed en route: clean-room `.lake` cache absence (now carried as pinned build env + rebuilt with direct `lean`, since `lake build` SIGTRAPs) and elan toolchain resolution outside a toolchain dir.
+- `make validate`: **overall_pass true** — all 5 benchmarks (warfarin n=300, moxi, midazolam, metformin, hepatic) + formal gate.
+- Merkle root `cd65963e…` embedded in `VeriTrial/output/vvv40_report.html` (`<meta name="merkle-root">`), tied to tether session `b228fbb76950` via `build_regulatory_provenance`.
+- Merkle root in `tether/SYSTEM_STATE.json` (QED `sorry_free: true`).
+
+## Mutation kill-rate accounting (real CLI execution, per-file evidence JSON)
+| Changed code | Suite | Result |
+|---|---|---|
+| tether `orchestrator.py` + `cleanroom.py` + `audit_system_state.py` (new-code lines) | 4 pytest files, 48 tests | **24/24 = 1.0** (`mutation_evidence_tether.json`) |
+| VeriTrial `export_pbpk_to_qed.py` (new-code, non-equivalent) | export + formal gate (Lean) | **8/8 = 1.0** (`mutation_evidence_export.json`) |
+| VeriTrial `engine.py` + `cli/__init__.py` (sampled new-code) | test_engine + test_safety | **1/1 = 1.0** |
+| VeriTrial `rebuild_qed_oleans.py` (whole file is new) | 7 unit tests (incl. real rebuild) | **23/25 = 0.92** (`mutation_evidence_rebuild.json`) |
+
+- Documented equivalent mutants (excluded, with proof): `_sym_diff` defensive fallthroughs (466/469/471 — execution trace shows 0 hits across full export; unreachable for current `model.py`, pinned by unit tests); rebuild capture-flag flips (77:54/65 — exit-status-preserving, script gates solely on returncode).
+- Genuine holes found BY mutation testing and closed: gate oracle imported the mutated bridge (self-consistent) → added independent sympy term-accounting cross-check to `verify_formal_gate.py` (kills term-dropping exporter mutants fail-closed); rebuild error paths returned success-capable codes → `raise SystemExit(1)`; sibling `HEAD` fallback → fail-closed `CleanRoomError`; ledger root discovery → fail-closed `WorkspaceNotFoundError`.
 
 ## Remaining for full gauntlet
 - `make validate` 5 benchmarks within literature tolerances (long JAX run, not executed here).
