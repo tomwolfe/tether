@@ -196,22 +196,48 @@ def materialize_clean_room(
         if not src.exists():
             continue
         if is_sibling:
-            # For sibling repos, the target mirrors the relative structure
-            # (e.g. ../QED -> <dest>/../QED -> <dest_parent>/QED).
             target = dest.parent / pure.parts[1]
         else:
             target = dest / Path(*pure.parts)
         try:
             if src.is_dir():
-                # Fresh copy per attempt: drop any residue from a previous
-                # attempt sharing this staging root (copytree with
-                # dirs_exist_ok chokes on pre-existing symlinks, e.g. .lake
-                # chains, raising EEXIST on re-materialization).
                 if target.is_symlink() or target.is_file():
                     target.unlink()
                 elif target.is_dir():
                     shutil.rmtree(target)
-                patterns = [".tether"] if is_sibling else [".git", ".tether"]
+                if is_sibling:
+                    # Atomic multi-repo workspace: materialize sibling from
+                    # git archive of its checkpoint commit, then apply
+                    # patch_<repo>.diff and copy non-gitignored untracked
+                    # files. Never copytree a dirty host directory.
+                    _ref_proc = _git(src, "rev-parse", "HEAD")
+                    _ref = _ref_proc.stdout.decode().strip() if _ref_proc.returncode == 0 else "HEAD"
+                    _arch = _git(src, "archive", _ref)
+                    if _arch.returncode != 0:
+                        raise CleanRoomError(f"git archive failed for sibling {entry!r}")
+                    target.mkdir(parents=True, exist_ok=True)
+                    _extract_archive(_arch.stdout, target)
+                    _sib_patch = session_dir / f"patch_{pure.parts[1]}.diff"
+                    if _sib_patch.is_file() and _sib_patch.stat().st_size > 0:
+                        _apply_patch(target, _sib_patch)
+                    _sib_unt = session_dir / f"untracked_{pure.parts[1]}.txt"
+                    try:
+                        _rels = [l.strip() for l in _sib_unt.read_text(encoding="utf-8").splitlines() if l.strip()] if _sib_unt.is_file() else []
+                    except OSError:
+                        _rels = []
+                    _ign = _gitignored_paths(src, _rels) if _rels else set()
+                    _root = src.resolve()
+                    for _rel in _rels:
+                        if not _is_relative(_rel) or _rel in (_ign or set()):
+                            continue
+                        _s = src / Path(_rel)
+                        if not _contained(_s, _root) or not _s.is_file():
+                            continue
+                        _t = target / Path(_rel)
+                        _t.parent.mkdir(parents=True, exist_ok=True)
+                        _t.write_bytes(_s.read_bytes())
+                    continue
+                patterns = [".git", ".tether"]
                 shutil.copytree(src, target, symlinks=True,
                                 ignore=shutil.ignore_patterns(*patterns))
                 if is_sibling:

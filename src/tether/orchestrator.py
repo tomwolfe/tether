@@ -975,7 +975,41 @@ class Orchestrator:
         event) under the same fail-and-skip contract. Returns the detected
         changed files.
         """
+        # Multi-repo workspace determinism: union changed files across all
+        # workspace_repos, prefixing sibling paths as <repo>/... and
+        # persisting per-repo patch_<repo>.diff / untracked_<repo>.txt.
+        from tether.git_safety import resolve_workspace_repos as _resolve_ws
+        ws_repos = list(getattr(mission, "workspace_repos", None) or [])
         changed = changed_files_since(self.project_dir, checkpoint.original_head)
+        try:
+            _ws_paths = _resolve_ws(self.project_dir, ws_repos)
+        except Exception:
+            _ws_paths = []
+        _ws_changed: dict[str, list[str]] = {}
+        _ckpt_map: dict[str, str | None] = {}
+        try:
+            _ckpt_map = dict(getattr(checkpoint, "workspace_heads", None) or {})
+        except Exception:
+            _ckpt_map = {}
+        for _rp in _ws_paths:
+            try:
+                _base = _ckpt_map.get(str(_rp))
+                if _base is None:
+                    # fall back: diff against HEAD shows dirty files only
+                    import subprocess as _sp
+                    _p = _sp.run(["git", "-C", str(_rp), "rev-parse", "HEAD"],
+                                 capture_output=True, text=True)
+                    _base = _p.stdout.strip() if _p.returncode == 0 else None
+                _cfiles = changed_files_since(_rp, _base) if _base else []
+            except Exception:
+                _cfiles = []
+            _ws_changed[str(_rp)] = _cfiles
+            _label = _rp.name
+            for _f in _cfiles:
+                _pref = f"{_label}/{_f}"
+                if _pref not in changed:
+                    changed.append(_pref)
+        changed = sorted(changed)
         # Non-git projects: fall back to the pre-execution manifest so change
         # detection (and the sandbox gate below) sees the files the agent
         # just wrote. In sandbox enforce mode, git repos get the same
@@ -1002,6 +1036,25 @@ class Orchestrator:
         # verification (or any later rollback) can alter the tree further.
         if not dry_run:
             self._persist_change_artifact(audit, checkpoint, manifest_before)
+            for _rp in _ws_paths:
+                try:
+                    _label = _rp.name
+                    _base2 = _ckpt_map.get(str(_rp))
+                    if _base2 is None:
+                        import subprocess as _sp2
+                        _p2 = _sp2.run(["git", "-C", str(_rp), "rev-parse", "HEAD"],
+                                       capture_output=True, text=True)
+                        _base2 = _p2.stdout.strip() if _p2.returncode == 0 else None
+                    if _base2:
+                        _patch = _git_patch_bytes(_rp, _base2)
+                        if _patch is not None:
+                            (audit.dir / f"patch_{_label}.diff").write_bytes(_patch)
+                        _unt = _git_untracked_files(_rp)
+                        (audit.dir / f"untracked_{_label}.txt").write_text(
+                            "".join(f"{f}\n" for f in _unt), encoding="utf-8")
+                except OSError:
+                    pass
+            audit.log_event("workspace_changed", {str(k): v for k, v in _ws_changed.items()})
 
         # Write-sandbox gate: forbid or restrict which paths the agent may
         # touch. On violation, fail the mission and skip verification.
