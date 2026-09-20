@@ -174,9 +174,9 @@ def test_no_targets_gives_zero_summary_without_running_suite(tmp_path):
     summary = run_mutation_testing(
         _spec(), [], tmp_path, lambda: calls.append(1) or (True, ""), 600)
     assert calls == []
-        assert summary.model_dump() == {
-            "total": 0, "killed": 0, "survived": 0, "skipped": 0,
-            "kill_rate": 0.0, "per_file": {}, "target_source": "changed"}
+    assert summary.model_dump() == {
+        "total": 0, "killed": 0, "survived": 0, "skipped": 0,
+        "kill_rate": 0.0, "per_file": {}, "target_source": "changed"}
 
 
 def test_only_py_changed_files_mutated_and_tether_excluded(tmp_path):
