@@ -1,5 +1,11 @@
 # GLOBAL MINIMUM REPORT — Tri-Repo Convergence
 
+> **FINAL: MISSION SUCCESS.** `tri-repo-full-stack-gate` passed end-to-end in
+> clean-room isolation with adversarial review approval (tether session
+> `53ac93da`, 2026-09-19): 4/4 verification green, mutation kill-rate 1.0
+> (8/8 effective, 4 documented-equivalent skipped), review verdict `approve`.
+> Provenance Merkle `e3ef63b5…` emitted into the validation output.
+
 ## Proofs
 - QED `Compartmental.lean`: Metzler / column-sum / mass-dissipation theorems, zero `sorry` (comment-stripped audit: `sorry_free: true` in `SYSTEM_STATE.json`).
 - `QED/VeriTrialExport.lean` regenerated from live `model.py` via symbolic AST differentiation (`extracted_matrix` if-chain synthesized from `compute_jacobian`, not aliased to `pbpkK`); DILI 9-state block delegates its 6×6 block to `extracted_matrix` (structural `pbpkDiliSystem` link).
