@@ -59,6 +59,14 @@ class MutationSpec(BaseModel):
     # so the meta-check is never vacuous. Ignored whenever changed-file
     # targets exist. Same .py/sandbox filtering applies.
     baseline_targets: Optional[List[str]] = None
+    # Documented equivalent-mutant suppressions as ``"<file>:<site>"``
+    # (e.g. ``"src/a.py:142:8"``), each with its justification in a YAML
+    # comment beside it. Matching mutants are marked ``skipped`` (excluded
+    # from the kill-rate denominator) and recorded in the audit event.
+    # Suppress ONLY provably equivalent mutants (unreachable defensive
+    # branches, exit-status-identical returns); line drift fails closed by
+    # missing the match and running the mutant.
+    equivalent: Optional[List[str]] = None
 
 
 class AutoProbesSpec(BaseModel):

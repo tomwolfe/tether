@@ -602,3 +602,28 @@ def test_mutation_baseline_targets_parsed(tmp_path):
     assert spec is not None
     assert spec.baseline_targets == ["../VeriTrial/scripts/a.py"]
     assert spec.max_mutants == 6
+
+
+def test_equivalent_suppressions_skipped_and_excluded(tmp_path):
+    from tether.models import MutationSpec
+    from tether.verification import run_mutation_testing
+    (tmp_path / "m.py").write_text(
+        "def f(x):\n    return True if x == 1 else False\n",
+        encoding="utf-8")
+    spec_all = MutationSpec(enabled=True, max_mutants=50)
+    all_res: list = []
+    run_mutation_testing(spec_all, ["m.py"], tmp_path,
+                         lambda: (True, ""), collect_results=all_res)
+    assert len(all_res) > 0
+    first = all_res[0]
+    spec_sup = MutationSpec(
+        enabled=True, max_mutants=50,
+        equivalent=[f"m.py:{first.site}"])
+    sup_res: list = []
+    summary = run_mutation_testing(spec_sup, ["m.py"], tmp_path,
+                                   lambda: (True, ""), collect_results=sup_res)
+    by_site = {m.site: m for m in sup_res}
+    assert by_site[first.site].status == "skipped"
+    assert summary.skipped >= 1
+    assert summary.total == len(all_res)
+    assert summary.killed + summary.survived == len(all_res) - summary.skipped

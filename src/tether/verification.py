@@ -580,7 +580,15 @@ def run_mutation_testing(
             hashlib.sha256(rel.encode("utf-8")).digest()[:8], "big")
         mutants = generate_mutants(
             text, operators, seed=seed, max_mutants=spec.max_mutants)
+        suppressed = set(getattr(spec, "equivalent", None) or [])
         for m in mutants:
+            if f"{rel}:{m.site}" in suppressed:
+                results.append(MutantResult(
+                    file=rel, operator=m.operator, site=m.site,
+                    status="skipped",
+                    detail="documented equivalent (see mission "
+                           "baseline/suppression justification)"))
+                continue
             status: MutantStatus = "killed"
             detail_text = ""
             try:
@@ -639,11 +647,13 @@ def summarize_mutation(
     without re-reading the raw mutation.json.
     """
     denominator = summary.killed + summary.survived
+    skipped_note = (f", {summary.skipped} documented-equivalent skipped"
+                    if summary.skipped else "")
     if denominator:
         core = (
             f"kill rate {summary.kill_rate:.0%} "
             f"(kill_rate {summary.kill_rate}, killed "
-            f"{summary.killed}/{denominator} mutants)")
+            f"{summary.killed}/{denominator} mutants{skipped_note})")
     else:
         core = ("kill rate n/a (kill_rate "
                 f"{summary.kill_rate}, no mutants ran)")

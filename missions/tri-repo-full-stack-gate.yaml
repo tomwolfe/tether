@@ -51,6 +51,20 @@ verification:
     baseline_targets:
       - "../VeriTrial/scripts/export_pbpk_to_qed.py"
       - "../VeriTrial/scripts/verify_formal_gate.py"
+    # Documented equivalent mutants (each proven; line drift fails closed by
+    # missing the match and running the mutant):
+    # - export:471:8 Call-kwargs fallthrough unreachable (execution trace: 0
+    #   hits across full export; pinned by _sym_diff unit tests).
+    # - export:808:4 `return False`->None in check_dili_model; sole consumer
+    #   uses truthiness (`if not ...`), both values falsy.
+    # - gate:464:15 dA_/dt Mathlib-env branch; gate runs non-ODE mode so no
+    #   dA_ lemmas are ever emitted (branch never fires).
+    # - gate:825:4 `return 0`->None at main exit; SystemExit(None) exits 0.
+    equivalent:
+      - "../VeriTrial/scripts/export_pbpk_to_qed.py:471:8"
+      - "../VeriTrial/scripts/export_pbpk_to_qed.py:808:4"
+      - "../VeriTrial/scripts/verify_formal_gate.py:464:15"
+      - "../VeriTrial/scripts/verify_formal_gate.py:825:4"
   commands:
     - "python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --lean-out ../QED/VeriTrialExport.lean --out /tmp/pbpk_lemmas.txt"
     - "python3 ../VeriTrial/scripts/rebuild_qed_oleans.py"
