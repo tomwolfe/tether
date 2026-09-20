@@ -1220,6 +1220,8 @@ class Orchestrator:
         mutants: list[MutantResult] = []
         changed_targets = self._mutation_targets(mission, changed)
         targets = self._mutation_targets(mission, changed, spec)
+        source = ("changed" if changed_targets else
+                  ("baseline" if targets else "none"))
         summary = run_mutation_testing(
             spec, targets, target,
             run_suite, timeout_seconds=timeout, collect_results=mutants)
@@ -1230,11 +1232,11 @@ class Orchestrator:
                 encoding="utf-8")
         except OSError as e:
             log.debug("Mutation detail capture failed: %s", e)
+        summary.target_source = source
         audit.log_event("mutation", {
             "enabled": True,
             "targets": targets,
-            "target_source": ("changed" if changed_targets else
-                                ("baseline" if targets else "none")),
+            "target_source": source,
             "fail_below": spec.fail_below,
             **summary.model_dump(),
             "survived_operators": sorted(
@@ -1398,20 +1400,26 @@ class Orchestrator:
                     f"  - [{'PASS' if ok else 'FAIL'} exit={code}] {cmd}")
                 # Bounded output tail: exit codes alone starve the reviewer
                 # of substance (proofs, benchmark verdicts, Merkle roots).
-                # Last 300 chars carry the verdict lines of these commands.
+                # Last 800 chars carry the verdict lines of these commands;
+                # the block as a whole is still clipped to budget at embed.
                 out = (str(getattr(r, "stdout", "") or "")
                        + "\n" + str(getattr(r, "stderr", "") or "")).strip()
                 if out:
-                    tail = out[-300:].replace("\n", " | ")
+                    tail = out[-800:].replace("\n", " | ")
                     lines.append(f"    output tail: {tail}")
             if mutation_summary is None:
                 lines.append("- mutation: not run (not enabled)")
             else:
+                eff = (mutation_summary.killed
+                       + mutation_summary.survived)
                 lines.append(
-                    f"- mutation: total={mutation_summary.total} "
+                    f"- mutation: source={mutation_summary.target_source} "
+                    f"total={mutation_summary.total} "
                     f"killed={mutation_summary.killed} "
                     f"survived={mutation_summary.survived} "
-                    f"kill_rate={mutation_summary.kill_rate:.2f}")
+                    f"skipped-equivalent={mutation_summary.skipped} "
+                    f"kill_rate={mutation_summary.kill_rate:.2f} "
+                    f"({mutation_summary.killed}/{eff} effective)")
             if changed:
                 lines.append(f"- changed files ({len(changed)}): "
                              + ", ".join(changed[:20]))

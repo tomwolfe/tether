@@ -325,6 +325,9 @@ class MutationSummary(BaseModel):
     skipped: int = 0
     kill_rate: float = 0.0
     per_file: Dict[str, Dict[str, int]] = Field(default_factory=dict)
+    # Where targets came from: "changed" (agent's files), "baseline"
+    # (regression net for verify-only runs), or "none" (nothing ran).
+    target_source: str = "changed"
 
 
 class CheckpointInfo(BaseModel):
