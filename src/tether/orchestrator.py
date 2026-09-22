@@ -836,6 +836,8 @@ class Orchestrator:
     def _hook_integrity_violations(
         self,
         baseline: Optional[tuple[Dict[str, str], Optional[str], Dict[str, Optional[str]], Dict[str, str]]],
+        repo: Optional[Path] = None,
+        label: str = "",
     ) -> list[str]:
         """Hook-integrity drift vs the mission-start baseline (dogfood-42).
 
@@ -844,20 +846,25 @@ class Orchestrator:
         creation: added/modified/deleted hook files and a changed or
         newly-set hooksPath each produce a human-readable violation string.
         Baseline semantics mean pre-existing hooks/config never trip. A
-        None baseline (guard inactive) checks nothing. Read-only,
-        shell=False, never raises.
+        None baseline (guard inactive) checks nothing. ``repo`` selects
+        which workspace repo is re-examined (default: the primary project
+        dir, byte-identical to the original single-repo path); ``label``
+        prefixes violation strings so multi-repo drift is attributable.
+        Read-only, shell=False, never raises.
         """
         if baseline is None:
             return []
+        root = repo if repo is not None else self.project_dir
+        prefix = f"{label}: " if label else ""
         base_digests, base_path, base_extra, base_sub = baseline
-        cur_digests = _hook_file_digests(self.project_dir / ".git" / "hooks")
-        cur_path = _core_hooks_path(self.project_dir)
+        cur_digests = _hook_file_digests(root / ".git" / "hooks")
+        cur_path = _core_hooks_path(root)
         cur_extra = {
-            ".git/config": _file_sha256(self.project_dir / ".git" / "config"),
-            ".git/info/exclude": _file_sha256(self.project_dir / ".git" / "info" / "exclude"),
-            ".git/info/sparse-checkout": _file_sha256(self.project_dir / ".git" / "info" / "sparse-checkout"),
+            ".git/config": _file_sha256(root / ".git" / "config"),
+            ".git/info/exclude": _file_sha256(root / ".git" / "info" / "exclude"),
+            ".git/info/sparse-checkout": _file_sha256(root / ".git" / "info" / "sparse-checkout"),
         }
-        cur_sub = _submodule_shas(self.project_dir)
+        cur_sub = _submodule_shas(root)
         violations: list[str] = []
         for name in sorted(set(base_digests) | set(cur_digests)):
             before = base_digests.get(name)
@@ -892,6 +899,8 @@ class Orchestrator:
         for k in sorted(set(base_sub) | set(cur_sub)):
             if base_sub.get(k) != cur_sub.get(k):
                 violations.append(f"submodule pointer drift: {k} changed during session")
+        if prefix:
+            violations = [prefix + v for v in violations]
         return violations
 
     def _snapshot_sibling_baseline(self, mission: Any) -> Dict[str, str]:
@@ -956,7 +965,7 @@ class Orchestrator:
         self, audit: AuditTrail, mission: Any, checkpoint: CheckpointInfo,
         manifest_before: Optional[dict[str, tuple[int, str | int]]],
         dry_run: bool,
-        hook_baseline: Optional[tuple[Dict[str, str], Optional[str], Dict[str, Optional[str]], Dict[str, str]]] = None,
+        hook_baseline: Optional[Dict[str, tuple[Dict[str, str], Optional[str], Dict[str, Optional[str]], Dict[str, str]]]] = None,
         sibling_baseline: Optional[Dict[str, str]] = None,
     ) -> list[str]:
         """Re-detect changes, refresh forensic artifacts, re-run the gate.
@@ -1082,7 +1091,21 @@ class Orchestrator:
                 and getattr(mission, "git_state_guard", None)
                 and checkpoint.is_git_repo and checkpoint.original_head):
             drifts = self._git_state_violations(checkpoint)
-            drifts += self._hook_integrity_violations(hook_baseline)
+            _hook_map = hook_baseline or {}
+            _primary_key = str(self.project_dir.resolve())
+            _primary_base = _hook_map.get(_primary_key, _hook_map.get(str(self.project_dir)))
+            drifts += self._hook_integrity_violations(_primary_base)
+            # Workspace-wide hook/metadata/submodule integrity: every
+            # resolved workspace repo is diffed against its own
+            # mission-start baseline so a hook planted in a sibling repo
+            # trips the guard exactly like one in the primary project.
+            for _rp in _ws_paths:
+                _entry = (_hook_map.get(str(_rp))
+                          or _hook_map.get(_rp.name))
+                if _entry is None:
+                    continue
+                drifts += self._hook_integrity_violations(
+                    _entry, repo=_rp, label=_rp.name)
             drifts += self._sibling_state_violations(sibling_baseline)
             if drifts:
                 detail = "; ".join(drifts)
@@ -1919,12 +1942,24 @@ class Orchestrator:
         # guard active on a git project, snapshot the .git/hooks/ sha256
         # map plus core.hooksPath BEFORE any adapter send; every post-send
         # gate diffs against this, so pre-existing hooks/config never trip.
+        # Workspace-wide (Stage 1 hardening): the primary project AND every
+        # resolved workspace repo each get their own snapshot, keyed by
+        # resolved path string, so hook/metadata/submodule drift in a
+        # sibling trips the guard exactly like drift in the primary repo.
         # Read-only; with the key unset no snapshot is taken at all
         # (byte-identical guard-off behavior).
-        hooks_baseline: Optional[tuple[Dict[str, str], Optional[str]]] = None
+        hooks_baseline: Optional[Dict[str, tuple[Dict[str, str], Optional[str], Dict[str, Optional[str]], Dict[str, str]]]] = None
         if (getattr(mission, "git_state_guard", None)
                 and checkpoint.is_git_repo and checkpoint.original_head):
-            hooks_baseline = _snapshot_hook_integrity(self.project_dir)
+            hooks_baseline = {str(self.project_dir.resolve()):
+                              _snapshot_hook_integrity(self.project_dir)}
+            try:
+                from tether.git_safety import resolve_workspace_repos as _rws
+                for _rp in _rws(self.project_dir,
+                                getattr(mission, "workspace_repos", None)):
+                    hooks_baseline[str(_rp)] = _snapshot_hook_integrity(_rp)
+            except Exception:
+                pass
         sibling_baseline: Optional[Dict[str, str]] = None
         if (getattr(mission, "git_state_guard", None)
                 and checkpoint.is_git_repo and checkpoint.original_head):

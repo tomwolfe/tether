@@ -363,3 +363,83 @@ def test_pre_existing_hooks_do_not_trip(tmp_path):
     report = _run(tmp_path, Surgeon(lambda n: []), "m.yaml")
     assert report["status"] == "success", report["next_steps"]
     assert "git_state_violations" not in report
+
+
+def _sibling_gate(tmp_path, session_id):
+    """Direct-gate harness for workspace hook integrity (Stage 1 hardening).
+
+    Returns (orch, audit, mission, checkpoint, hooks_baseline,
+    sibling_baseline) with per-repo baselines snapshotted exactly like
+    ``Orchestrator.run`` does: primary plus every resolved workspace repo.
+    """
+    from tether.adapters.mock import MockAdapter
+    from tether.audit import AuditTrail
+    from tether.git_safety import (
+        create_checkpoint,
+        resolve_workspace_repos,
+    )
+    from tether.models import MissionContract, TetherConfig
+    from tether.orchestrator import (
+        Orchestrator,
+        _snapshot_hook_integrity,
+    )
+    proj = tmp_path / "proj"
+    proj.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "sib").mkdir(parents=True, exist_ok=True)
+    _git_repo_two_commits(proj)
+    _git_repo_two_commits(tmp_path / "sib")
+    orch = Orchestrator(MockAdapter(), TetherConfig(), proj,
+                        session_id=session_id)
+    audit = AuditTrail(proj, ".tether/s", "m", session_id)
+    checkpoint = create_checkpoint(proj, session_id, allow_dirty=True)
+    mission = MissionContract(
+        mission={"name": "m", "goal": "g"}, name="m", goal="g",
+        workspace_repos=["../sib"], git_state_guard=True,
+        verification={"commands": []},
+    )
+    hooks_baseline = {str(proj.resolve()):
+                      _snapshot_hook_integrity(proj)}
+    for rp in resolve_workspace_repos(proj, ["../sib"]):
+        hooks_baseline[str(rp)] = _snapshot_hook_integrity(rp)
+    sibling_baseline = orch._snapshot_sibling_baseline(mission)
+    return (orch, audit, mission, checkpoint, hooks_baseline,
+            sibling_baseline)
+
+
+def test_enabled_sibling_hook_plant_fails_closed(tmp_path):
+    # Workspace-wide hook integrity: a hook planted in a sibling repo
+    # mid-session trips the guard with an attributable violation, exactly
+    # like a primary-repo plant. A clean sibling passes first.
+    from tether.orchestrator import _GitStateViolationError
+    (orch, audit, mission, checkpoint, hooks_baseline,
+     sibling_baseline) = _sibling_gate(tmp_path, "s-sibhook1")
+    orch._gate_and_capture(audit, mission, checkpoint, None,
+                           dry_run=False, hook_baseline=hooks_baseline,
+                           sibling_baseline=sibling_baseline)
+    hooks = tmp_path / "sib" / ".git" / "hooks"
+    hooks.mkdir(exist_ok=True)
+    (hooks / "pre-commit").write_text("#!/bin/sh\nexit 0\n",
+                                      encoding="utf-8")
+    with pytest.raises(_GitStateViolationError) as excinfo:
+        orch._gate_and_capture(audit, mission, checkpoint, None,
+                               dry_run=False,
+                               hook_baseline=hooks_baseline,
+                               sibling_baseline=sibling_baseline)
+    assert any("sib" in v and "hook" in v.lower()
+               for v in excinfo.value.violations)
+
+
+def test_pre_existing_sibling_hooks_do_not_trip(tmp_path):
+    # Baseline semantics extend to siblings: hooks present before the
+    # mission are the user's own state and never trip.
+    sib_hooks = tmp_path / "sib" / ".git" / "hooks"
+    sib_hooks.mkdir(parents=True, exist_ok=True)
+    (sib_hooks / "pre-commit").write_text("#!/bin/sh\nexit 0\n",
+                                          encoding="utf-8")
+    (orch, audit, mission, checkpoint, hooks_baseline,
+     sibling_baseline) = _sibling_gate(tmp_path, "s-sibhook2")
+    changed = orch._gate_and_capture(audit, mission, checkpoint, None,
+                                     dry_run=False,
+                                     hook_baseline=hooks_baseline,
+                                     sibling_baseline=sibling_baseline)
+    assert changed == []
