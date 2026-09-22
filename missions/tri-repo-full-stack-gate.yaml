@@ -47,29 +47,56 @@ verification:
     max_mutants: 6
     # Regression net for verify-only runs: when the agent changes nothing,
     # mutate the gate-critical bridge scripts instead of passing vacuously.
-    # Each mutant re-runs the full 4-command suite (~6 min), hence the cap.
+    # Each mutant re-runs the full 5-command suite (~6 min), hence the cap.
     baseline_targets:
       - "../VeriTrial/scripts/export_pbpk_to_qed.py"
       - "../VeriTrial/scripts/verify_formal_gate.py"
-    # Documented equivalent mutants (each proven; line drift fails closed by
-    # missing the match and running the mutant):
-    # - export:471:8 Call-kwargs fallthrough unreachable (execution trace: 0
-    #   hits across full export; pinned by _sym_diff unit tests).
-    # - export:808:4 `return False`->None in check_dili_model; sole consumer
-    #   uses truthiness (`if not ...`), both values falsy.
-    # - gate:464:15 dA_/dt Mathlib-env branch; gate runs non-ODE mode so no
-    #   dA_ lemmas are ever emitted (branch never fires).
-    # - gate:825:4 `return 0`->None at main exit; SystemExit(None) exits 0.
+    # Documented equivalent mutants (each proven behavior-preserving; line
+    # drift fails closed by missing the match and running the mutant).
+    # Export (scripts/export_pbpk_to_qed.py):
+    # - 132:62 include_ode default flip: the True branch is `pass` (no-op);
+    #   outputs byte-identical (fast test asserts equality).
+    # - 379:61 expand flip in the dissipation lemma: expanded terms are
+    #   computed but unused (only "CL * C_p > 0" is emitted).
+    # - 767:61 expand flip in emit_lean_export: the liver perfusion string is
+    #   expansion-invariant (verified identical).
+    # Gate (scripts/verify_formal_gate.py):
+    # - 50:43 include_ode default flip: same no-op branch as export.
+    # - 190:22 changed=False->True: fixpoint identical (bounded idempotent loop).
+    # - 329:34, 340:36 missing_ok flip on temp files that always exist.
+    # - 388:16, 388:23, 390:16, 390:23 subsumed numeric-identity returns:
+    #   any input reaching them also matches the later whole-lemma pattern.
+    # - 509:4 `return None`->None in _elan_bin_dir.
+    # - 813:45 missing_ok flip masked by the surrounding try/except-pass.
+    # Tether (src/tether/cleanroom.py):
+    # - 254:56 exist_ok flip on the sibling-room mkdir: the target is always
+    #   freshly created in the materialization path, so exist_ok is vacuous.
     equivalent:
-      - "../VeriTrial/scripts/export_pbpk_to_qed.py:471:8"
-      - "../VeriTrial/scripts/export_pbpk_to_qed.py:808:4"
-      - "../VeriTrial/scripts/verify_formal_gate.py:464:15"
-      - "../VeriTrial/scripts/verify_formal_gate.py:825:4"
+      - "../VeriTrial/scripts/export_pbpk_to_qed.py:132:62"
+      - "../VeriTrial/scripts/export_pbpk_to_qed.py:379:61"
+      - "../VeriTrial/scripts/export_pbpk_to_qed.py:767:61"
+      - "../VeriTrial/scripts/verify_formal_gate.py:50:43"
+      - "../VeriTrial/scripts/verify_formal_gate.py:190:22"
+      - "../VeriTrial/scripts/verify_formal_gate.py:329:34"
+      - "../VeriTrial/scripts/verify_formal_gate.py:340:36"
+      - "../VeriTrial/scripts/verify_formal_gate.py:388:16"
+      - "../VeriTrial/scripts/verify_formal_gate.py:388:23"
+      - "../VeriTrial/scripts/verify_formal_gate.py:390:16"
+      - "../VeriTrial/scripts/verify_formal_gate.py:390:23"
+      - "../VeriTrial/scripts/verify_formal_gate.py:509:4"
+      - "../VeriTrial/scripts/verify_formal_gate.py:813:45"
+      - "src/tether/cleanroom.py:254:56"
   commands:
     - "python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --lean-out ../QED/VeriTrialExport.lean --out /tmp/pbpk_lemmas.txt"
     - "python3 ../VeriTrial/scripts/rebuild_qed_oleans.py"
     - "python3 ../VeriTrial/scripts/verify_formal_gate.py /tmp/pbpk_lemmas.txt"
     - "python3 -c \"import sys, os; os.chdir(os.path.join(os.getcwd(), '../VeriTrial')); sys.path.insert(0, 'src'); from insilico_trial.validation import run_all_validations, build_regulatory_provenance; run_all_validations(); print('PROVENANCE_MERKLE=' + build_regulatory_provenance()['merkle_root'])\""
+    # Tether-side regression net: the mission mutates changed tether files, so
+    # the clean-room suite must exercise them (sibling .git preservation,
+    # .lake/symlink carries, gitlink pointers); otherwise those mutants are
+    # unkillable by construction. PYTHONPATH=src defeats the host editable
+    # install (which would otherwise shadow the room's mutated sources).
+    - "env PYTHONPATH=src python3 -m pytest tests/test_cleanroom.py tests/test_multirepo_capture.py -q -p no:cacheprovider"
   timeout_seconds: 3600
 review:
   enabled: true

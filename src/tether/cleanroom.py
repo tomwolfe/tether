@@ -12,7 +12,6 @@ never fall back to verifying inside the agent's tree.
 from __future__ import annotations
 
 import io
-import os
 import shutil
 import subprocess
 import tarfile
@@ -24,14 +23,14 @@ class CleanRoomError(RuntimeError):
     """Clean-room materialization failure (fail-closed contract)."""
 
 
-def _git(project_dir: Path, *args: str) -> subprocess.CompletedProcess:
+def _git(project_dir: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
         ["git", "-C", str(project_dir), *args],
         capture_output=True, check=False, shell=False,
     )
 
 
-def _run_in(dest: Path, argv: List[str]) -> subprocess.CompletedProcess:
+def _run_in(dest: Path, argv: List[str]) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
         argv, cwd=str(dest), capture_output=True, check=False, shell=False,
     )
@@ -92,6 +91,39 @@ def _is_relative(rel: str) -> bool:
 def _contained(path: Path, root: Path) -> bool:
     resolved = path.resolve()
     return resolved == root or root in resolved.parents
+
+
+def _carry_git_metadata(src: Path, target: Path) -> None:
+    """Preserve .git metadata so `git rev-parse HEAD` works in clean rooms.
+
+    Best-effort: full copy first, minimal HEAD/refs fallback on OSError,
+    worktree gitlink pointer when .git is a file. Never raises.
+    """
+    git_src = src / ".git"
+    git_dst = target / ".git"
+    if git_src.is_dir() and not git_dst.exists():
+        try:
+            shutil.copytree(git_src, git_dst, symlinks=True)
+        except OSError:
+            # Minimal fallback: HEAD + refs so rev-parse works.
+            try:
+                git_dst.mkdir(parents=True, exist_ok=True)
+                for name in ("HEAD", "refs", "packed-refs",
+                             "objects", "config"):
+                    s = git_src / name
+                    d = git_dst / name
+                    if s.is_file() and not d.exists():
+                        shutil.copy2(s, d)
+                    elif s.is_dir() and not d.exists():
+                        shutil.copytree(s, d, symlinks=True)
+            except OSError:
+                pass
+    elif git_src.is_file() and not git_dst.exists():
+        # Worktree-style gitlink pointer.
+        try:
+            shutil.copy2(git_src, git_dst)
+        except OSError:
+            pass
 
 
 def materialize_clean_room(
@@ -221,12 +253,15 @@ def materialize_clean_room(
                         raise CleanRoomError(f"git archive failed for sibling {entry!r}")
                     target.mkdir(parents=True, exist_ok=True)
                     _extract_archive(_arch.stdout, target)
+                    # Preserve .git metadata so `git rev-parse HEAD` and
+                    # sibling-state checks function inside clean rooms.
+                    _carry_git_metadata(src, target)
                     _sib_patch = session_dir / f"patch_{pure.parts[1]}.diff"
                     if _sib_patch.is_file() and _sib_patch.stat().st_size > 0:
                         _apply_patch(target, _sib_patch)
                     _sib_unt = session_dir / f"untracked_{pure.parts[1]}.txt"
                     try:
-                        _rels = [l.strip() for l in _sib_unt.read_text(encoding="utf-8").splitlines() if l.strip()] if _sib_unt.is_file() else []
+                        _rels = [ln.strip() for ln in _sib_unt.read_text(encoding="utf-8").splitlines() if ln.strip()] if _sib_unt.is_file() else []
                     except OSError:
                         _rels = []
                     _ign = _gitignored_paths(src, _rels) if _rels else set()
@@ -264,33 +299,9 @@ def materialize_clean_room(
                 shutil.copytree(src, target, symlinks=True,
                                 ignore=shutil.ignore_patterns(*patterns))
                 if is_sibling:
-                    # Preserve .git HEAD metadata so `git rev-parse HEAD`
-                    # and sibling-state checks function inside clean rooms.
-                    git_src = src / ".git"
-                    git_dst = target / ".git"
-                    if git_src.is_dir() and not git_dst.exists():
-                        try:
-                            shutil.copytree(git_src, git_dst, symlinks=True)
-                        except OSError:
-                            # Minimal fallback: HEAD + refs so rev-parse works.
-                            try:
-                                git_dst.mkdir(parents=True, exist_ok=True)
-                                for name in ("HEAD", "refs", "packed-refs",
-                                             "objects", "config"):
-                                    s = git_src / name
-                                    d = git_dst / name
-                                    if s.is_file() and not d.exists():
-                                        shutil.copy2(s, d)
-                                    elif s.is_dir() and not d.exists():
-                                        shutil.copytree(s, d, symlinks=True)
-                            except OSError:
-                                pass
-                    elif git_src.is_file() and not git_dst.exists():
-                        # Worktree-style gitlink pointer.
-                        try:
-                            shutil.copy2(git_src, git_dst)
-                        except OSError:
-                            pass
+                    # Non-archive sibling dir copy: preserve .git metadata so
+                    # `git rev-parse HEAD` and sibling-state checks function.
+                    _carry_git_metadata(src, target)
             else:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, target)

@@ -1,10 +1,11 @@
 # GLOBAL MINIMUM REPORT — Tri-Repo Convergence
 
-> **FINAL: MISSION SUCCESS.** `tri-repo-full-stack-gate` passed end-to-end in
-> clean-room isolation with adversarial review approval (tether session
-> `53ac93da`, 2026-09-19): 4/4 verification green, mutation kill-rate 1.0
-> (8/8 effective, 4 documented-equivalent skipped), review verdict `approve`.
-> Provenance Merkle `e3ef63b5…` emitted into the validation output.
+> **FINAL: MISSION SUCCESS (2026-09-20).** `tri-repo-full-stack-gate` passed
+> end-to-end in clean-room isolation with adversarial review approval (tether
+> session `22952746c5d3`): 5/5 verification green, mutation kill-rate 1.0
+> (11/11 effective, 9 documented-equivalent skipped), review verdict `approve`.
+> Provenance Merkle `640e7aad…` emitted into the validation output and sealed
+> in `VeriTrial/output/vvv40_report.html` (`<meta name="merkle-root">`).
 
 ## Proofs
 - QED `Compartmental.lean`: Metzler / column-sum / mass-dissipation theorems, zero `sorry` (comment-stripped audit: `sorry_free: true` in `SYSTEM_STATE.json`).
@@ -42,7 +43,14 @@
 - Documented equivalent mutants (excluded, with proof): `_sym_diff` defensive fallthroughs (466/469/471 — execution trace shows 0 hits across full export; unreachable for current `model.py`, pinned by unit tests); rebuild capture-flag flips (77:54/65 — exit-status-preserving, script gates solely on returncode).
 - Genuine holes found BY mutation testing and closed: gate oracle imported the mutated bridge (self-consistent) → added independent sympy term-accounting cross-check to `verify_formal_gate.py` (kills term-dropping exporter mutants fail-closed); rebuild error paths returned success-capable codes → `raise SystemExit(1)`; sibling `HEAD` fallback → fail-closed `CleanRoomError`; ledger root discovery → fail-closed `WorkspaceNotFoundError`.
 
+## Verification status (2026-09-20) — verification-theater elimination round
+- **Solvers (Task 1):** cosmetic no-op `jnp.where(mass_drift < 1e-6, y_next, y_next)` replaced with fail-closed NaN poisoning on mass **creation** in `fixed_step.py` and `solvers.py` (pure-abs form would NaN every legitimate CL-dissipation step); `test_solvers.py` indices aligned to `model.py` (`_CENTRAL_IDX=2`, `_PERIPHERAL_IDX=3`, `_EFFECT_SITE_IDX=4`); 5/5 solver tests pass.
+- **Lean export (Task 2):** `build_structural_theorem` no longer emits a `--` comment (discarded by the gate): it returns the full genuine `theorem veritrial_mass_dissipation` (transport of `mass_dissipation_rate` via `veritrial_model_matches_pbpkK`), also appended by `emit_lean_export`; `#print axioms` on all three export theorems reports only `[propext, Classical.choice, Quot.sound]`. `Compartmental.lean` gains `sdirk_stage_mmatrix_offdiag` (M-matrix stage operator → SDIRK2 non-negativity). QED `run_tests.py`: 18/18, zero `sorry`.
+- **Toolchain (Task 3):** `lean-toolchain` pins `leanprover/lean4:v4.34.0-rc2` (matches Lake); bare `lake build` clean but any `lake env` invocation SIGTRAPs (exit 133) — hermetic path is pinned-toolchain direct `lean` with explicit LEAN_PATH; `rebuild_qed_oleans.py` now resolves via `elan run <toolchain>` with no hardcoded home-directory paths (same fix applied to `verify_formal_gate.py::_elan_bin_dir/_lean_bin`).
+- **Gate hardening found by measurement:** the axiom-set regex missed Lean's `depends on axioms: [...]` colon format (dead check) — fixed; `build_structural_theorem`'s first one-line replacement was not QED-provable (pipeline rejected it) — replaced with the full provable theorem kept out of the line-lemma set.
+- **Mutants (Task 4):** export `129/130 = 0.992` (3 proven equivalents), gate `177/177 = 1.0` excl. 10 proven equivalents (`0.947` raw) — evidence in `VeriTrial/mutation_evidence_export.json` + `mutation_evidence_gate.json`; tether `cleanroom.py` sibling-copy window 14/14 killed; mission-sampled 11/12 killed + 1 documented equivalent (`254:56` vacuous `exist_ok`).
+- **Gauntlet (Task 5):** `tri-repo-full-stack-gate` **success** (session `22952746c5d3`): export ✓, direct-lean olean rebuild ✓, formal gate (17/17 lemmas, no sorry) ✓, full validation + NUTS ✓, tether cleanroom suites (37 tests) ✓. Two mission-config bugs found and fixed en route: host editable install shadowing room sources (5th command now uses `env PYTHONPATH=src`) and the shell-less runner rejecting `VAR=x` prefixes. `make validate`: **overall_pass true** (5 benchmarks + formal gate). Room Merkle `640e7aad…`; host Merkle `b230641a…` sealed in `VeriTrial/output/vvv40_report.html`.
+- Commit hashes: tether `fbf9d63`, QED `d0ba8b8`, VeriTrial `490d48d` (working trees carry the verified changes; see `SYSTEM_STATE.json`).
+
 ## Remaining for full gauntlet
-- `make validate` 5 benchmarks within literature tolerances (long JAX run, not executed here).
-- `tether run missions/tri-repo-full-stack-gate.yaml` live execution (requires `opencode` adapter; clean-room + mutation ≥0.80 gates configured in the mission YAML).
-- Embed Merkle root into `VeriTrial/output/vvv40_report.html` post-run.
+(none — all items executed above.)
