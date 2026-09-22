@@ -11,7 +11,8 @@ mission:
       3. Tether: Orchestration and verification control plane
 
     The gate runs the hardened full-stack checks:
-      - AST<->Lean isomorphism export (VeriTrialExport.lean, proved by rfl)
+      - Self-contained N-state export (VeriTrialExport.lean, Jacobian-derived Fin N,
+      CompartmentalMatrix instance + mass-dissipation certificate, universal tactic scripts)
       - Formal gate: every exported lemma verifies through QED (no sorry),
         including the direct-lean-compiled isomorphism (lake env is bypassed:
         it SIGTRAPs) and #print axioms assertion
@@ -20,8 +21,8 @@ mission:
 context:
   - "QED lakefile.lean declares mathlib4 from leanprover-community/mathlib4"
   - "QED agentic_pipeline.py invokes the pinned toolchain's lean directly with an explicit LEAN_PATH (lake env is bypassed: it SIGTRAPs under this Lake/Lean combination)"
-  - "QED Compartmental.lean: pbpk_is_metzler, pbpk_diag_nonpos/neg, mass dissipation"
-  - "VeriTrial export_pbpk_to_qed.py --lean-out emits the AST<->Lean isomorphism file"
+  - "QED Compartmental.lean: domain-agnostic compartmental engine over arbitrary [Fintype n] (Metzler, mass dissipation/conservation, orthant invariance, SDIRK2 M-matrix stage); zero domain leakage"
+  - "VeriTrial export_pbpk_to_qed.py --lean-out emits the N-generic AST<->Lean isomorphism file instantiating CompartmentalMatrix over Fin N (Jacobian-derived dimension)"
   - "VeriTrial formal_verification.py embeds SHA-256 hashes of verified Lean code"
   - "VeriTrial fixed_step.calculate_max_stable_dt derives the dt bound from matrix invariants"
   - "Cross-repo QED is located as sibling of VeriTrial (co-located monorepo layout)"
