@@ -96,7 +96,10 @@ def test_sorry_check_oserror_is_false(monkeypatch, tmp_path):
     assert mod._check_sorry(tmp_path) is False
 
 
-def test_non_qed_sorry_free_is_unknown(tmp_path):
+def test_non_qed_sorry_free_is_vacuously_true(tmp_path):
+    # A repo with no Lean sources is vacuously sorry-free (True), not
+    # "unknown": the old unknown-for-non-QED special case left the ledger
+    # permanently un-knowable for tether/VeriTrial.
     mod = _load()
     _init_repo(tmp_path / "plain")
     import sys
@@ -107,8 +110,21 @@ def test_non_qed_sorry_free_is_unknown(tmp_path):
         rec = mod.audit_repo("plain")
     finally:
         mod.ROOT = orig_root
-    assert rec["sorry_free"] == "unknown"
+    assert rec["sorry_free"] is True
     assert len(rec["head"]) == 40
+
+
+def test_repo_with_lean_and_sorry_is_false(tmp_path):
+    mod = _load()
+    _init_repo(tmp_path / "plain")
+    (tmp_path / "plain" / "Bad.lean").write_text("theorem t : False := sorry\n")
+    orig_root = mod.ROOT
+    mod.ROOT = tmp_path
+    try:
+        rec = mod.audit_repo("plain")
+    finally:
+        mod.ROOT = orig_root
+    assert rec["sorry_free"] is False
 
 
 def test_main_end_to_end_writes_sorted_merkle(tmp_path, monkeypatch, capsys):

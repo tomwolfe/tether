@@ -36,15 +36,16 @@ def audit_repo(name: str) -> dict:
     head = _run(repo, "rev-parse", "HEAD")
     dirty = bool(_run(repo, "status", "--porcelain"))
     return {"repo": name, "head": head, "dirty": dirty,
-            "sorry_free": "unknown" if name != "QED" else _check_sorry(repo)}
+            "sorry_free": _check_sorry(repo)}
 
 def _check_sorry(repo: Path) -> bool:
     try:
         import re as _re
         hits = []
-        for p in list(repo.glob("*.lean")) + [repo / "VeriTrialExport.lean"]:
-            if not p.is_file() or ".lake" in p.parts:
-                continue
+        lean_files = [p for p in repo.rglob("*.lean") if ".lake" not in p.parts]
+        if not lean_files:
+            return True  # vacuously sorry-free: no Lean sources in this repo
+        for p in lean_files:
             t = p.read_text(encoding="utf-8", errors="replace")
             t = _re.sub(r"/-.*?-/", "", t, flags=_re.DOTALL)
             lines = [l for l in t.splitlines() if not l.strip().startswith("--")]

@@ -341,6 +341,10 @@ def test_empty_verification_and_artifacts_fails_strict_only(tmp_path):
     assert lax.exit_code == 0
     assert strict.exit_code == 1
     assert "no verification commands" in strict.output
+    # Lax passes but never silently: the warning is the tripwire against
+    # success-without-checks theater (red-team probe 2026-09).
+    assert "WARNING" in lax.output
+    assert "no verification commands" in lax.output
 
 
 # ------------------------------------------------------------ docs truth (3)

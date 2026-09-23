@@ -69,3 +69,269 @@
 - **N-state model**: `model.py` gains `DEFAULT_ORGAN_NETWORK`/`STANDARD_14_ORGAN_NETWORK` + `organ_indices` (fail-closed) + vectorized `make_pbpk_ode(network)` (no hardcoded indices, jit/scan-compatible). Verified: default network is numerically identical to `pbpk_ode`; 14-state conserves mass exactly (sum 0.0). `calculate_max_stable_dt` loops over resolved perfused indices (identical values for 6-state); `_initial_state` N-generic; stale `pbpk_*` QED-name references in `fixed_step.py`/`solvers.py` updated to `Compartmental.*`.
 - **Results**: formal gate PASSED (17/17 lemmas, no sorry); QED `test_pipeline.py` 190 passed + fixed domain-test updated to generic semantics; VeriTrial bridge 72 passed, pbpk/fixed_step/solvers 12 passed, formal_verification 25 passed; mutation probe on exporter vs bridge suite 8/8 killed (1.00 ≥ 0.80); `run_negative_controls` green. clinical validation re-run: **overall_pass true** (`output/validation/validation_summary.json`; 17/17 lemmas, benchmarks green).
 - **Mission file**: `tri-repo-full-stack-gate.yaml` no longer claims "proved by rfl"; describes the self-contained N-state export + universal scripts.
+
+## Continuous-verification + SymPy-oracle + theater-hunt session (2026-09-23)
+
+### Step 0 — ledger reconciled (first checkpoint)
+- **Root cause of `sorry_free: "unknown"`**: `scripts/audit_system_state.py::audit_repo`
+  hardcoded `"unknown"` for every repo except QED — the missing-hook gap. Neither
+  tether nor VeriTrial contains any `.lean` file (verified by find), so `unknown`
+  was wrong; the correct value is vacuously-true.
+- **Fix**: `_check_sorry` is now generic (`rglob("*.lean")`, `.lake`-excluded,
+  comment-stripped) and runs for all three repos; repos with zero Lean sources
+  report `true` (vacuously sorry-free). Audit re-run: all three repos
+  `sorry_free: true`, Merkle `1bb63227…`.
+- **Known ledger self-reference (new gap entry, not a footnote)**: the audit samples
+  `dirty` *before* writing `SYSTEM_STATE.json`, so tether reports `dirty: true`
+  after any session touching the ledger or audit script. Fully-clean is unreachable
+  without committing the ledger (not requested) — left dirty-by-design, documented.
+
+### Step 2 — SymPy-oracle question RESOLVED with evidence (was: assertion)
+- **Finding**: mostly (a), with one real (b)-crack now closed. `compute_jacobian`
+  differentiates with local pure-Python `_sym_diff` (product/quotient rules, no CAS);
+  SymPy is used only for `simplify`. Lean's kernel independently re-proves every
+  *stated* identity, so a SymPy simplification error yielding a false statement
+  fails closed at Lean.
+- **The (b)-crack**: the gate's "independent" oracle (`_independent_column_sums`)
+  re-derives with `sympy.diff` — same trusted CAS family — and Lean never checks
+  *correspondence* between the stated identity and `model.py`. A CAS soundness bug
+  or a provable-but-wrong export (`0 = 0` for a nonzero column) could pass all
+  three symbolic checks.
+- **Fix (Step 4: A over B)**: (A) numeric differential oracle beats (B) Lean-side
+  re-derivation, which needs Mathlib `deriv` formalization while `lake env`
+  SIGTRAPs. (A) is SymPy-free (only `model.py` + float arithmetic), N-generic:
+  `verify_formal_gate._numeric_jacobian_correspondence` evaluates live `pbpk_ode`
+  (jax x64) at 3 seeded random positive draws, central differences (h=1e-6),
+  evaluates each emitted entry in a restricted namespace, requires rtol=1e-4.
+  State mapping derives from model.py's own `... = y` unpack line (order-space is
+  alphabetical, y-space positional — found by measurement). Wired fail-closed into
+  the gate; negative control #6 added to `run_negative_controls` (stderr-silenced
+  to preserve the controls-are-silent invariant).
+- **Evidence**: genuine export passes; single-entry corruption refused;
+  *compensating-pair* corruption (column sums still zero) refused. Bridge suite:
+  68 passed, only pre-existing failures remain (below).
+
+### Step 3 — theater-hunt institutionalized
+- Standing mission `tether/missions/theater-hunt.yaml` (`tether validate-mission`
+  OK): domain-leak grep tripwire + full export/formal-gate + cleanroom suite in
+  clean-room isolation with `git_state_guard`.
+
+### Step 5 — red-team probes
+1. **Disguised domain terms in QED core** (`hepatic|hepat|renal|metab|clearance|
+   dose|toxic|seahorse|mito` in `parser.py`/`agentic_pipeline.py`): zero matches
+   (grep exit 1) — clean.
+2. **Compensating-pair export corruption**: refused by numeric oracle — CAUGHT.
+3. **Zero-command mission reports `success`** (`orchestrator.py:2232-2242`,
+   deliberate for smoke missions, warning only). NOT fail-closed — residual
+   recommendation (treat warning as gate), not fixed.
+
+### Pre-existing failures (identical on stashed baseline — not regressions)
+- `test_bridge_mutation_fast.py`: `test_fast_state_variables`,
+  `test_fast_metzler_lemmas`, `test_fast_bare_array_call_model`,
+  `test_fast_gate_single_source_drift` fail on the clean tree: suite pins 6-state
+  expectations while HEAD (`e55f8d3`, 14-organ migration) moved on. **New gap
+  entry**: bridge fast-tests assume the unstated 6-state special case.
+- G1 refreshed (jax 0.10.2, jax-metal absent — no upstream change; CPU stays;
+  `gap_closure_plan.md` timestamped 2026-09-23). G3/G4/G6 not started
+  (one-at-a-time rule).
+
+## Bridge single-source-drift closure (2026-09-23, this session)
+- **Gap**: the 14-organ migration left the bridge certifying what isn't live.
+  `extract_state_variables` ignored `model_path` and returned the hardcoded
+  14-network (a 1-state toy model reported 14 states); `_ode_rhs_asts`'s
+  `"d_" + n` network-ordering prefix never matched `dA_*` keys (dead branch —
+  order was always `sorted(rhs)`); `build_lemmas` emitted the 3 Metzler strings
+  twice (17 lines, 14 unique) after the `>`→`>=` IsMetzler migration falsified
+  the "no duplicates" NOTE — and the set-based single-source check could not see
+  a truncated file because `set()` collapsed the missing copy. 4 bridge tests
+  failed on the clean tree.
+- **Fix (Step 4: repair-source over update-tests)**: updating tests to 14-state
+  would certify theater. Instead (a) `extract_state_variables` derives live
+  `A_*` names from the return vector in model-position order (explicit network
+  still overrides, fail-closed on mismatch); (b) `_ode_rhs_asts` ordering made
+  explicit `sorted(rhs)` — byte-identical behavior, dead branch removed;
+  (c) `build_lemmas` order-preserving dedupe; (d) gate single-source check
+  compares `Counter` multisets; (e) stale `> 0` test pinned to documented `>= 0`
+  (matches `IsMetzler`, Lean `offDiag_nonneg`, gate regex covering both);
+  (f) negative control #7 (doubled-lemma file refused); (g) tether audit test
+  updated from `unknown` to vacuously-`True` plus a new sorry-detected-`False` test.
+- **Evidence**: `test_bridge_mutation_fast.py` **72/72 pass** (was 68+4 failed);
+  `run_negative_controls` (7 controls) green; numeric oracle still passes genuine
+  export; `test_formal_verification.py` failures byte-identical to stashed
+  baseline (12 pre-existing, environment-dependent); tether
+  `test_audit_system_state.py` 10/10 pass.
+
+## G3 CLOSED — mechanistic CYP liver (2026-09-23, this session)
+- **Shipped (approach A, first-order hepatic extraction)**: `pbpk_ode` gains an
+  optional `v_met = cyp_activity * CLint * fu_liver * C_liver` term on unbound
+  liver concentration; liver keeps separate perfusion flux `dA_liver_perf`
+  (reclaimed by central) vs metabolic loss (routed to `A_elim`);
+  `build_pbpk_params` threads `cyp_clint/fu_liver/cyp_activity` (OFF defaults
+  ⇒ byte-identical benchmarks); `calculate_max_stable_dt` gains the
+  `Vl/(CLint*fu*cyp)` candidate (binds only at extreme rates: unchanged to
+  CLint=5, 0.0075 at CLint=200).
+- **Step 4 record**: full Michaelis-Menten was implemented first, then
+  REVERTED on gate evidence — its state-dependent Jacobian entries
+  (`A_liver` free in `extracted_matrix`) need state binders + mechanism-specific
+  proof preludes the universal-script architecture cannot provide honestly.
+  Recorded as follow-up gap **G3b (saturable kinetics)**, not smuggled in.
+- **Theater caught by the machinery, in order**: (1) first cut double-counted
+  (central reclaimed `dA_liver` incl. `-v_met` AND `A_elim` received it) —
+  `check_mass_conservation` returned False and the column sum was genuinely
+  nonzero; (2) `args.get("X", d)` string literals poisoned the gate's textual
+  alias expansion (nested `args.get('(args.get(...` → sympify crash) — optionality
+  reworked to try/except-KeyError with bare symbols; (3) `dA_liver_perf`
+  polluted state order/perfused lists — `_ode_rhs_asts` now intersects with the
+  return vector (rhs keeps all assigns for substitution, order is states-only),
+  `extract_perfused_compartments` uses expanded derivatives + role exclusions,
+  `check_mass_conservation` proves the total sum with sympy instead of the
+  `elim == CL*C_p` exact-form special case (strictly stronger, still refuses all
+  three historical mutants).
+- **Evidence**: formal gate **PASSED** (14/14 lemmas, no sorry) against the
+  regenerated `QED/VeriTrialExport.lean` (15-param binders, `positivity` +
+  `field_simp`/`ring` close over CLint entries); numeric oracle passes with CYP
+  ACTIVE (CLint drawn > 0); `test_cyp_metabolism.py` 4/4 (OFF-identical incl.
+  bare-dict compat, mass < 1e-7 to CLint=20, monotonic AUC 17.5→7.7→4.4,
+  inhibition 7.7→12.9); warfarin benchmark unchanged (0.1491/37.0, pass True);
+  bridge 72/72; engine+pbpk+safety 26 passed.
+- **Correction**: jax-metal 0.1.1 IS pip-installed (G1 note said absent); the
+  upstream breakage stands regardless — CPU mitigation unchanged.
+
+## G4 CLOSED — compound-specific mito/BSEP DILI priors (2026-09-23, this session)
+- **Gap**: the 9-state QSP trajectories used literature defaults for every
+  compound (engine filled `_QSP_DEFAULTS` verbatim; SAD batch lacked QSP keys
+  entirely), so identical-PK drugs with different mitochondrial toxicity were
+  indistinguishable in live ALT/GSH — while the post-hoc safety assessor had
+  its own hand-duplicated override rule (drifting copies of one rule).
+- **Fix**: central `qsp_params_for_drug` in `model.py` (`km_metabolic`→IC50,
+  `gsh_depletion_rate`→k_deplete, `alt_baseline`→ALT_base; zeros fall back to
+  defaults); engine SAD+MAD paths share `_with_mechanistic_keys` (also threads
+  per-patient CYP keys — SAD had been silently dropping CLint, a G3
+  regression caught here); safety assessor uses the same helper (duplication
+  deleted); new `bsep_ic50` Drug field wired into the bile-acid QSP
+  (`IC50_bsep`) and `has_qsp_dili_params`.
+- **Evidence**: `test_dili_mechanistic.py` 4/4 — helper defaults/overrides,
+  same-PK mito discrimination (toxic analog leaks more ALT), BSEP block raises
+  BA, schema flag; engine+safety+schemas 27 passed; bridge 72/72; touched-file
+  lint clean (remaining hits verified pre-existing by stash-diff).
+- **Cost note**: BSEP test runs the Python-loop RK4 (~4.5 min for the file);
+  a jitted QSP solver would cut this 10× — recorded, not pursued (one gap).
+- **Remnant (explicit, not theater)**: bilirubin still scales by the
+  `dili_emax_bili` effect-size scalar on GSH depletion — documented
+  effect-size convention, now driven by compound-aware GSH rather than exposure.
+
+## G6 CLOSED — hepatic disease axis reaches PK (2026-09-23, this session)
+- **Gap**: the engine was disease-blind — `Patient.egfr_scaling` generated but
+  never consumed, no hepatic axis existed, and the hepatic config/benchmark
+  scaled whole-body CL through the *renal* knob (`egfr_scale=0.6`, comment
+  mislabeled). Consequences: renally-cleared drugs mis-dosed in liver disease,
+  and Child-Pugh B left mechanistic CYP CLint untouched (G3/G6 interaction).
+- **Fix**: independent renal/hepatic axes — `Patient.hepatic_scale` (B=0.6),
+  generator `hepatic_scale` from config, `build_pbpk_params(hepatic_scale)`
+  scaling BOTH CL and CLint, engine applies it at all 3 params call sites;
+  config honest (`egfr_scale: 1.0` normal kidneys + `hepatic_scale: 0.6`);
+  validation benchmark switched to `hepatic_scale`.
+- **Evidence**: hepatic benchmark **40.0% reduction, pass True** (was passing
+  via the wrong knob); `test_hepatic_cohort.py` 3/3 (axis independence:
+  egfr_scale never touches CLint; generator carries 0.6/1.0; full-trial
+  hepatic AUC > normal × 1.3); engine 18 passed, warfarin unchanged (0.1491);
+  touched-file lint clean (B905/engine cruft stash-verified pre-existing).
+- **Follow-up G6b (NOT closed)**: `egfr_scaling` still unconsumed by the
+  engine (renal axis in live trials) and no eGFR→CL transfer rule
+  (`min(egfr/90,1)^0.5`) is applied per-patient — validation hand-applies
+  scales. Same one-rule-everywhere treatment as QSP when scheduled.
+
+## G6b CLOSED — mechanistic renal rule in live trials (2026-09-23, this session)
+- **Gap**: the metformin eGFR–CL correlation passed with NO renal mechanism
+  (allometric confound only — validation built params with genotype alone).
+- **Fix**: one shared rule `renal_egfr_scale(egfr, fe) = (1-fe) +
+  fe*min(egfr/90,1)^0.5` (ASSUMPTIONS §3); new `fraction_excreted_renal`
+  schema field (default 0 = neutral, all current drugs unmoved);
+  metformin.yaml fe=0.9; engine applies at all 3 call sites; metformin
+  validation uses the same helper.
+- **Evidence**: metformin benchmark pass (CL@90 44.55, corr 0.297);
+  `test_renal_axis.py` 3/3 (rule shape incl. cap/floor/neutrality, isolated
+  CL-ratio equals rule, full-trial CKD AUC separation); engine+bridge 90
+  passed; touched-file lint clean (B905/engine cruft pre-existing).
+
+## Simulation-path restoration (2026-09-23, this session — P0, preempts G3)
+- **Gap (found acting as reviewer, top priority)**: HEAD `e55f8d3` (14-organ
+  migration) deleted 441 lines from `model.py` — `build_pbpk_params`,
+  `solve_pbpk_single/batch/full`, `run_pbpk`, `compute_mass_balance`,
+  `compute_patient_kp[_early]`, `_reference_physiology`, `scale_physiological`.
+  The entire engine/validation stack (`trial/engine.py`, `validation/`,
+  `stats/`, `sensitivity.py`) failed at **import** (`ImportError:
+  build_pbpk_params`); `make validate` and every benchmark were unrunnable at
+  HEAD despite the 2026-09-22 "overall_pass true" entry describing the pre-HEAD
+  tree. An empty `pbpk/model/` directory (no `__init__.py`) sits alongside
+  `pbpk/model.py` — namespace-package trap, currently inert (the `.py` wins),
+  left in place and noted.
+- **Fix (Step 4: restore-with-provenance over rebuild-fresh)**: re-appended the
+  deleted block verbatim from `HEAD~1` (single hunk `@@ -330,443`, provenance
+  exact; `pbpk_ode` body identical across the hunk so semantics match). All
+  callees verified present (`fixed_step` solvers, `Drug` schema fields).
+- **Evidence**: `import trial.engine`, `import validation` OK;
+  `run_pbpk` smoke mass balance 1.4e-15; `validate_warfarin_pgx(n=60)`:
+  CL/F 0.149 vs 0.15 ✓, t½ 37.0 vs 38 ✓, IM/EM AUC 1.44, corr −0.88,
+  **overall_pass True**; `test_engine.py`+`test_pbpk.py` 22 passed;
+  pbpk/fixed_step/solvers/safety/population 19 passed; bridge suite still 72/72
+  (`pbpk_ode` untouched → export byte-identical path).
+- **G3 design (next, one gap)**: (A) optional Michaelis-Menten hepatic intrinsic
+  clearance inside `pbpk_ode` (`Vmax*C_liver_u/(Km+C_liver_u)` subtracted from
+  liver, added to `A_elim`; `Vmax=0` default ⇒ byte-identical benchmarks;
+  activates dormant `_find_saturable_patterns`/saturableFlux support) vs
+  (B) explicit 7-state metabolite compartment (tracks metabolite exposure but
+  ripples through every index consumer + recalibration, with no metabolite data
+  to anchor it). **Prefer A**: smaller blast radius, linear low-conc limit
+  preserves benchmarks, directly demonstrates genotype→Vmax mapping for warfarin
+  (CYP2C9). Risks to close in the loop: rational Jacobian entries through the
+  Lean column-sum proofs (Mathlib-gated), `calculate_max_stable_dt` accounting
+  for the new term, and documenting CL-scalar vs Vmax precedence (no
+  double-counting).
+
+## Full validation sweep post-G3/G4/G6/G6b (2026-09-23, this session)
+- `run_all_validations()` (warfarin n=100, moxi, midazolam n=200, metformin
+  n=200, hepatic n=100): **overall_pass True** — all five benchmarks plus the
+  embedded fail-closed formal gate pass with every change since 2026-09-22 in
+  place (CYP extraction, QSP priors, hepatic/renal axes, bridge repairs,
+  restored simulation path). Artifacts: `output/validation/*.json`,
+  `output/vvv40_report.html` (regenerated).
+
+## Red-team round 2 — new-code surface (2026-09-23, this session)
+- **Hole 1 (REAL, fixed)**: negative `cyp_activity`/`fu_liver` ran metabolism
+  backward — mass pumped elim→liver with total conserved, so NO mass monitor
+  could ever see it; silently inflated exposure. Fixed at the build boundary
+  (`cyp_activity`/`fu_liver`/`ka` floored; CLint already was) — ODE hot path
+  stays clamp-free per discipline (tracer-safe).
+- **Hole 2 (REAL, fixed)**: NaN rate constants slipped the mass-gain monitor
+  (`NaN > 1e-6` is False). Monitor now also poisons on non-finite drift
+  (tracer-safe `isFinite` disjunct, established poisoning mechanism, no value
+  clamping). NaN eGFR raises `ValueError` at the helper boundary instead of
+  silently clearing at full rate.
+- **Evidence**: 3 new permanent adversarial tests (floors, NaN-poison marker,
+  NaN-eGFR raises); mechanism suites 13 passed; engine+bridge 90 passed;
+  touched-file lint clean (fixed_step hits stash-verified pre-existing).
+
+## Gauntlet-substance round (2026-09-23, this session)
+- Olean rebuild green (15-param export compiles under pinned toolchain);
+  tether cleanroom suites 37 passed; full validation sweep overall True (prior
+  entry); targeted 7-mutant probe on session-new code: **7/7 killed**.
+- **Self-caught theater**: the `~isfinite` monitor disjunct I added was DEAD
+  CODE — any NaN state already NaNs the sum, so the disjunct never changes
+  behavior; the mutation probe proved it (survived with correct selection).
+  Reverted; the NaN test relabeled as propagation characterization, not a guard
+  control. The probe also found a REAL missing invariant (no emission-
+  uniqueness assertion — dedupe-disabled mutant survived everything) → added
+  `test_fast_emission_has_no_duplicates`, now killing.
+
+## Formal-verification suite 25/25 (2026-09-23, this session)
+- The flagship `test_sign_flip_dynamically_alters_lean_and_fails_gate` (named
+  in this report as passing) pinned liver-diagonal index `(1, 1)` from the
+  y-position era — now the effect compartment under alphabetical order. Fixed
+  by deriving the index from live order + asserting liver-diagonal semantics
+  symbolically (`perfusion + CYP` via sympy, not print-form).
+- Bonus evidence that the bridge-drift repairs generalized: 11 sibling
+  failures in the same file (classify/qed-dir/required-lemmas), recorded as
+  "pre-existing" earlier, now pass UNCHANGED — they were failing on 14-state
+  garbage outputs, healed by live-derived states. Full file: **25 passed**.
+  Lint count identical to baseline (24, none in touched lines).

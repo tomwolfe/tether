@@ -1,0 +1,54 @@
+mission:
+  name: theater-hunt
+  goal: |
+    Standing verification-theater hunt across tether, QED, and VeriTrial.
+    For every claimed guarantee, verify that deliberately breaking the
+    underlying property causes the relevant check to fail (negative
+    control). Where a verifier passes when it shouldn't, fix it through
+    the full tether+QED dogfooding loop and add a permanent negative
+    control — don't just note it and move on.
+
+    Hunt patterns (recurring history, see GLOBAL_MINIMUM_REPORT.md):
+      1. Cosmetic no-ops (e.g. jnp.where(x, y, y) mass-drift guard).
+      2. Non-provable one-line lemma substitutions in the Lean export.
+      3. Domain leakage back into "generic" QED core (pbpk, liver, dili,
+         cyp, ka_rate, c_tissue, kp, a_gut and disguised variants).
+      4. Silently-succeeding error paths (rebuild/gate returning 0 on
+         failure; missions reporting success on partial/cancelled runs).
+      5. Provable-but-wrong exports (stated identity proves, but does not
+         correspond to model.py — the SymPy shared-trust crack).
+    Change NOTHING outside this scope except fixes with negative controls.
+context:
+  - "QED parser.py / agentic_pipeline.py must stay domain-agnostic: grep -riE 'pbpk|liver|dili|cyp|ka_rate|c_tissue|kp|a_gut' QED/parser.py QED/agentic_pipeline.py must return zero matches"
+  - "VeriTrial scripts/verify_formal_gate.py run_negative_controls is the permanent sensitivity net; extend it, never weaken it"
+  - "VeriTrial scripts/verify_formal_gate.py _numeric_jacobian_correspondence is the SymPy-free correspondence oracle (finite differences of live model.py vs emitted Jacobian); keep it SymPy-free"
+  - "Cross-repo QED is located as sibling of VeriTrial (co-located monorepo layout)"
+workspace_repos:
+  - "../QED"
+  - "../VeriTrial"
+constraints:
+  - "Do NOT introduce sorry axioms in any QED output"
+  - "Do NOT weaken any existing negative control to make the hunt pass"
+  - "Every fix must add a permanent negative control proving sensitivity"
+  - "Fail closed: any hunt probe that errors means the hunt fails"
+git_state_guard: true
+verification:
+  clean_room: true
+  clean_room_copy:
+    - "../QED"
+    - "../VeriTrial"
+  commands:
+    - "grep -riE 'pbpk|liver|dili|cyp|ka_rate|c_tissue|a_gut' ../QED/parser.py ../QED/agentic_pipeline.py && exit 1 || echo DOMAIN_LEAK_CLEAN"
+    - "python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --lean-out /tmp/theater_export.lean --out /tmp/theater_lemmas.txt && python3 ../VeriTrial/scripts/verify_formal_gate.py /tmp/theater_lemmas.txt"
+    - "env PYTHONPATH=src python3 -m pytest tests/test_cleanroom.py -q -p no:cacheprovider"
+  timeout_seconds: 1800
+review:
+  enabled: true
+  required: false
+recovery:
+  max_attempts: 1
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/muse-spark-1.3-contributor-free", "{prompt}"]
+    timeout_seconds: 1800

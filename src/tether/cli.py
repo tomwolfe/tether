@@ -139,6 +139,11 @@ def validate_mission(
                        "patterns declared; verification would pass "
                        "trivially (--strict)", err=True)
             raise typer.Exit(code=1)
+        # Non-strict still passes (smoke missions legitimately declare none)
+        # but never silently: a mission that succeeds while checking nothing
+        # is the exact shape of verification theater (red-team probe 2026-09).
+        typer.echo("WARNING: no verification commands and no artifact "
+                   "patterns declared; success would exercise no checks")
     elif all(_is_trivial_command(c) for c in commands) and not artifacts:
         message = ("all verification commands are trivial (true/:/echo*) "
                    "and no artifact patterns are declared")
