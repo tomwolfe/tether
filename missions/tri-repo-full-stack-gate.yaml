@@ -100,6 +100,7 @@ verification:
     # unkillable by construction. PYTHONPATH=src defeats the host editable
     # install (which would otherwise shadow the room's mutated sources).
     - "env PYTHONPATH=src python3 -m pytest tests/test_cleanroom.py tests/test_multirepo_capture.py -q -p no:cacheprovider"
+    - "env PYTHONPATH=../VeriTrial/src python3 -m pytest ../VeriTrial/src/insilico_trial/tests/test_mission_regressions.py -q -p no:cacheprovider"
   timeout_seconds: 3600
 review:
   enabled: true
