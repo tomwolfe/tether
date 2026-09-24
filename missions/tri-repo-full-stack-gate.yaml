@@ -52,6 +52,8 @@ verification:
     baseline_targets:
       - "../VeriTrial/scripts/export_pbpk_to_qed.py"
       - "../VeriTrial/scripts/verify_formal_gate.py"
+      - "../VeriTrial/src/insilico_trial/pbpk/model.py"
+      - "../VeriTrial/src/insilico_trial/pd/__init__.py"
     # Documented equivalent mutants (each proven behavior-preserving; line
     # drift fails closed by missing the match and running the mutant).
     # Export (scripts/export_pbpk_to_qed.py):
@@ -102,6 +104,7 @@ verification:
 review:
   enabled: true
   required: true
+  adapter: opencode
   retry_on_rejection: true
 recovery:
   max_attempts: 1

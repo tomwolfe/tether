@@ -76,9 +76,9 @@ verification:
     # The parametric sum uses compartment-specific symbolic rates.
     - command: "python3 scripts/export_pbpk_to_qed.py"
       contains: "ka_rate"
-    # The export bridge must emit exactly 16 parametric theorems.
-    - command: "python3 scripts/export_pbpk_to_qed.py | wc -l | tr -d ' '"
-      equals: "16"
+    # The export bridge must emit exactly 7 parametric theorems.
+    - command: "python3 -c \"import pathlib, subprocess; p = '/tmp/tether_pbpk_lemmas_probe.txt'; subprocess.run(['python3', 'scripts/export_pbpk_to_qed.py', '--out', p], check=True); print(len(pathlib.Path(p).read_text().splitlines()))\""
+      matches: "^7$"
   # High-stakes gate: mutation-test the change so the gate has real "teeth"
   # (a trivially-passing gate would be mutated to still pass -> fail_below).
   mutation:
@@ -88,18 +88,19 @@ verification:
       - flip_bool
       - arithmetic
     max_mutants: 10
-    fail_below: 0.7
+    fail_below: 0.8
+    baseline_targets:
+      - "scripts/export_pbpk_to_qed.py"
+      - "scripts/verify_formal_gate.py"
+      - "src/insilico_trial/pbpk/model.py"
+      - "src/insilico_trial/pd/__init__.py"
   recovery:
     max_attempts: 3
     strategy: cumulative
   review:
     enabled: true
     required: true
-    # In production CI this is `opencode` (a real adversarial reviewer). Locally
-    # we use the `command` adapter as a stub that emits the approved verdict
-    # token so the gate can run end-to-end without network/API access. Swap to
-    # `opencode` in CI.
-    adapter: command
+    adapter: opencode
     retry_on_rejection: true
   budget:
     max_sends: 20
@@ -107,15 +108,8 @@ verification:
   # High-stakes gate: refuse to run unless the working tree is clean (a dirty
   # tree would defeat the clean-room guarantee).
   git_state_guard: true
-  # The opencode adapter requires network/API access unavailable here, so the
-  # agent step is executed via the local mock adapter (which returns success),
-  # while the substantive verification is performed by QED through the real
-  # verification commands above. The `command` adapter is used as a local review
-  # stub that prints the "REVIEW: APPROVE" verdict token; in production CI set
-  # `review.adapter: opencode` for a real adversarial reviewer.
-  adapter: mock
+  adapter: opencode
   adapters:
-    mock:
-      scenario: success
-    command:
-      command: ["/bin/sh", "-c", "printf 'REVIEW: APPROVE\nlocal stub approves the captured change (stand-in for opencode reviewer in CI)\n'"]
+    opencode:
+      command: ["opencode", "run", "-m", "opencode/muse-spark-1.3-contributor-free", "{prompt}"]
+      timeout_seconds: 1800
