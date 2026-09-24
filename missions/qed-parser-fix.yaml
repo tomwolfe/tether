@@ -61,6 +61,6 @@ adapters:
       - opencode
       - run
       - "-m"
-      - opencode/mimo-v2.5-free
+      - opencode/space-bunny-free
       - "{prompt}"
     timeout_seconds: 1800

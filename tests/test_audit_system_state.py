@@ -102,7 +102,6 @@ def test_non_qed_sorry_free_is_vacuously_true(tmp_path):
     # permanently un-knowable for tether/VeriTrial.
     mod = _load()
     _init_repo(tmp_path / "plain")
-    import sys
     monkeypatch_root = tmp_path
     orig_root = mod.ROOT
     mod.ROOT = monkeypatch_root

@@ -34,7 +34,6 @@ from tether.context_files import (
 from tether.git_safety import (
     REF_PREFIX,
     changed_files_since,
-    create_checkpoint,
     describe_sandbox_violation,
     head_sha,
     make_file_backup,

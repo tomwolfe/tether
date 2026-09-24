@@ -20,14 +20,16 @@ def _init_repo(path: Path) -> None:
 
 
 def test_resolve_workspace_repos(tmp_path):
-    base = tmp_path / "proj"; base.mkdir()
+    base = tmp_path / "proj"
+    base.mkdir()
     out = gs.resolve_workspace_repos(base, ["../QED", "../VeriTrial"])
     assert len(out) == 2
     assert str(out[0]).endswith("QED")
 
 
 def test_workspace_helpers_no_repo(tmp_path):
-    base = tmp_path / "proj"; base.mkdir()
+    base = tmp_path / "proj"
+    base.mkdir()
     assert gs.workspace_is_dirty(base, []) is False
     infos = gs.workspace_create_checkpoint(base, "s1", [], write_ref=False)
     assert str(base) in infos

@@ -40,7 +40,7 @@ class OpencodeAdapter(CommandAdapter):
     def __init__(self, settings: Optional[Dict[str, Any]] = None,
                  default_timeout: int = 1800) -> None:
         merged: Dict[str, Any] = {"command": [
-            "opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}",
+            "opencode", "run", "-m", "opencode/space-bunny-free", "{prompt}",
         ]}
         merged.update(settings or {})
         super().__init__(merged, default_timeout)
