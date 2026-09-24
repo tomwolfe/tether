@@ -101,6 +101,7 @@ verification:
     # install (which would otherwise shadow the room's mutated sources).
     - "env PYTHONPATH=src python3 -m pytest tests/test_cleanroom.py tests/test_multirepo_capture.py -q -p no:cacheprovider"
     - "env PYTHONPATH=../VeriTrial/src python3 -m pytest ../VeriTrial/src/insilico_trial/tests/test_mission_regressions.py -q -p no:cacheprovider"
+    - "python3 tools/verify_veritrial_equations.py --source-root ../VeriTrial"
   timeout_seconds: 3600
 review:
   enabled: true
