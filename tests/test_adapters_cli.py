@@ -359,7 +359,7 @@ def test_experimental_adapters_are_unverified_presets():
     # missions (dogfood-14/16/17/18).
     assert oc.verified is True
     assert oc.command == [
-        "opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}",
+        "opencode", "run", "-m", "opencode/space-bunny-free", "{prompt}",
     ]
     ok, _ = oc.is_available()
     assert isinstance(ok, bool)

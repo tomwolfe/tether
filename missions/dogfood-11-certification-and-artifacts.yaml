@@ -100,7 +100,7 @@ adapter: opencode
 
 adapters:
   opencode:
-    command: ["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]
+    command: ["opencode", "run", "-m", "opencode/space-bunny-free", "{prompt}"]
     timeout_seconds: 1800
 
 allowed_paths:

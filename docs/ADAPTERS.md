@@ -247,7 +247,7 @@ stragglers. All of these claims are pinned by the acceptance tests in
 Thin presets over CommandAdapter. The command shapes were checked against the
 `--help` output of locally installed CLIs (2026-08):
 
-- opencode: `["opencode", "run", "-m", "opencode/x-preview-f-free", "{prompt}"]`
+- opencode: `["opencode", "run", "-m", "opencode/space-bunny-free", "{prompt}"]`
   (`opencode run [message..]`; the `-m` model pin avoids a server error some
   installations hit on bare `opencode run`)
 - pi: `["pi", "--print", "{prompt}"]` (`--print` = non-interactive mode)
