@@ -1,5 +1,15 @@
 # GLOBAL MINIMUM REPORT — Tri-Repo Convergence
 
+> **FINAL: MISSION SUCCESS (2026-09-24).** Clean-room session
+> `31b403ca34ee` passed export, pinned-toolchain olean rebuild, strict
+> no-sorry Lean verification (14/14), all five clinical benchmarks, clean-room
+> tests, and adversarial review (`approve`). Mutation kill-rate was
+> `18/22 = 0.8182` with two documented-equivalent mutants skipped. Commit SHAs:
+> tether `f11045f`, QED `bf80839`, VeriTrial `e7b7e6c`. Ledger Merkle root at
+> mission launch: `07f1d167bc1dbd46a57ce53238ef1004b32fcab0cf2c322c0cdd405586d83e1a`.
+
+## Previous validated convergence (2026-09-20)
+
 > **FINAL: MISSION SUCCESS (2026-09-20).** `tri-repo-full-stack-gate` passed
 > end-to-end in clean-room isolation with adversarial review approval (tether
 > session `22952746c5d3`): 5/5 verification green, mutation kill-rate 1.0
