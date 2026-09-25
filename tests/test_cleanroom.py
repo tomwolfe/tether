@@ -2,6 +2,7 @@
 materializer semantics, fail-closed orchestration, and contract validation."""
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -12,10 +13,13 @@ import pytest
 import tether.orchestrator as orch_module
 from tether.adapters.base import AgentAdapter, SessionInfo
 from tether.audit import find_session_dir
+import tether.cleanroom as cleanroom
 from tether.cleanroom import (
     CleanRoomError,
+    _carry_git_metadata,
     _contained,
     _gitignored_paths,
+    _is_relative,
     materialize_clean_room,
 )
 from tether.mission import MissionError, load_mission
@@ -527,3 +531,346 @@ def test_plain_file_copy_entry_overwrites_archive_bytes(tmp_path):
     dest = tmp_path / "room"
     materialize_clean_room(project, "HEAD", session, ["app.py"], dest)
     assert (dest / "app.py").read_text(encoding="utf-8") == FIXED_APP
+
+
+# ------------------- sibling-repo materialization + .git carry: mutation teeth
+#
+# dogfood-43..46 run mutation testing of cleanroom.py against THIS suite at
+# --min-kill-rate 0.8. The cohorts above pin the project-tree contract, but
+# the sibling-repo (../<name>) branch and the .git-carrying fallback were
+# unexercised, and a regression there is SILENT: the room still materializes,
+# it just quietly stops being a git repo -- which is exactly what the tri-repo
+# gate's `git rev-parse HEAD` and sibling-state checks depend on.
+
+
+def _sibling_repo(path):
+    """A real git repo one level above the project, plus a .lake build env."""
+    path.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "s@example.com"],
+                   cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "s"], cwd=path, check=True)
+    (path / "sib.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    (path / ".lake" / "packages").mkdir(parents=True)
+    (path / ".lake" / "packages" / "marker.txt").write_text("deps\n",
+                                                           encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-qm", "sib"], cwd=path, check=True)
+    return path
+
+
+def _room_sibling_scratch(tmp_path):
+    """project + session for a project living beside a `../SIB` repo.
+
+    `dest` is nested one level deeper so `dest.parent` is NOT the directory
+    holding the source sibling: the materializer rmtree's the destination
+    sibling before copying, and pointing it at the source would delete the
+    very tree it is reading.
+    """
+    project, session = _materialize_project(tmp_path)
+    _sibling_repo(tmp_path / "SIB")
+    return project, session, tmp_path / "room" / "sub"
+
+
+def _block_full_git_copy(monkeypatch, git_dst, record=None, partial=True):
+    """Make the full `.git` copytree fail *after* creating its destination,
+    leaving the minimal fallback with a pre-existing git_dst to tolerate.
+
+    The partial creation is the realistic shape of a copytree that dies
+    mid-transfer, and it is the only way to observe that the fallback's
+    mkdir must pass exist_ok=True.
+    """
+    real = shutil.copytree
+
+    def blocked(*a, **kw):
+        if record is not None:
+            record(*a, **kw)
+        if Path(a[1]) == git_dst:
+            if partial:
+                Path(a[1]).mkdir(parents=True, exist_ok=True)
+            raise OSError("partial copy")
+        return real(*a, **kw)
+
+    monkeypatch.setattr(shutil, "copytree", blocked)
+    return real
+
+
+@pytest.mark.parametrize("rel,expected", [
+    ("src/app.py", True),          # plain in-tree path
+    ("../QED", True),              # sibling: exactly one level, name only
+    ("..", False),                 # bare parent dir: len(parts) < 2
+    ("a/../b", False),             # embedded .. whose head is not ".."
+    ("/etc/passwd", False),        # absolute
+    ("", False),                   # empty: no parts
+])
+def test_is_relative_separates_sibling_paths_from_escapes(rel, expected):
+    # Kills 87:8 (break_return), 87:15 (len(parts) >= 2 negated), 87:45
+    # (parts[0] == ".." negated) and 82:8 (break_return on `return False`).
+    # The sibling allowance is exactly `../<name>`; a negated length or head
+    # comparison flips `../QED` to False, which is the difference between a
+    # working tri-repo gate and a sibling that silently refuses to land.
+    assert _is_relative(rel) is expected
+
+
+def test_carry_git_metadata_copies_dot_git_so_head_resolves(tmp_path):
+    # Kills 102:14 / 103:14 (arithmetic on the .git source and destination):
+    # if either side is mutated the metadata lands in the wrong place and
+    # `git rev-parse HEAD` inside the clean room fails.
+    src = _sibling_repo(tmp_path / "SIB")
+    target = tmp_path / "room" / "SIB"
+    target.mkdir(parents=True)
+    _carry_git_metadata(src, target)
+    assert (target / ".git" / "HEAD").is_file()
+    proc = subprocess.run(["git", "rev-parse", "HEAD"], cwd=target,
+                          capture_output=True, text=True)
+    assert proc.returncode == 0
+
+
+def test_carry_git_metadata_never_clobbers_an_existing_dot_git(tmp_path):
+    # Kills 104:28 (flip_bool `not git_dst.exists()`). With a pre-existing
+    # .git the ORIGINAL code skips the branch entirely and leaves the
+    # existing metadata alone; the mutant would recopy over it.
+    src = _sibling_repo(tmp_path / "SIB")
+    target = tmp_path / "room" / "SIB"
+    (target / ".git").mkdir(parents=True)
+    (target / ".git" / "SENTINEL").write_text("keep\n", encoding="utf-8")
+    _carry_git_metadata(src, target)
+    assert (target / ".git" / "SENTINEL").read_text(encoding="utf-8") == (
+        "keep\n")
+    assert not (target / ".git" / "HEAD").exists()
+
+
+def test_carry_git_metadata_fallback_recovers_head_refs_and_config(
+        tmp_path, monkeypatch):
+    # Kills 113:24 / 114:24 (arithmetic on the fallback's source and
+    # destination paths), 115:39 (`not d.exists()` negated on the file
+    # branch), 117:40 (same negation on the directory branch), 110:53
+    # (`exist_ok` negated -- the destination .git already exists here, so a
+    # bare mkdir would raise and be swallowed) and 118:55 (`symlinks`
+    # negated). The full copy is unavailable, so the room must still end up
+    # with enough git metadata for `git rev-parse HEAD`.
+    src = _sibling_repo(tmp_path / "SIB")
+    target = tmp_path / "room" / "SIB"
+    target.mkdir(parents=True)
+    seen = []
+    _block_full_git_copy(monkeypatch, target / ".git",
+                         record=lambda *a, **kw: seen.append(
+                             (Path(a[1]), kw.get("symlinks"))))
+    _carry_git_metadata(src, target)
+    assert (target / ".git" / "HEAD").is_file()
+    assert (target / ".git" / "config").is_file()
+    assert (target / ".git" / "refs").is_dir()
+    # Kills 118:55: the fallback's directory copy must also preserve symlinks.
+    fallback_dir_copies = [v for d, v in seen
+                           if d == target / ".git" / "refs"]
+    assert fallback_dir_copies == [True]
+    proc = subprocess.run(["git", "rev-parse", "HEAD"], cwd=target,
+                          capture_output=True, text=True)
+    assert proc.returncode == 0
+
+
+def test_carry_git_metadata_fallback_creates_missing_parents(
+        tmp_path, monkeypatch):
+    # Kills 110:38 (flip_bool parents=True -> False). The fallback's mkdir
+    # runs against a destination whose parent chain does not exist yet, so
+    # without parents=True it raises FileNotFoundError, is swallowed by the
+    # bare `except OSError: pass`, and .git/HEAD is never written.
+    src = _sibling_repo(tmp_path / "SIB")
+    target = tmp_path / "deep" / "nested" / "SIB"
+    _block_full_git_copy(monkeypatch, target / ".git", partial=False)
+    _carry_git_metadata(src, target)
+    assert (target / ".git" / "HEAD").is_file()
+
+
+def test_carry_git_metadata_copies_with_symlinks_preserved(
+        tmp_path, monkeypatch):
+    # Kills 106:55 and 118:55 (flip_bool symlinks=True -> False on the
+    # copytree calls). A false `symlinks` dereferences links, silently
+    # rewriting the pinned worktree/.lake layout it is meant to reproduce.
+    src = _sibling_repo(tmp_path / "SIB")
+    target = tmp_path / "room" / "SIB"
+    target.mkdir(parents=True)
+    seen = []
+    real = shutil.copytree
+
+    def record(*a, **kw):
+        seen.append((Path(a[1]), kw.get("symlinks")))
+        return real(*a, **kw)
+
+    monkeypatch.setattr(shutil, "copytree", record)
+    _carry_git_metadata(src, target)
+    # Kills 106:55: the full .git copy must preserve symlinks.
+    assert (target / ".git", True) in seen
+
+
+def test_carry_git_metadata_handles_worktree_gitlink_file(tmp_path):
+    # Kills 121:31 (flip_bool `not git_dst.exists()` on the worktree branch):
+    # a worktree stores .git as a FILE pointing at the real gitdir, and the
+    # mutant would leave the clean room with no git metadata at all.
+    src = tmp_path / "W"
+    src.mkdir()
+    pointer = "gitdir: /elsewhere/.git/worktrees/W\n"
+    (src / ".git").write_text(pointer, encoding="utf-8")
+    target = tmp_path / "room" / "W"
+    target.mkdir(parents=True)
+    _carry_git_metadata(src, target)
+    assert (target / ".git").is_file()
+    assert (target / ".git").read_text(encoding="utf-8") == pointer
+
+
+def test_sibling_room_is_materialized_from_archive_patch_and_untracked(
+        tmp_path):
+    # The core tri-repo contract: `../SIB` is rebuilt from its OWN checkpoint
+    # (never copytree'd from the dirty host tree), its captured patch applied,
+    # its non-gitignored untracked files carried, and its pinned .lake
+    # environment preserved.
+    # Kills 223:22 / 223:48 (both negations of the is_sibling predicate: a
+    # negated `parts[0] == ".."` or `len(parts) == 2` demotes a legitimate
+    # sibling to an escaping path and aborts the mission), 231:21, 259:33,
+    # 260:48 (`st_size > 0` negated skips a real sibling patch), 262:31,
+    # 270:27 (flip_bool on the gitignore exclusion admits a planted ignored
+    # file into the room), 272:29, 275:29, 285:32, 287:36, 293:75.
+    project, session, dest = _room_sibling_scratch(tmp_path)
+    sib = tmp_path / "SIB"
+    (sib / "sib.py").write_text("def f():\n    return 2\n", encoding="utf-8")
+    (sib / "note.txt").write_text("carried\n", encoding="utf-8")
+    (sib / "d").mkdir()
+    (sib / "d" / "x.txt").write_text("x\n", encoding="utf-8")
+    (sib / "d" / "y.txt").write_text("y\n", encoding="utf-8")
+    # Two levels deep, so its parent chain is genuinely absent: this is what
+    # makes `parents=True` on the untracked-copy mkdir observable at all.
+    (sib / "d" / "e").mkdir()
+    (sib / "d" / "e" / "z.txt").write_text("z\n", encoding="utf-8")
+    (sib / ".lake" / "keep.txt").write_text("k\n", encoding="utf-8")
+    (sib / "planted.txt").write_text("nope\n", encoding="utf-8")
+    (sib / ".gitignore").write_text("planted.txt\n", encoding="utf-8")
+    patch = subprocess.run(["git", "diff", "--no-color"], cwd=sib,
+                           capture_output=True, check=True).stdout
+    (session / "patch_SIB.diff").write_bytes(patch)
+    (session / "untracked_SIB.txt").write_text(
+        # d/e/z.txt is listed FIRST: its whole parent chain is absent, which
+        # is the only way `parents=True` on this mkdir is observable at all
+        # (once d/x.txt lands, room/d exists and parents=False would do).
+        "d/e/z.txt\nnote.txt\nplanted.txt\nd/x.txt\nd/y.txt\n.lake\n",
+        encoding="utf-8")
+
+    materialize_clean_room(project, "HEAD", session, ["../SIB"], dest)
+
+    room = tmp_path / "room" / "SIB"
+    assert room.is_dir(), "sibling must land beside the clean room, not in it"
+    # the captured sibling change is applied
+    assert "return 2" in (room / "sib.py").read_text(encoding="utf-8")
+    # non-gitignored untracked files are carried byte-for-byte
+    assert (room / "note.txt").read_text(encoding="utf-8") == "carried\n"
+    # Kills 276:63 (exist_ok negated): "d/y.txt" is the SECOND file under an
+    # already-created "d", so the parent mkdir must tolerate it.
+    assert (room / "d" / "x.txt").read_text(encoding="utf-8") == "x\n"
+    assert (room / "d" / "y.txt").read_text(encoding="utf-8") == "y\n"
+    # Kills 276:48 (flip_bool parents=True -> False): "d/e" does not exist,
+    # so without parents=True this mkdir raises and the untracked carry fails
+    # closed for every legitimate nested file.
+    assert (room / "d" / "e" / "z.txt").read_text(encoding="utf-8") == "z\n"
+    # a gitignored plant is excluded even though the listing is tampered
+    assert not (room / "planted.txt").exists()
+    # Kills 273:56 (flip_bool `not _s.is_file()`): a DIRECTORY entry (".lake")
+    # must be skipped by the untracked copy loop, not read_bytes()'d.
+    # the pinned build environment is preserved
+    assert (room / ".lake" / "packages" / "marker.txt").is_file()
+    assert (room / ".lake" / "keep.txt").is_file()
+    # git metadata is carried so sibling-state checks function
+    proc = subprocess.run(["git", "rev-parse", "HEAD"], cwd=room,
+                          capture_output=True, text=True)
+    assert proc.returncode == 0
+
+
+def test_sibling_deep_path_is_rejected_as_an_escape(tmp_path):
+    # Kills 223:22 / 223:48 from the other direction: `../SIB/nested` is NOT
+    # a sibling (it is deeper than one level) and must fail closed rather
+    # than being copied from outside the project root.
+    project, session, dest = _room_sibling_scratch(tmp_path)
+    (tmp_path / "SIB" / "nested").mkdir()
+    with pytest.raises(CleanRoomError, match="escapes the project dir"):
+        materialize_clean_room(project, "HEAD", session,
+                               ["../SIB/nested"], dest)
+
+
+def test_sibling_without_resolvable_head_fails_closed(tmp_path):
+    # Kills 246:23 (negate_compare returncode != 0): a sibling that is not a
+    # git repository cannot have its checkpoint resolved, and the gate must
+    # abort instead of copying a dirty directory across.
+    project, session = _materialize_project(tmp_path)
+    (tmp_path / "SIB").mkdir()
+    with pytest.raises(CleanRoomError, match="cannot resolve HEAD"):
+        materialize_clean_room(project, "HEAD", session, ["../SIB"],
+                               tmp_path / "room" / "sub")
+
+
+def test_sibling_archive_failure_fails_closed(tmp_path, monkeypatch):
+    # Kills 252:23 (negate_compare on the sibling `git archive` result): a
+    # sibling whose archive cannot be produced must fail closed rather than
+    # proceed to patch an empty tree.
+    project, session, dest = _room_sibling_scratch(tmp_path)
+    sib = tmp_path / "SIB"
+    real_git = cleanroom._git
+
+    def fake(project_dir, *args):
+        if Path(project_dir) == sib and args and args[0] == "archive":
+            return subprocess.CompletedProcess(args, 1, b"", b"archive boom")
+        return real_git(project_dir, *args)
+
+    monkeypatch.setattr(cleanroom, "_git", fake)
+    with pytest.raises(CleanRoomError, match="git archive failed for sibling"):
+        materialize_clean_room(project, "HEAD", session, ["../SIB"], dest)
+
+
+def test_sibling_materialization_tolerates_pre_existing_target(tmp_path):
+    # Kills 254:41 / 254:56 (flip_bool on the target mkdir): the destination
+    # sibling directory can pre-exist (a resumed or repeated
+    # materialization), so the mkdir must tolerate it and the archive must
+    # still land.
+    project, session, dest = _room_sibling_scratch(tmp_path)
+    (tmp_path / "room" / "SIB").mkdir(parents=True)
+    materialize_clean_room(project, "HEAD", session, ["../SIB"], dest)
+    assert (tmp_path / "room" / "SIB" / "sib.py").is_file()
+
+
+def test_sibling_untracked_entry_pointing_outside_is_skipped(tmp_path):
+    # Kills 273:27 (flip_bool `not _contained(_s, _root)`). The containment
+    # check is the only thing stopping an untracked listing entry from
+    # writing *through* the clean room into the host filesystem; negating it
+    # lets "../evil.txt" escape. It must be skipped, silently and safely.
+    project, session, dest = _room_sibling_scratch(tmp_path)
+    (tmp_path / "evil.txt").write_text("evil\n", encoding="utf-8")
+    (session / "untracked_SIB.txt").write_text("../evil.txt\n", encoding="utf-8")
+    materialize_clean_room(project, "HEAD", session, ["../SIB"], dest)
+    assert not (tmp_path / "room" / "evil.txt").exists()
+    assert not (tmp_path / "room" / "sub" / "evil.txt").exists()
+
+
+def test_sibling_lake_environment_is_copied_with_symlinks_preserved(
+        tmp_path, monkeypatch):
+    # Kills 293:75 (flip_bool symlinks=True -> False) and 287:36. The pinned
+    # `.lake` build environment is what lets the formal gate compile without
+    # network access; dereferencing its symlinks would silently rewrite the
+    # layout the mission depends on.
+    project, session, dest = _room_sibling_scratch(tmp_path)
+    lake = tmp_path / "SIB" / ".lake"
+    (lake / "linked").mkdir(parents=True)
+    (lake / "target.txt").write_text("t\n", encoding="utf-8")
+    try:
+        (lake / "link.txt").symlink_to(lake / "target.txt")
+    except (OSError, NotImplementedError):  # pragma: no cover
+        pytest.skip("symlinks unavailable on this platform")
+    seen = []
+    real = shutil.copytree
+
+    def record(*a, **kw):
+        seen.append((Path(a[1]), kw.get("symlinks")))
+        return real(*a, **kw)
+
+    monkeypatch.setattr(shutil, "copytree", record)
+    materialize_clean_room(project, "HEAD", session, ["../SIB"], dest)
+    carried = tmp_path / "room" / "SIB" / ".lake"
+    assert (carried / "target.txt").is_file()
+    assert seen and (carried, True) in seen
+    assert (carried / "link.txt").is_symlink()

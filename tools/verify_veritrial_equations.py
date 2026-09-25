@@ -62,7 +62,7 @@ def verify_model(path: Path) -> None:
     )
     kp_function = _function(tree, "rodgers_rowland_kp")
     _contains_source(kp_function, ("kp = 10.0 ** log_kp_base * ion_factor * (water_fraction + lipid_adjustment) / 0.7",))
-    _contains_source(pbpk_dili := _function(tree, "pbpk_dili_ode"), (
+    _contains_source(_function(tree, "pbpk_dili_ode"), (
         "network = DEFAULT_ORGAN_NETWORK if args['Q'].shape[0] == 6 else STANDARD_14_ORGAN_NETWORK",
     ))
     params = _function(tree, "build_pbpk_params")

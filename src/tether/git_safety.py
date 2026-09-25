@@ -652,15 +652,23 @@ def workspace_create_checkpoint(project_dir, session_id, workspace_repos=None, a
     return infos
 
 def workspace_is_dirty(project_dir, workspace_repos=None):
-    if is_dirty(project_dir): return True
-    return any(is_dirty(r) for r in resolve_workspace_repos(project_dir, workspace_repos))
+    if is_dirty(project_dir):
+        return True
+    return any(
+        is_dirty(r)
+        for r in resolve_workspace_repos(project_dir, workspace_repos))
 
 def workspace_rollback(project_dir, session_id, workspace_repos=None, audit_dir=".tether/sessions", clean=False, preserve=None):
     results = {}
-    ok_all = True; msgs = []
+    ok_all = True
+    msgs = []
     ok, msg = rollback(project_dir, session_id, audit_dir=audit_dir, clean=clean, preserve=preserve)
-    results[str(project_dir)] = (ok, msg); ok_all = ok_all and ok; msgs.append(msg)
+    results[str(project_dir)] = (ok, msg)
+    ok_all = ok_all and ok
+    msgs.append(msg)
     for repo in resolve_workspace_repos(project_dir, workspace_repos):
         ok2, msg2 = rollback(repo, session_id, audit_dir=audit_dir, clean=clean, preserve=preserve)
-        results[str(repo)] = (ok2, msg2); ok_all = ok_all and ok2; msgs.append(msg2)
+        results[str(repo)] = (ok2, msg2)
+        ok_all = ok_all and ok2
+        msgs.append(msg2)
     return ok_all, "\n".join(msgs)
