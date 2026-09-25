@@ -71,6 +71,10 @@ verification:
     #   any input reaching them also matches the later whole-lemma pattern.
     # - 509:4 `return None`->None in _elan_bin_dir.
     # - 813:45 missing_ok flip masked by the surrounding try/except-pass.
+    # PD (src/insilico_trial/pd/__init__.py):
+    # - 13:43 Hill exponent mutation: `** 2` to `** 3` changes emax_effect
+    #   and is not behavior-equivalent; it is selected as a real control.
+    # - 62:17 warfarin baseline mutation: `+` to `-` changes inr_effect output.
     # Tether (src/tether/cleanroom.py):
     # - 254:56 exist_ok flip on the sibling-room mkdir: the target is always
     #   freshly created in the materialization path, so exist_ok is vacuous.
@@ -89,6 +93,8 @@ verification:
       - "../VeriTrial/scripts/verify_formal_gate.py:509:4"
       - "../VeriTrial/scripts/verify_formal_gate.py:813:45"
       - "src/tether/cleanroom.py:254:56"
+      - "../VeriTrial/src/insilico_trial/pd/__init__.py:13:43"
+      - "../VeriTrial/src/insilico_trial/pd/__init__.py:62:17"
   commands:
     - "python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --lean-out ../QED/VeriTrialExport.lean --out /tmp/pbpk_lemmas.txt"
     - "python3 ../VeriTrial/scripts/rebuild_qed_oleans.py"
