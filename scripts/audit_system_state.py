@@ -36,14 +36,50 @@ def audit_repo(name: str) -> dict:
     head = _run(repo, "rev-parse", "HEAD")
     dirty = bool(_run(repo, "status", "--porcelain"))
     return {"repo": name, "head": head, "dirty": dirty,
-            "sorry_free": "unknown" if name != "QED" else _check_sorry(repo)}
+            "sorry_free": _check_sorry(repo)}
 
-def _check_sorry(repo: Path) -> bool:
+def _lean_files(repo: Path) -> list[Path]:
+    """Every Lean source in *repo* that is part of the verified surface.
+
+    Skips vendored/derived trees (.lake, .venv, output) and caches. For
+    VeriTrial the sibling QED/VeriTrialExport.lean is included as well: it is
+    the Lean artifact VeriTrial itself generates and ships to the prover, so
+    it is squarely in this repo's verified surface even though the file
+    physically lives next door.
+    """
+    skip = {".lake", ".venv", "output", "__pycache__", ".git", "node_modules"}
+    found: list[Path] = []
+    for p in repo.rglob("*.lean"):
+        if skip & set(p.relative_to(repo).parts):
+            continue
+        found.append(p)
+    if repo.name == "VeriTrial":
+        sibling = ROOT / "QED" / "VeriTrialExport.lean"
+        if sibling.is_file():
+            found.append(sibling)
+    return sorted(found)
+
+def _check_sorry(repo: Path):
+    """sorry-freedom of *repo*: True, False, or "n/a" if it ships no Lean.
+
+    Every repo is checked, not just QED. This used to report "unknown" for
+    tether and VeriTrial by construction, so the tri-repo ledger could only
+    ever certify one of the three repositories it claims to cover -- and
+    "unknown" is exactly the kind of soft pass that survives review.
+
+    "n/a" is reported when a repo ships no Lean at all (tether is a pure
+    Python control plane). Claiming True there would assert a soundness
+    property of nothing; claiming False would libel a repo that simply has no
+    theorems.
+    """
     try:
         import re as _re
+        files = _lean_files(repo)
+        if not files:
+            return "n/a"
         hits = []
-        for p in list(repo.glob("*.lean")) + [repo / "VeriTrialExport.lean"]:
-            if not p.is_file() or ".lake" in p.parts:
+        for p in files:
+            if not p.is_file():
                 continue
             t = p.read_text(encoding="utf-8", errors="replace")
             t = _re.sub(r"/-.*?-/", "", t, flags=_re.DOTALL)
