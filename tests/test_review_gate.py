@@ -282,7 +282,11 @@ def test_review_prompt_scopes_sibling_repos_to_relative_paths(tmp_path):
     prompt = adapter.review_prompts[0]
     assert "../QED" in prompt                       # the spelling that works
     assert "RELATIVE paths" in prompt
-    assert "Do not `cd`" in prompt
+    assert "Do NOT `cd`" in prompt
+    # The refusal is tool-dependent: a relative shell command works while
+    # the file-reading tool rejects the same sibling, so both are named.
+    assert "SHELL commands spelled relatively" in prompt
+    assert "file-reading tool by absolute path" in prompt
 
 
 def test_review_prompt_omits_scope_for_single_repo_mission(tmp_path):
@@ -304,7 +308,7 @@ def test_review_prompt_omits_scope_for_single_repo_mission(tmp_path):
     Orchestrator(adapter, cfg, tmp_path).run(load_mission(mp))
     prompt = adapter.review_prompts[0]
     assert "RELATIVE paths" not in prompt
-    assert "Do not `cd`" not in prompt
+    assert "Do NOT `cd`" not in prompt
 
 
 def test_review_prompt_scope_excludes_the_project_itself(tmp_path):

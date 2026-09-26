@@ -1555,18 +1555,19 @@ class Orchestrator:
             "(passing commands, proofs, measured kill rates). A vacuous "
             "run with no evidence must be rejected.\n"
         )
-        # Where the reviewer may look. The reviewer runs in project_dir, and
-        # an agent whose CLI gates its own file access (the `opencode`
-        # adapter does) will refuse a path outside that directory. A
+        # Where the reviewer may look, and with what. The reviewer runs in
+        # project_dir, and an agent whose CLI gates its own file access (the
+        # `opencode` adapter does) refuses paths outside that directory. A
         # multi-repo mission's evidence lives in the SIBLINGS, so a reviewer
-        # told nothing here tries `cd` to the workspace root to reach them,
-        # gets refused, and never reaches a verdict -- the gate then fails
-        # for a reason that has nothing to do with the change. Naming the
-        # relative spelling that does work keeps enforcement where it is
-        # auditable (this repo's sandbox) instead of inside a prompt.
-        # Resolve siblings against project_dir, NOT the process cwd: a
-        # relative entry means "next to the project", and Path.resolve()
-        # alone would anchor it to wherever tether happened to be launched.
+        # told nothing here goes after them, gets refused, and never reaches
+        # a verdict -- the gate then fails for a reason that has nothing to
+        # do with the change.
+        #
+        # The refusal is tool-dependent, which is why naming the paths alone
+        # was not enough: a SHELL command with a relative path works, while
+        # the dedicated file-reading tool refuses the sibling even spelled
+        # relatively as an absolute path. So the instruction names both the
+        # spelling and the tool.
         _proj = self.project_dir.resolve()
         _siblings = [s for s in (getattr(mission, "workspace_repos", None) or [])
                      if (self.project_dir / s).resolve() != _proj]
@@ -1576,11 +1577,17 @@ class Orchestrator:
             scope_instruction = (
                 f"You are running with cwd = the project root "
                 f"({self.project_dir}). The mission's sibling repositories are "
-                f"in scope and reachable as RELATIVE paths: {_rel}. Read them "
-                f"that way (for example `git -C ../VeriTrial log`). Do not "
-                f"`cd` to a parent directory to reach them -- paths outside "
-                f"the project root are refused by the agent runtime, and an "
-                f"attempt to reach them costs you the verdict.\n\n"
+                f"in scope and reachable as RELATIVE paths: {_rel}.\n"
+                f"- Inspect them with SHELL commands spelled relatively: "
+                f"`git -C ../VeriTrial log`, `ls ../QED`, "
+                f"`grep -n ... ../QED/VeriTrialExport.lean`.\n"
+                f"- Do NOT `cd` to a parent directory, and do NOT read a "
+                f"sibling with the file-reading tool by absolute path: both "
+                f"are refused by the agent runtime, and a refusal costs you "
+                f"the verdict entirely.\n"
+                f"- The captured change and the verification evidence below "
+                f"are authoritative and are usually sufficient. If they "
+                f"already settle the mission goal, answer from them.\n\n"
             )
         prompt = (
             "You are acting as an adversarial code reviewer. Judge whether "
