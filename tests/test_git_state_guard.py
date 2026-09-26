@@ -443,3 +443,174 @@ def test_pre_existing_sibling_hooks_do_not_trip(tmp_path):
                                      hook_baseline=hooks_baseline,
                                      sibling_baseline=sibling_baseline)
     assert changed == []
+
+
+# ------------------ dogfood-46: git metadata integrity rides the same
+# mission-start baseline as hook integrity.
+#
+# Four classes of .git state that path globs AND HEAD/checkpoint-ref checks
+# both miss: .git/config (aliases, core.excludesFile, filter drivers),
+# .git/info/exclude and .git/info/sparse-checkout (hide or starve files the
+# operator thinks they are reviewing), and submodule pointers (retarget the
+# code the operator's tests compile against). Each MUST fail closed; each MUST
+# be invisible while the guard is off; and metadata the user already had
+# before the mission MUST never trip.
+
+
+class _MetadataWriter(Surgeon):
+    """Completed sends that run one scripted mutation of ``.git`` metadata."""
+
+    def __init__(self, mutate):
+        super().__init__(_always())
+        self.mutate = mutate
+
+    def send(self, prompt, session):
+        self.send_count += 1
+        if self.send_count >= 2:  # planning=1, execution=2
+            self.mutate(Path(session.project_dir))
+        return AgentState(status="completed", logs="out")
+
+
+def test_enabled_git_config_mutation_fails_closed(tmp_path):
+    # .git/config is the widest lever: aliases, core.excludesFile and
+    # clean/smudge filter drivers all execute on the operator's next git
+    # command, long after the agent is gone.
+    _git_repo_two_commits(tmp_path)
+    _commit_mission(tmp_path, "m.yaml",
+                    _mission_text("git_state_guard: true\n"))
+    surgeon = Surgeon(_always(["git", "config", "tether.evil", "yes"]))
+    report = _run(tmp_path, surgeon, "m.yaml")
+    assert report["status"] == "failed"
+    assert report["verification_results"] == []
+    violations = report["git_state_violations"]
+    assert any("git metadata drift: .git/config" in v
+               for v in violations), violations
+    # The branch pointer never moved: only metadata-hash drift can explain
+    # this, so a guard that "caught" it via HEAD would be the wrong mechanism.
+    assert not any("HEAD" in v for v in violations), violations
+
+
+def test_enabled_info_exclude_write_fails_closed(tmp_path):
+    # An .git/info/exclude edit silently hides untracked files from
+    # `git status` and the capture diff, which is how writes get smuggled past
+    # the reviewer's eye.
+    _git_repo_two_commits(tmp_path)
+    _commit_mission(tmp_path, "m.yaml",
+                    _mission_text("git_state_guard: true\n"))
+
+    def poison_exclude(project: Path) -> None:
+        info = project / ".git" / "info"
+        info.mkdir(parents=True, exist_ok=True)
+        exclude = info / "exclude"
+        prior = exclude.read_text("utf-8") if exclude.is_file() else ""
+        exclude.write_text(prior + "smuggled.py\n", encoding="utf-8")
+
+    report = _run(tmp_path, _MetadataWriter(poison_exclude), "m.yaml")
+    assert report["status"] == "failed"
+    assert report["verification_results"] == []
+    violations = report["git_state_violations"]
+    assert any("git metadata drift: .git/info/exclude" in v
+               for v in violations), violations
+
+
+def test_enabled_sparse_checkout_write_fails_closed(tmp_path):
+    # A sparse-checkout file can starve the working tree, so the agent's
+    # verification commands run against a different file set than the operator
+    # believes they are testing.
+    _git_repo_two_commits(tmp_path)
+    _commit_mission(tmp_path, "m.yaml",
+                    _mission_text("git_state_guard: true\n"))
+
+    def poison_sparse(project: Path) -> None:
+        info = project / ".git" / "info"
+        info.mkdir(parents=True, exist_ok=True)
+        (info / "sparse-checkout").write_text("/nonexistent\n",
+                                              encoding="utf-8")
+
+    report = _run(tmp_path, _MetadataWriter(poison_sparse), "m.yaml")
+    assert report["status"] == "failed"
+    assert report["verification_results"] == []
+    violations = report["git_state_violations"]
+    assert any("git metadata drift: .git/info/sparse-checkout" in v
+               for v in violations), violations
+
+
+def test_enabled_submodule_pointer_drift_fails_closed(tmp_path):
+    # Retargeting a submodule swaps the code the operator's tests compile
+    # against. The pointer moves in the INDEX, so no commit is taken and HEAD
+    # is untouched — exactly what HEAD/ref checks cannot see.
+    _git_repo_two_commits(tmp_path)
+    _commit_mission(tmp_path, "m.yaml",
+                    _mission_text("git_state_guard: true\n"))
+
+    def add_submodule(project: Path) -> None:
+        inner = project / "inner"
+        inner.mkdir(exist_ok=True)
+        _git_repo_two_commits(inner)
+        subprocess.run(
+            ["git", "-c", "protocol.file.allow=always", "submodule", "add",
+             "-q", "./inner", "subm"],
+            cwd=str(project), capture_output=True, check=False, shell=False)
+
+    report = _run(tmp_path, _MetadataWriter(add_submodule), "m.yaml")
+    assert report["status"] == "failed"
+    assert report["verification_results"] == []
+    violations = report["git_state_violations"]
+    # `submodule add` also edits .git/config, so assert on the specific
+    # violation string, never on the violation count.
+    assert any("submodule pointer drift: subm" in v
+               for v in violations), violations
+    assert not any("HEAD" in v for v in violations), violations
+
+
+def test_pre_existing_git_metadata_does_not_trip(tmp_path):
+    # Baseline semantics for the new classes: whatever metadata the user
+    # already had is their own state and must never fail the guard. This is
+    # the only real false-positive risk of the expansion.
+    _git_repo_two_commits(tmp_path)
+    info = tmp_path / ".git" / "info"
+    info.mkdir(parents=True, exist_ok=True)
+    (info / "exclude").write_text("# user excludes\nscratch/\n",
+                                  encoding="utf-8")
+    (info / "sparse-checkout").write_text("/*\n!/.gitignore\n",
+                                          encoding="utf-8")
+    subprocess.run(["git", "config", "tether.userpref", "keep"],
+                   cwd=tmp_path, check=True, capture_output=True)
+    _commit_mission(tmp_path, "m.yaml",
+                    _mission_text("git_state_guard: true\n"))
+    report = _run(tmp_path, Surgeon(lambda n: []), "m.yaml")
+    assert report["status"] == "success", report["next_steps"]
+    assert "git_state_violations" not in report
+    assert all(e.get("kind") != "git_state_violations"
+               for e in _events(tmp_path, report))
+
+
+def test_default_off_git_config_mutation_stays_legacy(tmp_path):
+    # Unset guard: metadata mutation is exactly as invisible as it was before
+    # dogfood-46 — no new keys, no new events, mission succeeds.
+    _git_repo_two_commits(tmp_path)
+    _commit_mission(tmp_path, "m.yaml", _mission_text())
+    surgeon = Surgeon(_always(["git", "config", "tether.evil", "yes"]))
+    report = _run(tmp_path, surgeon, "m.yaml")
+    assert report["status"] == "success", report["next_steps"]
+    assert "git_state_violations" not in report
+    assert all(e.get("kind") != "git_state_violations"
+               for e in _events(tmp_path, report))
+
+
+def test_enabled_sibling_git_config_drift_fails_closed(tmp_path):
+    # Metadata integrity is workspace-wide, exactly like hook integrity: a
+    # .git/config rewrite in a sibling repo must trip with an attributable
+    # label, and a clean sibling must pass first.
+    from tether.orchestrator import _GitStateViolationError
+    (orch, audit, mission, checkpoint, hooks_baseline,
+     sibling_baseline) = _sibling_gate(tmp_path, "s-sibcfg1")
+    subprocess.run(["git", "config", "tether.evil", "yes"],
+                   cwd=str(tmp_path / "sib"), check=True, capture_output=True)
+    with pytest.raises(_GitStateViolationError) as excinfo:
+        orch._gate_and_capture(audit, mission, checkpoint, None,
+                               dry_run=False,
+                               hook_baseline=hooks_baseline,
+                               sibling_baseline=sibling_baseline)
+    assert any("sib" in v and "git metadata drift: .git/config" in v
+               for v in excinfo.value.violations), excinfo.value.violations
