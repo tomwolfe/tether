@@ -24,17 +24,25 @@ def describe_adapter(
     """
     adapter = registry.resolve_adapter(name, adapters_settings)
     cls = type(adapter)
+    # `name`, `verified` and all five capability flags are declared on
+    # AgentAdapter itself, so they are read as plain attributes. A
+    # `getattr(..., False)` default would be actively harmful here: it turns a
+    # renamed or misspelled capability into a silent `false` -- an adapter
+    # claim the JSON reports as fact but nothing ever read. Reading the real
+    # attribute keeps the value honest and a wrong name fails loudly.
+    # `known_settings` is the opposite case: it is opt-in (only mock/command
+    # declare it), so it keeps the same defensive default the registry itself
+    # uses in unknown_setting_messages.
     return {
         "name": adapter.name,
         "class": cls.__name__,
         "verified": bool(adapter.verified),
         "capabilities": {
-            "cancel": bool(getattr(adapter, "supports_cancel", False)),
-            "process_tree_kill": bool(
-                getattr(adapter, "supports_process_tree_kill", False)),
-            "usage": bool(getattr(adapter, "supports_usage", False)),
-            "streaming": bool(getattr(adapter, "supports_streaming", False)),
-            "one_shot": bool(getattr(adapter, "one_shot", True)),
+            "cancel": bool(adapter.supports_cancel),
+            "process_tree_kill": bool(adapter.supports_process_tree_kill),
+            "usage": bool(adapter.supports_usage),
+            "streaming": bool(adapter.supports_streaming),
+            "one_shot": bool(adapter.one_shot),
         },
         "known_settings": sorted(getattr(cls, "known_settings", frozenset())),
     }
