@@ -7,7 +7,7 @@ No mock adapter was used for any gate recorded below.
 
 | repo | HEAD | dirty | sorry_free |
 |---|---|---|---|
-| tether | `141e20648f7c5d3a304f25e96457cd71b470199c` | false | `n/a` (ships no Lean) |
+| tether | `70ea04c8b6fb` | false | `n/a` (ships no Lean) |
 | QED | `a873a3dd90c7c5282ad54a5c3a28f8fb05867eb9` | false | **true** |
 | VeriTrial | `8f14e72819d392e1b8ed19d6f7aca5fb75437120` | false | **true** |
 
@@ -79,12 +79,17 @@ Column sums of `J` are zero to float32 precision
 sibling target mkdir is preceded by an unlink/rmtree prelude on every branch, so
 neither of its flags is reachable (254:41, 254:56).
 
-The tri-repo gate measured **0.7727 against a 0.8 floor** in its last full run —
-not because its mutants were equivalent, but because the suite it ran
+The tri-repo gate measured **0.7727 against a 0.8 floor** in its earlier full
+run — not because its mutants were equivalent, but because the suite it ran
 (`test_mission_regressions.py`) could not kill them. The gate's own
-`baseline_targets` are now measured against the suites that cover them, and all
-four score 1.0. The three genuinely-equivalent gate mutants are documented in
-the mission with their proofs.
+`baseline_targets` are now measured against the suites that cover them.
+
+Re-measured end to end on 2026-09-26 (session `8a3ff2654e70`):
+**kill_rate 1.0 — 19 killed, 0 survived, 5 documented-equivalent skipped**
+(`fail_below` 0.8). Per file: `export_pbpk_to_qed.py` 4/4,
+`verify_formal_gate.py` 5/5, `pbpk/model.py` 6/6, `pd/__init__.py` 4/4. The
+three genuinely-equivalent gate mutants are documented in the mission with
+their proofs.
 
 ## Zero leakage
 
@@ -132,24 +137,97 @@ Every item below was found by a gate failing, not by inspection.
 
 ## Honest limitations
 
-* **The tri-repo gate mission has not been re-run to a green `success`.** Its
-  last full run failed at 0.7727 mutation; the four root causes are fixed and
-  each fix is measured (table above), but a complete 8-command run costs many
-  hours and was not repeated. The `SUCCESS` claim for that mission is
-  therefore **not** made here.
-* **dogfood-43, -44, -45 did not pass; dogfood-46 did** (session
-  `d7626ecb8028`, non-empty 6849-byte `patch.diff`, no sandbox violations,
-  mutation 7/12 = 0.583 ≥ 0.5). 43 failed because the reviewer emitted no
-  parseable verdict; 45 because the reviewer correctly rejected a cosmetic
-  diff with unsubstantiated mutation evidence; 44 because I ran the audit
-  against a repo with a mission in flight and dirtied its tree — the sandbox
-  correctly rejected the resulting write. Under this model these payloads are
-  already implemented, so the agent has no substantive change to make, and the
-  review gate — working as designed — refuses to certify a vacuous diff.
-* Every failure above was a **fail-closed** outcome. Nothing below was relaxed
-  to manufacture a pass: no `min_teeth_rate`, `fail_below`, or `sorry_free`
-  threshold was lowered.
+### The tri-repo gate is one layer from green, and it is the review layer
+
+`tri-repo-full-stack-gate.yaml`, session `8a3ff2654e70`, 2026-09-26. For the
+first time every measurable part of this gate passed:
+
+| layer | result |
+|---|---|
+| clean-room verification | **8/8 commands exit 0** |
+| mutation | **kill_rate 1.0** — 19 killed, 0 survived, 5 documented-equivalent skipped (`fail_below` 0.8) |
+| sandbox violations | none |
+| formal gate | `all 18 lemmas verified by QED (no sorry)` / `FORMAL GATE PASSED` |
+| overall | **failed** — `review: request_changes` |
+
+The failure is `no valid review verdict found in reviewer output`. The cause is
+recorded verbatim in the reviewer's own transcript:
+
+```
+! permission requested: external_directory (/Users/tom/Documents/apps/*); auto-rejecting
+x cd /Users/tom/Documents/apps && git -C VeriTrial log --oneline -5 ... failed
+  Error: The user rejected permission to use this specific tool call.
+```
+
+This is **not** tether's sandbox — the run logged zero `sandbox_violations` —
+it is the `opencode` CLI's own permission layer, which in non-interactive mode
+auto-rejects. The reviewer tried to `cd` into the workspace root, which is the
+mission's parent and therefore outside `project_dir`. The same read succeeds
+as a relative path (`../VeriTrial/...`, `../QED/...`), which is exactly what
+all eight verification commands use, so the gate's *verification* layer never
+hit this and only its *review* layer did.
+
+Two notes on how this was and was not handled:
+
+* A **guard** was deliberately not touched. `git_state_guard` reports a
+  forward commit as "history was rewritten", and dogfood-46 fails because its
+  agent committed. A fix that treats a forward commit as benign was written,
+  and reverted: `test_enabled_agent_commit_forward_trips_guard_strictness`
+  pins the strict semantics on purpose ("strict semantics flag ANY history
+  movement while the guard is on"). Loosening it to turn dogfood-46 green
+  would have been a threshold relaxation wearing a bugfix costume. The gate
+  is also `git_state_guard: true`, so that change would have been load-bearing
+  for the gate, not cosmetic.
+* The `opencode` preset pinned by the model constraint
+  (`command: ["opencode", "run", "-m", "opencode/space-bunny-free",
+  "{prompt}"]`) carries no permission configuration. `opencode run` does
+  support `--auto` ("auto-approve permissions that are not explicitly
+  denied"). Whether to add it is an operator decision, not a repair: it
+  widens what the agent may touch, and the cleaner fix is to scope the review
+  prompt to the mission's own `project_dir` plus relative sibling paths, so
+  enforcement stays in tether's auditable sandbox instead of the model's own
+  opaque permission prompts. **Not changed here — the preset is pinned.**
+
+### Not yet run in this session
+
+`dogfood-45` and `dogfood-46` did not reach `success`; their work was
+substantive and is committed (`aa6deb8`, `f12d376`, `e9990eb`), but the
+missions themselves are not claimed as green. The nine QED missions, the
+VeriTrial `make` chain, `veritrial-formal-gate`, and
+`qed-veritrial-formal-pipeline` have not been re-run here; the QED numbers
+below were measured directly rather than via a mission. Tier 2
+(`STANDARD_14_ORGAN_NETWORK` promotion, saturable `Vmax`/`Km` clearance) is
+not started — `Vmax`/`Km` appears nowhere in `model.py` today. Promoting
+14-organ to `DEFAULT` would also invalidate the `Fin 6` export, the
+`J[5][2]`/`J[5][5]` pins and the 18 lemmas, so it is a breaking change that
+wants its own decision, not a quiet stretch goal.
+
+### Dogfood status this session
+
+`dogfood-43` and `dogfood-44` reached **`success`** — both had never passed
+before. `dogfood-45` failed verification on one red test but had already
+finished its fix; that work was completed and committed rather than
+discarded (`aa6deb8`). `dogfood-46` failed on the git-state guard, as
+described above.
+
+The recurring operational cost, recorded because it cost three runs: **a
+mission that ends dirty blocks the next one.** `tether` refuses to start when
+the working tree is dirty, and neither a failed nor a successful mission
+commits its own work, so the operator commits between every mission or the
+queue stalls. dogfood-45's leftover aborted 44 and 43 outright.
+
+The auto-probe generator remains unable to author probes: on `dogfood-43` it
+quoted the prompt's own template back, and `parse_generated_probes` — which
+takes the *last* fenced block — parsed that echo and correctly rejected every
+placeholder, so synthesis fell back to the human battery. The schema-echo
+filter is working as designed; the gap is generator behavior, not parser
+behavior, and it means the teeth gate has still never actually measured
+anything.
+
+* Nothing below was relaxed to manufacture a pass: no `min_teeth_rate`,
+  `fail_below`, or `sorry_free` threshold was lowered, and no fail-closed
+  guard was loosened.
 * 22 mutants in `cardiac_apd_effect` and the whole Emax core were unmeasured
-  until the gate's suite selection was fixed. Test-coverage gaps of that shape
-  are the most dangerous kind of finding here, because every gate still
+  until the gate's suite selection was fixed. Test-coverage gaps of that
+  shape are the most dangerous kind of finding here, because every gate still
   reports green.
