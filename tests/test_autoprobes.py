@@ -228,3 +228,65 @@ def test_toothless_probe_kills_nothing(tmp_path):
     assert summary.survived == 2
     ok, text = summarize_teeth(summary, mutants, 0.5)
     assert ok is False
+
+
+def test_schema_echoed_probes_are_rejected_not_executed():
+    # A generator that cannot solve the task echoes the schema back verbatim.
+    # Those entries are structurally valid (non-empty strings that shlex-parse
+    # and carry a `contains`), so before this guard the probe runner exec'd a
+    # program literally named "<single-line" and the whole verification tier
+    # failed on "binary not found" instead of falling back cleanly.
+    from tether.autoprobes import ProbeSynthesisError, parse_generated_probes
+
+    echoed = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command: '<single-line command, run with cwd = project root>'\n"
+        "    contains: '<literal substring required in combined "
+        "stdout+stderr>'\n"
+        "    matches: None\n"
+        "```"
+    )
+    with pytest.raises(ProbeSynthesisError) as exc:
+        parse_generated_probes(echoed)
+    assert "no valid probes after salvage" in str(exc.value)
+
+
+def test_placeholder_executable_is_rejected_but_real_ones_survive():
+    # Narrow the guard: only the *executable name* and a pure metavariable
+    # `contains` are placeholders. A genuine `matches` regex like "<[0-9]+>"
+    # and a genuine command that merely mentions brackets must still parse,
+    # or the guard would throw away real probes.
+    from tether.autoprobes import parse_generated_probes
+
+    real = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command: '.venv/bin/tether adapters describe mock'\n"
+        "    contains: '\"verified\": true'\n"
+        "  - command: \"grep -c 'a<b' README.md\"\n"
+        "    matches: '<[0-9]+>'\n"
+        "```"
+    )
+    specs = parse_generated_probes(real)
+    assert len(specs) == 2
+    assert specs[1].matches == "<[0-9]+>"
+
+
+def test_placeholder_probe_is_dropped_but_real_siblings_survive():
+    # Salvage semantics: a mixed list keeps the real probes and discards the
+    # echoed one, rather than failing the whole synthesis.
+    from tether.autoprobes import parse_generated_probes
+
+    mixed = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command: '<single-line command>'\n"
+        "    contains: 'x'\n"
+        "  - command: '.venv/bin/tether adapters conformance mock'\n"
+        "    contains: 'PASS'\n"
+        "```"
+    )
+    specs = parse_generated_probes(mixed)
+    assert len(specs) == 1
+    assert specs[0].command.endswith("conformance mock")

@@ -104,6 +104,18 @@ def _fail(reason: str) -> "ProbeSynthesisError":
     return ProbeSynthesisError(f"probe synthesis failed: {reason}")
 
 
+# A generator that cannot solve the task will often echo the schema back
+# verbatim -- "<single-line command, run with cwd = project root>" and
+# friends. Those entries are structurally VALID: they are non-empty strings,
+# they shlex-parse, and they carry a `contains`. Passing them to the probe
+# runner then execs a program literally named "<single-line", which fails
+# with "binary not found" and burns a whole verification attempt on
+# nonsense. A real executable name never contains angle brackets, and a real
+# literal assertion is never itself a bracketed metavariable, so both are
+# unambiguous placeholders and are rejected instead of executed.
+_PLACEHOLDER_RE = re.compile(r"<[^<>\n]+>")
+
+
 def _validated_probe(index: int, entry: object) -> ProbeSpec:
     if not isinstance(entry, dict):
         raise _fail(f"probe[{index}] is not a mapping")
@@ -122,7 +134,15 @@ def _validated_probe(index: int, entry: object) -> ProbeSpec:
         raise _fail(f"probe[{index}] 'command' failed to parse: {e}") from e
     if not argv:
         raise _fail(f"probe[{index}] 'command' must be a non-empty string")
+    if "<" in argv[0] or ">" in argv[0]:
+        raise _fail(
+            f"probe[{index}] 'command' echoes the schema template "
+            f"(executable {argv[0]!r} is a placeholder, not a program)")
     contains = entry.get("contains")
+    if isinstance(contains, str) and _PLACEHOLDER_RE.fullmatch(contains.strip()):
+        raise _fail(
+            f"probe[{index}] 'contains' is a schema placeholder, not a "
+            f"literal to assert on")
     if contains is not None and (
             not isinstance(contains, str) or not contains):
         raise _fail(f"probe[{index}] 'contains' must be a non-empty string")
