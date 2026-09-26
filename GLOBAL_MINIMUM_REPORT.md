@@ -7,7 +7,7 @@ No mock adapter was used for any gate recorded below.
 
 | repo | HEAD | dirty | sorry_free |
 |---|---|---|---|
-| tether | `70ea04c8b6fb` | false | `n/a` (ships no Lean) |
+| tether | `1c230d60d8a0` | false | `n/a` (ships no Lean) |
 | QED | `a873a3dd90c7c5282ad54a5c3a28f8fb05867eb9` | false | **true** |
 | VeriTrial | `8f14e72819d392e1b8ed19d6f7aca5fb75437120` | false | **true** |
 
@@ -135,72 +135,84 @@ Every item below was found by a gate failing, not by inspection.
    task echoes the probe schema; those entries are structurally valid, so the
    runner exec'd a program named `<single-line` and burned an hour per attempt.
 
-## Honest limitations
+## The tri-repo gate is GREEN
 
-### The tri-repo gate is one layer from green, and it is the review layer
-
-`tri-repo-full-stack-gate.yaml`, session `8a3ff2654e70`, 2026-09-26. For the
-first time every measurable part of this gate passed:
+`tri-repo-full-stack-gate.yaml`, session `c32fb116d309`, 2026-09-26,
+**status `success`**. Every layer, measured:
 
 | layer | result |
 |---|---|
 | clean-room verification | **8/8 commands exit 0** |
 | mutation | **kill_rate 1.0** — 19 killed, 0 survived, 5 documented-equivalent skipped (`fail_below` 0.8) |
+| review | **approve**, on cited evidence |
 | sandbox violations | none |
+| git_state_violations | none |
 | formal gate | `all 18 lemmas verified by QED (no sorry)` / `FORMAL GATE PASSED` |
-| overall | **failed** — `review: request_changes` |
 
-The failure is `no valid review verdict found in reviewer output`. The cause is
-recorded verbatim in the reviewer's own transcript:
+The reviewer approved on substance, not on absence of findings: it cited the
+self-contained `Fin 6` Jacobian-derived export, the fact that
+`verify_formal_gate.py` *reaching* its final `FORMAL GATE PASSED` line proves
+the isomorphism compile and the `#print axioms` gate ran first, the 19/19
+mutant kill, and the emitted Merkle provenance root
+(`1602f83a03772d29…`).
+
+`changed_files` is empty, and that is correct rather than vacuous: this is a
+verification gate whose payload is already implemented, so the change set is
+legitimately nil. The review prompt's vacuity rule is what keeps that honest
+— it approves an empty change *only* when named gates ran green with
+substantive evidence, and the evidence block carried all eight commands'
+output, exit codes and the kill rate.
+
+### What it took to get here
+
+The gate had failed on its review layer twice for one reason, which was never
+about the change. The reviewer runs with cwd = `project_dir`, a
+multi-repo mission's evidence lives in the *siblings*, and the `opencode`
+CLI auto-rejects paths outside the project root. So the reviewer went after
+the siblings, was refused, and never reached a verdict:
 
 ```
 ! permission requested: external_directory (/Users/tom/Documents/apps/*); auto-rejecting
-x cd /Users/tom/Documents/apps && git -C VeriTrial log --oneline -5 ... failed
-  Error: The user rejected permission to use this specific tool call.
+x cd /Users/tom/Documents/apps && git -C VeriTrial log ... failed
 ```
 
-This is **not** tether's sandbox — the run logged zero `sandbox_violations` —
-it is the `opencode` CLI's own permission layer, which in non-interactive mode
-auto-rejects. The reviewer tried to `cd` into the workspace root, which is the
-mission's parent and therefore outside `project_dir`. The same read succeeds
-as a relative path (`../VeriTrial/...`, `../QED/...`), which is exactly what
-all eight verification commands use, so the gate's *verification* layer never
-hit this and only its *review* layer did.
+The fix is in the review prompt, not in the pinned adapter preset, so that
+enforcement stays in this repo's auditable sandbox instead of inside an
+agent-runtime permission prompt. It took two passes, and the second one is
+the instructive half: naming the relative paths was **not** enough. The next
+run stopped `cd`-ing out — so that half landed — and was then refused *again*,
+this time by the dedicated file-reading tool, while its relative **shell**
+commands worked fine. The refusal is tool-dependent, not path-dependent, and
+a prompt that names only the path gives the reviewer no way to tell the
+difference. The block now names the spelling and the tool, and says the
+captured change plus verification evidence are authoritative.
 
-Two notes on how this was and was not handled:
+Verified in isolation against the real gate prompt *before* spending another
+1.5 hours re-running the gate: the reviewer reached `REVIEW: APPROVE` and
+cited the mutant kill, the 18 lemmas, the provenance root and the dt bound.
 
-* A **guard** was deliberately not touched. `git_state_guard` reports a
-  forward commit as "history was rewritten", and dogfood-46 fails because its
-  agent committed. A fix that treats a forward commit as benign was written,
-  and reverted: `test_enabled_agent_commit_forward_trips_guard_strictness`
-  pins the strict semantics on purpose ("strict semantics flag ANY history
-  movement while the guard is on"). Loosening it to turn dogfood-46 green
-  would have been a threshold relaxation wearing a bugfix costume. The gate
-  is also `git_state_guard: true`, so that change would have been load-bearing
-  for the gate, not cosmetic.
-* The `opencode` preset pinned by the model constraint
-  (`command: ["opencode", "run", "-m", "opencode/space-bunny-free",
-  "{prompt}"]`) carries no permission configuration. `opencode run` does
-  support `--auto` ("auto-approve permissions that are not explicitly
-  denied"). Whether to add it is an operator decision, not a repair: it
-  widens what the agent may touch, and the cleaner fix is to scope the review
-  prompt to the mission's own `project_dir` plus relative sibling paths, so
-  enforcement stays in tether's auditable sandbox instead of the model's own
-  opaque permission prompts. **Not changed here — the preset is pinned.**
-
-### Not yet run in this session
+## Honest limitations
 
 `dogfood-45` and `dogfood-46` did not reach `success`; their work was
 substantive and is committed (`aa6deb8`, `f12d376`, `e9990eb`), but the
-missions themselves are not claimed as green. The nine QED missions, the
-VeriTrial `make` chain, `veritrial-formal-gate`, and
-`qed-veritrial-formal-pipeline` have not been re-run here; the QED numbers
-below were measured directly rather than via a mission. Tier 2
-(`STANDARD_14_ORGAN_NETWORK` promotion, saturable `Vmax`/`Km` clearance) is
-not started — `Vmax`/`Km` appears nowhere in `model.py` today. Promoting
-14-organ to `DEFAULT` would also invalidate the `Fin 6` export, the
-`J[5][2]`/`J[5][5]` pins and the 18 lemmas, so it is a breaking change that
-wants its own decision, not a quiet stretch goal.
+missions themselves are not claimed as green. A **guard was deliberately not
+loosened** to change that: `git_state_guard` reports a forward commit as
+"history was rewritten", and dogfood-46 fails because its agent committed. A
+fix treating a forward commit as benign was written and then reverted, because
+`test_enabled_agent_commit_forward_trips_guard_strictness` pins the strict
+semantics on purpose ("strict semantics flag ANY history movement while the
+guard is on") and this gate is `git_state_guard: true`, which makes that
+change load-bearing rather than cosmetic.
+
+The nine QED missions, the VeriTrial `make` chain,
+`veritrial-formal-gate`, and `qed-veritrial-formal-pipeline` have not been
+re-run here. QED's numbers below were measured directly, not via a mission,
+and the VeriTrial export, olean rebuild and strict formal gate are covered by
+this gate's commands 1–4. Tier 2 (`STANDARD_14_ORGAN_NETWORK` promotion,
+saturable `Vmax`/`Km` clearance) is not started — `Vmax`/`Km` appears nowhere
+in `model.py` today. Promoting 14-organ to `DEFAULT` would also invalidate the
+`Fin 6` export, the `J[5][2]`/`J[5][5]` pins and the 18 lemmas, so it is a
+breaking change that wants its own decision, not a quiet stretch goal.
 
 ### Dogfood status this session
 
