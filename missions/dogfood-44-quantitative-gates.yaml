@@ -26,7 +26,15 @@ verification:
       contains: "salvaged:1"
   auto_probes:
     enabled: true
-    adapter: mock
+    # The `--adapter` CLI override only replaces the top-level agent adapter;
+    # auto_probes.adapter is a separate field and stayed on `mock`, so the
+    # synthesized-probe tier silently ran against the fake adapter and failed
+    # with "no fenced yaml block found". Pin the real model here.
+    adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "-m", "opencode/space-bunny-free", "{prompt}"]
+    timeout_seconds: 2700
     max_probes: 5
     min_teeth_rate: 0.7
     max_mutants: 12
@@ -44,7 +52,7 @@ budget:
   max_sends: 8
   max_wall_seconds: 3600
 git_state_guard: true
-adapter: mock
+adapter: opencode
 allowed_paths:
   - src/tether/autoprobes.py
   - tests/test_autoprobes.py
