@@ -83,6 +83,24 @@ def test_parse_accepts_bare_fence_and_strips_ansi():
     assert len(probes) == 2
 
 
+def test_parse_accepts_shell_escaped_fence_markers():
+    # A generator that answers through a shell-quoted context backslash-escapes
+    # the fence markers along with its command text. That echo must not hide the
+    # block: the healthy probe still comes through, the empty command does not.
+    response = (
+        "\\`\\`\\`yaml\n"
+        "probes:\n"
+        "  - command: \"echo hi\"\n"
+        "    contains: \"hi\"\n"
+        "  - command: \"\"\n"
+        "    contains: \"x\"\n"
+        "\\`\\`\\`"
+    )
+    probes = _parse(response)
+    assert [p.command for p in probes] == ["echo hi"]
+    assert probes[0].contains == "hi"
+
+
 def test_parse_takes_last_fence():
     response = (
         "```yaml\nprobes:\n  - command: first --ignore\n    contains: x\n```\n"
@@ -143,6 +161,124 @@ def test_parse_salvages_valid_probes_from_mixed_response():
     specs = _parse(response)
     assert len(specs) == 1
     assert specs[0].command == "echo hi"
+
+
+# ------------------------------------------------- salvage across bad YAML
+
+
+def test_parse_salvages_when_one_entry_breaks_yaml():
+    # A shell command whose quotes are nested inside a quoted scalar is a
+    # YAML error, and a single such entry used to take the whole response
+    # down with it. One bad entry must cost only itself.
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command: 'python -c 'print(1)''\n"
+        "    contains: '1'\n"
+        "  - command: \"echo hi\"\n"
+        "    contains: \"hi\"\n"
+        "```"
+    )
+    specs = _parse(response)
+    assert len(specs) == 1
+    assert specs[0].command == "echo hi"
+
+
+def test_parse_salvages_when_broken_entry_comes_last():
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command: \"echo first\"\n"
+        "    contains: \"first\"\n"
+        "  - command: 'bash -c 'echo second''\n"
+        "    contains: 'second'\n"
+        "  - command: \"echo third\"\n"
+        "    matches: 'thi'\n"
+        "```"
+    )
+    specs = _parse(response)
+    assert [p.command for p in specs] == ["echo first", "echo third"]
+
+
+def test_parse_relaxes_double_quoted_shell_fragment():
+    # A raw backslash inside a double-quoted scalar is an unknown YAML
+    # escape, so the block must be read with that scalar re-quoted — and the
+    # backslash must survive as the data the shell fragment needs.
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command: \"printf 'a\\\\db'\"\n"
+        "    contains: \"a\\\\db\"\n"
+        "    matches: 'id \\d+'\n"
+        "```"
+    )
+    specs = _parse(response)
+    assert len(specs) == 1
+    assert specs[0].command == "printf 'a\\db'"
+    assert specs[0].contains == "a\\db"
+    assert specs[0].matches == "id \\d+"
+
+
+def test_parse_keeps_properly_escaped_double_quoted_scalar():
+    # The repair must not re-quote what YAML already reads correctly.
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command: \"python -c \\\"print(1)\\\"\"\n"
+        "    contains: \"1\"\n"
+        "```"
+    )
+    specs = _parse(response)
+    assert specs[0].command == 'python -c "print(1)"'
+
+
+def test_parse_fails_when_no_entry_survives_bad_yaml():
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command: 'python -c 'print(1)''\n"
+        "    contains: '1'\n"
+        "  - command: 'bash -c 'echo x''\n"
+        "    contains: 'x'\n"
+        "```"
+    )
+    with pytest.raises(ProbeSynthesisError):
+        _parse(response)
+
+
+def test_salvage_does_not_resurrect_rejected_entries():
+    # Salvage re-reads entries; it must not become a way around the spec
+    # gate. Here the double-quote repair makes the entry readable, and the
+    # gate still has the last word: a placeholder executable and a
+    # placeholder `contains` leave the valid set empty, so the response
+    # fails rather than handing the probe runner a schema echo.
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command: \"echo <single-line command> \\d\"\n"
+        "    contains: \"<literal substring>\"\n"
+        "```"
+    )
+    with pytest.raises(ProbeSynthesisError):
+        _parse(response)
+
+
+def test_salvage_keeps_sibling_when_others_break():
+    # A bad-regex entry that YAML reads fine and a YAML-level break in the
+    # same block: the one healthy probe must still come through.
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command: 'python -c 'print(1)''\n"
+        "    contains: '1'\n"
+        "  - command: \"echo ok\"\n"
+        "    matches: '([unclosed'\n"
+        "  - command: \"echo fine\"\n"
+        "    contains: \"fine\"\n"
+        "```"
+    )
+    specs = _parse(response)
+    assert [p.command for p in specs] == ["echo fine"]
 
 
 # ------------------------------------------------------------- teeth gate

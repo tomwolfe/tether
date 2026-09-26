@@ -8,10 +8,12 @@ generated probes on their measured ability to kill real mutants of the
 changed files. This breaks the manual-verification-authoring boundary:
 verification content that adapts to what the agent actually did.
 
-Fail-safe posture: any malformed model response raises
+Fail-safe posture: a response that yields NO valid probe raises
 :class:`ProbeSynthesisError` and the caller records a synthesis failure;
 the mission then simply falls back to its human-authored battery (today's
-behavior), never to unverified success.
+behavior), never to unverified success. One broken entry never costs the
+response its other probes — salvage is per entry, at the YAML level and at
+the spec level alike.
 """
 from __future__ import annotations
 
@@ -36,7 +38,12 @@ AUTOPROBES_COMMAND_MAX_CHARS = 2000
 # Reviewer output may carry ANSI escapes (dogfood-40); strip before parsing.
 ANSI_ESCAPE_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])")
 
-_FENCE_RE = re.compile(r"```[ \t]*(?:ya?ml)?[ \t]*\r?\n(.*?)```", re.DOTALL)
+# A generator that answers through a shell-quoted context escapes the fence
+# markers along with the rest of its command text, so the block arrives as
+# ``\`\`\`yaml``. An optional backslash before each backtick is that echo and
+# nothing else; a response with no fence at all still has no match.
+_FENCE_RE = re.compile(
+    r"(?:\\?`){3}[ \t]*(?:ya?ml)?[ \t]*\r?\n(.*?)(?:\\?`){3}", re.DOTALL)
 
 _PROMPT_TEMPLATE = """\
 You are acting as a verification engineer. Invent behavioral probes for the \
@@ -160,42 +167,221 @@ def _validated_probe(index: int, entry: object) -> ProbeSpec:
     return ProbeSpec(command=command, contains=contains, matches=matches)
 
 
+def _valid_specs(entries: list[object]) -> list[ProbeSpec]:
+    """Validate every entry, keeping the ones that survive."""
+    specs: list[ProbeSpec] = []
+    for i, entry in enumerate(entries):
+        try:
+            specs.append(_validated_probe(i, entry))
+        except ProbeSynthesisError:
+            continue
+    return specs
+
+
+# A ``key: value`` line inside a probe list item. Only the key, its colon
+# and the separating blanks are captured so the value can be re-quoted
+# without disturbing the item's indentation or a trailing comment.
+_KEYED_LINE_RE = re.compile(
+    r"^(?P<prefix>[ \t]*(?:-[ \t]+)?[A-Za-z_][A-Za-z0-9_]*:[ \t]*)"
+    r"(?P<value>\S.*?)[ \t]*(?P<tail>\#.*)?$")
+
+# Whatever trails a double-quoted scalar's closing quote: blanks, a comment,
+# or nothing. Anything else means the value is not what this repair assumes.
+_SCALAR_TAIL_RE = re.compile(r"[ \t]*(?:\#.*)?")
+
+# The only two escapes a shell fragment legitimately needs once it is being
+# re-emitted as a single-quoted scalar: an escaped backslash and an escaped
+# double quote. Every other backslash (a regex ``\d``, a Windows path, a
+# literal newline inside a fragment) is data and must survive verbatim.
+_DQ_ESCAPE_RE = re.compile(r"\\(.)")
+
+
+def _relax_double_quoted_scalars(text: str) -> str:
+    r"""Re-emit unreadable ``key: "..."`` lines as ``key: '...'``.
+
+    A model that wraps a shell command in double quotes routinely emits
+    fragments YAML refuses: a raw regex backslash (``"grep '\d+' f"``) is an
+    unknown escape, and inner double quotes go unescaped. That is a YAML
+    error, so it takes the whole block down with it. Single-quoted YAML
+    takes both literally, which is exactly what a shell fragment wants.
+
+    Only lines YAML actually chokes on are rewritten, so a properly escaped
+    scalar keeps its own interpretation.
+    """
+    return "\n".join(_relax_scalar_line(line) for line in text.split("\n"))
+
+
+def _relax_scalar_line(line: str) -> str:
+    match = _KEYED_LINE_RE.match(line)
+    if match is None:
+        return line
+    value = match.group("value")
+    if not value.startswith('"'):
+        return line
+    closing = value.rfind('"')
+    if closing <= 0:
+        return line
+    inner, tail = value[1:closing], value[closing + 1:]
+    if not _SCALAR_TAIL_RE.fullmatch(tail):
+        return line
+    try:
+        yaml.safe_load('"' + inner + '"')
+    except yaml.YAMLError:
+        pass
+    else:
+        return line
+    literal = _DQ_ESCAPE_RE.sub(
+        lambda m: "" if m.group(1) == '"' else "\\", inner).replace("'", "''")
+    return f"{match.group('prefix')}'{literal}'{tail}"
+
+
+_PROBES_KEY_RE = re.compile(r"^[ \t]*probes[ \t]*:")
+
+
+def _iter_probe_entry_chunks(block: str) -> list[str]:
+    """Split the ``probes`` list body of ``block`` into one text chunk per item.
+
+    Purely textual and deliberately dumb: the point is to hand each ``- ``
+    item to the YAML parser on its own so that one unparsable entry cannot
+    hide its siblings. Continuation lines (deeper indentation) stay with the
+    item they belong to, and the body ends at the first line that is neither.
+    """
+    lines = block.splitlines()
+    body_start = None
+    for i, line in enumerate(lines):
+        if _PROBES_KEY_RE.match(line):
+            body_start = i + 1
+            break
+    if body_start is None:
+        return []
+    chunks: list[str] = []
+    current: list[str] = []
+    item_indent: Optional[int] = None
+    for line in lines[body_start:]:
+        if not line.strip():
+            if current:
+                current.append(line)
+            continue
+        indent = len(line) - len(line.lstrip(" \t"))
+        stripped = line.strip()
+        is_item = stripped == "-" or stripped.startswith("- ")
+        if item_indent is None:
+            if not is_item:
+                if current:
+                    break
+                continue
+            item_indent = indent
+        if is_item and indent == item_indent:
+            chunks.append("\n".join(current).rstrip("\n"))
+            current = []
+        elif indent <= item_indent:
+            break
+        current.append(line)
+    if current:
+        chunks.append("\n".join(current).rstrip("\n"))
+    return [chunk for chunk in chunks if chunk.strip()]
+
+
+def _read_probe_list(block: str) -> tuple[Optional[list[object]], str]:
+    """Read the whole block as YAML, returning ``(entries, blocked_by)``.
+
+    ``entries`` is the raw list when the block is readable and shaped right;
+    otherwise it is ``None`` and ``blocked_by`` is the reason the block
+    could not be used as-is, which becomes the failure text if salvage also
+    comes up empty.
+    """
+    blocked_by = ""
+    try:
+        data = yaml.safe_load(block)
+    except yaml.YAMLError as e:
+        blocked_by = f"fenced block is not valid YAML: {e}"
+        data = None
+    if data is None:
+        return None, blocked_by
+    if not isinstance(data, dict):
+        return None, "fenced block is not a mapping"
+    raw = data.get("probes")
+    if raw is None:
+        return None, "fenced block has no 'probes' list"
+    if not isinstance(raw, list):
+        return None, "'probes' is not a list"
+    if not raw:
+        return None, "'probes' list is empty"
+    return raw, blocked_by
+
+
+def _parse_entry_chunk(chunk: str) -> list[object]:
+    """Parse one raw list item as the sole entry of a ``probes`` list.
+
+    Returns an empty list when the chunk stays unreadable — the caller then
+    treats that entry as malformed and moves on to the next one.
+    """
+    document = "probes:\n" + chunk
+    for relaxed in (False, True):
+        text = _relax_double_quoted_scalars(document) if relaxed else document
+        try:
+            data = yaml.safe_load(text)
+        except yaml.YAMLError:
+            continue
+        if isinstance(data, dict) and isinstance(data.get("probes"), list):
+            return data["probes"]
+        return []
+    return []
+
+
+def _salvaged_specs(block: str) -> list[ProbeSpec]:
+    """Recover probes from a block that would not parse as a whole.
+
+    Each ``- `` item is read and validated independently, so a single
+    unparsable entry costs only itself. Unreadable items are dropped, never
+    guessed at: a chunk that still will not parse after the double-quote
+    repair — a shell command nested inside a single-quoted scalar is the
+    usual case — simply yields nothing.
+    """
+    specs: list[ProbeSpec] = []
+    examined = 0
+    for chunk in _iter_probe_entry_chunks(block):
+        for entry in _parse_entry_chunk(chunk):
+            try:
+                specs.append(_validated_probe(examined, entry))
+            except ProbeSynthesisError:
+                pass
+            examined += 1
+    return specs
+
+
 def parse_generated_probes(
         response: str,
         max_probes: int = DEFAULT_MAX_PROBES) -> list[ProbeSpec]:
     """Parse a generator response into validated :class:`ProbeSpec` objects.
 
     Fail-safe by construction: ANSI is stripped first, the LAST fenced yaml
-    block wins (earlier drafts are ignored), and ANY structural problem —
-    missing fence, invalid YAML, wrong shape, empty list, malformed entry,
-    unparsable command, bad regex — raises :class:`ProbeSynthesisError`.
-    More than ``max_probes`` valid probes truncate deterministically to the
-    first ``max_probes``.
+    block wins (earlier drafts are ignored, and a fence whose markers the
+    model backslash-escaped still counts as a fence), and a response that
+    yields no valid probe — missing fence, unreadable block, wrong shape,
+    empty list, every entry malformed — raises :class:`ProbeSynthesisError`.
+
+    One bad entry does not sink the response. Salvage is per entry at two
+    layers: the whole block is read as YAML first and each entry is then
+    validated on its own (a malformed entry is skipped); and if the block
+    cannot be read as YAML at all — the common real-model failure being a
+    shell command's quotes nested inside a quoted scalar — the ``probes``
+    list is re-read one list item at a time so the readable entries still
+    parse. More than ``max_probes`` valid probes truncate deterministically
+    to the first ``max_probes``.
     """
     cleaned = strip_ansi(response or "")
     fences = _FENCE_RE.findall(cleaned)
     if not fences:
         raise _fail("no fenced yaml block found in response")
     block = fences[-1]
-    try:
-        data = yaml.safe_load(block)
-    except yaml.YAMLError as e:
-        raise _fail(f"fenced block is not valid YAML: {e}") from e
-    if not isinstance(data, dict):
-        raise _fail("fenced block is not a mapping")
-    raw = data.get("probes")
-    if raw is None:
-        raise _fail("fenced block has no 'probes' list")
-    if not isinstance(raw, list):
-        raise _fail("'probes' is not a list")
-    if not raw:
-        raise _fail("'probes' list is empty")
-    specs: list[ProbeSpec] = []
-    for i, entry in enumerate(raw):
-        try:
-            specs.append(_validated_probe(i, entry))
-        except ProbeSynthesisError:
-            continue
+    entries, blocked_by = _read_probe_list(block)
+    if entries is None:
+        specs = _salvaged_specs(block)
+        if not specs:
+            raise _fail(blocked_by or "no probe entries could be read")
+        return specs[:max_probes]
+    specs = _valid_specs(entries)
     if not specs:
         raise _fail("no valid probes after salvage; all entries malformed")
     return specs[:max_probes]
