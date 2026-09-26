@@ -31,11 +31,12 @@ adapters:
     command: ["opencode", "run", "-m", "opencode/space-bunny-free", "{prompt}"]
     timeout_seconds: 2700
     # NOT the auto-probe teeth gate. `adapters.<name>` is a free-form settings
-    # mapping; the generated-probe gate reads only
-    # `verification.auto_probes.min_teeth_rate`, so the three knobs below are
-    # inert and the gate stays advisory. Do not read them as a passing teeth
-    # rate. (Recorded, not fixed: tightening the gate is dogfood-43's
-    # contract, not this mission's goal.)
+    # mapping and the adapter layer already warns "unknown setting" for all
+    # three; the generated-probe gate reads only
+    # `verification.auto_probes.min_teeth_rate`, so these are inert and the
+    # gate stays advisory. Do not read them as a passing teeth rate.
+    # (Recorded, not fixed: tightening the gate is dogfood-43's contract, not
+    # this mission's goal.)
     max_probes: 5
     min_teeth_rate: 0.7
     max_mutants: 12
