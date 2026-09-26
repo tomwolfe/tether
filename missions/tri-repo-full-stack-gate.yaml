@@ -66,6 +66,12 @@ verification:
     # Export (scripts/export_pbpk_to_qed.py):
     # - 132:62 include_ode default flip: the True branch is `pass` (no-op);
     #   outputs byte-identical (fast test asserts equality).
+    # - 186:69 parametric default flip: EVERY call site passes `parametric`
+    #   explicitly (build_lemmas at 240, the tests at 398), so the default is
+    #   never read and the mutation is unobservable.
+    # - 692:8 break_return in _sym_diff: the symbolic Jacobian path is
+    #   unreachable for a `make_pbpk_ode` model (compute_jacobian returns from
+    #   the analytic fast path first), so the branch is dead under the gate.
     # - 379:61 expand flip in the dissipation lemma: expanded terms are
     #   computed but unused (only "CL * C_p > 0" is emitted).
     # - 767:61 expand flip in emit_lean_export: the liver perfusion string is
@@ -73,6 +79,9 @@ verification:
     # Gate (scripts/verify_formal_gate.py):
     # - 50:43 include_ode default flip: same no-op branch as export.
     # - 190:22 changed=False->True: fixpoint identical (bounded idempotent loop).
+    # - 225:30 changed=True->False: `changed` only guards an early `break` in
+    #   a loop already bounded to 20 passes; suppressing the flag adds no-op
+    #   passes that cannot alter the fixed point.
     # - 329:34, 340:36 missing_ok flip on temp files that always exist.
     # - 388:16, 388:23, 390:16, 390:23 subsumed numeric-identity returns:
     #   any input reaching them also matches the later whole-lemma pattern.
@@ -89,8 +98,11 @@ verification:
       - "../VeriTrial/scripts/export_pbpk_to_qed.py:132:62"
       - "../VeriTrial/scripts/export_pbpk_to_qed.py:379:61"
       - "../VeriTrial/scripts/export_pbpk_to_qed.py:767:61"
+      - "../VeriTrial/scripts/export_pbpk_to_qed.py:186:69"
+      - "../VeriTrial/scripts/export_pbpk_to_qed.py:692:8"
       - "../VeriTrial/scripts/verify_formal_gate.py:50:43"
       - "../VeriTrial/scripts/verify_formal_gate.py:190:22"
+      - "../VeriTrial/scripts/verify_formal_gate.py:225:30"
       - "../VeriTrial/scripts/verify_formal_gate.py:329:34"
       - "../VeriTrial/scripts/verify_formal_gate.py:340:36"
       - "../VeriTrial/scripts/verify_formal_gate.py:388:16"
@@ -116,6 +128,14 @@ verification:
     - "env PYTHONPATH=../tether/src python3 -m pytest ../tether/tests/test_cleanroom.py ../tether/tests/test_multirepo_capture.py -q -p no:cacheprovider"
     - "env PYTHONPATH=../VeriTrial/src python3 -m pytest ../VeriTrial/src/insilico_trial/tests/test_mission_regressions.py -q -p no:cacheprovider"
     - "python3 ../tether/tools/verify_veritrial_equations.py --source-root ../VeriTrial"
+    # Mutation-teeth battery for the baseline_targets above. The gate mutated
+    # export_pbpk_to_qed.py / verify_formal_gate.py / pd but only ran
+    # test_mission_regressions.py, so mutants that these files' own suites kill
+    # were reported as SURVIVING -- the gate was structurally understating its
+    # own kill rate (0.77 against a 0.8 floor, purely from suite selection).
+    # These two suites are pure-Python (~3 s), so measuring the teeth they
+    # claim is cheap.
+    - "env PYTHONPATH=../VeriTrial/src python3 -m pytest ../VeriTrial/src/insilico_trial/tests/test_bridge_mutation_fast.py ../VeriTrial/src/insilico_trial/tests/test_pd.py -q -p no:cacheprovider"
   timeout_seconds: 3600
 review:
   enabled: true
