@@ -96,7 +96,7 @@ def test_sorry_check_oserror_is_false(monkeypatch, tmp_path):
     assert mod._check_sorry(tmp_path) is False
 
 
-def test_non_qed_sorry_free_is_unknown(tmp_path):
+def test_non_qed_sorry_free_is_na_when_no_lean(tmp_path):
     mod = _load()
     _init_repo(tmp_path / "plain")
     monkeypatch_root = tmp_path
@@ -106,7 +106,7 @@ def test_non_qed_sorry_free_is_unknown(tmp_path):
         rec = mod.audit_repo("plain")
     finally:
         mod.ROOT = orig_root
-    assert rec["sorry_free"] == "unknown"
+    assert rec["sorry_free"] == "n/a"
     assert len(rec["head"]) == 40
 
 
