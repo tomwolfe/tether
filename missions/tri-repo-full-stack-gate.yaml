@@ -29,6 +29,12 @@ context:
 workspace_repos:
   - "../QED"
   - "../VeriTrial"
+  # Tether itself is the control plane under test here: without it as a
+  # workspace repo the clean-room suite has no copy of tests/test_cleanroom.py
+  # or tools/verify_veritrial_equations.py, and the two tether-side
+  # regression commands below could only ever fail with "file or directory
+  # not found" -- a green gate would have been unreachable by construction.
+  - "../tether"
 constraints:
   - "Do NOT introduce sorry axioms in any QED output"
   - "Do NOT modify existing test expectations without justification"
@@ -42,6 +48,7 @@ verification:
   clean_room_copy:
     - "../QED"
     - "../VeriTrial"
+    - "../tether"
   mutation:
     enabled: true
     fail_below: 0.8
@@ -92,7 +99,7 @@ verification:
       - "../VeriTrial/scripts/verify_formal_gate.py:390:23"
       - "../VeriTrial/scripts/verify_formal_gate.py:509:4"
       - "../VeriTrial/scripts/verify_formal_gate.py:813:45"
-      - "src/tether/cleanroom.py:254:56"
+      - "../tether/src/tether/cleanroom.py:254:56"
       - "../VeriTrial/src/insilico_trial/pd/__init__.py:13:43"
       - "../VeriTrial/src/insilico_trial/pd/__init__.py:62:17"
   commands:
@@ -103,11 +110,12 @@ verification:
     # Tether-side regression net: the mission mutates changed tether files, so
     # the clean-room suite must exercise them (sibling .git preservation,
     # .lake/symlink carries, gitlink pointers); otherwise those mutants are
-    # unkillable by construction. PYTHONPATH=src defeats the host editable
-    # install (which would otherwise shadow the room's mutated sources).
-    - "env PYTHONPATH=src python3 -m pytest tests/test_cleanroom.py tests/test_multirepo_capture.py -q -p no:cacheprovider"
+    # unkillable by construction. PYTHONPATH=../tether/src defeats the host
+    # editable install (which would otherwise shadow the room's mutated
+    # sources) and points at the room's own, possibly mutated, copy.
+    - "env PYTHONPATH=../tether/src python3 -m pytest ../tether/tests/test_cleanroom.py ../tether/tests/test_multirepo_capture.py -q -p no:cacheprovider"
     - "env PYTHONPATH=../VeriTrial/src python3 -m pytest ../VeriTrial/src/insilico_trial/tests/test_mission_regressions.py -q -p no:cacheprovider"
-    - "python3 tools/verify_veritrial_equations.py --source-root ../VeriTrial"
+    - "python3 ../tether/tools/verify_veritrial_equations.py --source-root ../VeriTrial"
   timeout_seconds: 3600
 review:
   enabled: true
