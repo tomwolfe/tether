@@ -258,6 +258,84 @@ def test_review_prompt_carries_goal_and_diff_excerpt(tmp_path):
     assert "+changed by agent" in prompt      # bounded excerpt of the diff
 
 
+def test_review_prompt_scopes_sibling_repos_to_relative_paths(tmp_path):
+    # A multi-repo mission's evidence lives in the siblings, but the
+    # reviewer runs with cwd = project root and an agent whose CLI gates its
+    # own file access refuses anything outside it. Left unsaid, the reviewer
+    # tries `cd` to the workspace root, is refused, and never reaches a
+    # verdict -- so the gate fails for a reason unrelated to the change.
+    _git_repo(tmp_path)
+    (tmp_path.parent / "QED").mkdir()
+    mp = tmp_path / "m.yaml"
+    mp.write_text(
+        f"mission:\n  name: rev\n  goal: cross-repo gate\n"
+        f"verification:\n  commands:\n    - {PASS_CMD}\n"
+        f"adapter: mock\nreview:\n  enabled: true\n"
+        f"workspace_repos:\n  - ../QED\n"
+    )
+    subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "mission"],
+                   check=True)
+    adapter = _ReviewingAdapter(REVIEW_APPROVED)
+    cfg = TetherConfig(audit_dir=".tether/sessions")
+    Orchestrator(adapter, cfg, tmp_path).run(load_mission(mp))
+    prompt = adapter.review_prompts[0]
+    assert "../QED" in prompt                       # the spelling that works
+    assert "RELATIVE paths" in prompt
+    assert "Do not `cd`" in prompt
+
+
+def test_review_prompt_omits_scope_for_single_repo_mission(tmp_path):
+    # No workspace_repos means there is nothing to scope, and the prompt must
+    # stay byte-for-byte what it was: a single-repo reviewer has no relative
+    # siblings and the extra paragraph would only be noise.
+    _git_repo(tmp_path)
+    mp = tmp_path / "m.yaml"
+    mp.write_text(
+        f"mission:\n  name: rev\n  goal: single repo\n"
+        f"verification:\n  commands:\n    - {PASS_CMD}\n"
+        f"adapter: mock\nreview:\n  enabled: true\n"
+    )
+    subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "mission"],
+                   check=True)
+    adapter = _ReviewingAdapter(REVIEW_APPROVED)
+    cfg = TetherConfig(audit_dir=".tether/sessions")
+    Orchestrator(adapter, cfg, tmp_path).run(load_mission(mp))
+    prompt = adapter.review_prompts[0]
+    assert "RELATIVE paths" not in prompt
+    assert "Do not `cd`" not in prompt
+
+
+def test_review_prompt_scope_excludes_the_project_itself(tmp_path):
+    # The tri-repo gate lists ../tether among its workspace repos because the
+    # clean room needs a copy of the control plane. That entry resolves back
+    # to the project dir, and telling the reviewer to reach its own cwd via
+    # ../tether is noise that invites the very `cd` out of the project root
+    # this block exists to prevent.
+    _git_repo(tmp_path)
+    (tmp_path.parent / "sib").mkdir()
+    self_ref = f"../{tmp_path.name}"
+    mp = tmp_path / "m.yaml"
+    mp.write_text(
+        f"mission:\n  name: rev\n  goal: g\n"
+        f"verification:\n  commands:\n    - {PASS_CMD}\n"
+        f"adapter: mock\nreview:\n  enabled: true\n"
+        f"workspace_repos:\n  - ../sib\n  - {self_ref}\n"
+    )
+    subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "mission"],
+                   check=True)
+    adapter = _ReviewingAdapter(REVIEW_APPROVED)
+    cfg = TetherConfig(audit_dir=".tether/sessions")
+    Orchestrator(adapter, cfg, tmp_path).run(load_mission(mp))
+    prompt = adapter.review_prompts[0]
+    # The rendered sibling list is exactly the one real sibling.
+    assert "RELATIVE paths: ../sib." in prompt
+    assert "RELATIVE paths: ../sib," not in prompt
+    assert tmp_path.name not in prompt.split("RELATIVE paths:")[1].split(".")[0]
+
+
 def test_review_includes_untracked_file_content(tmp_path):
     """Untracked file contents appear in the review prompt (dogfood-43)."""
     _git_repo(tmp_path)

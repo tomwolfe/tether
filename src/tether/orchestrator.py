@@ -1555,12 +1555,40 @@ class Orchestrator:
             "(passing commands, proofs, measured kill rates). A vacuous "
             "run with no evidence must be rejected.\n"
         )
+        # Where the reviewer may look. The reviewer runs in project_dir, and
+        # an agent whose CLI gates its own file access (the `opencode`
+        # adapter does) will refuse a path outside that directory. A
+        # multi-repo mission's evidence lives in the SIBLINGS, so a reviewer
+        # told nothing here tries `cd` to the workspace root to reach them,
+        # gets refused, and never reaches a verdict -- the gate then fails
+        # for a reason that has nothing to do with the change. Naming the
+        # relative spelling that does work keeps enforcement where it is
+        # auditable (this repo's sandbox) instead of inside a prompt.
+        # Resolve siblings against project_dir, NOT the process cwd: a
+        # relative entry means "next to the project", and Path.resolve()
+        # alone would anchor it to wherever tether happened to be launched.
+        _proj = self.project_dir.resolve()
+        _siblings = [s for s in (getattr(mission, "workspace_repos", None) or [])
+                     if (self.project_dir / s).resolve() != _proj]
+        scope_instruction = ""
+        if _siblings:
+            _rel = ", ".join(f"../{Path(s).name}" for s in _siblings)
+            scope_instruction = (
+                f"You are running with cwd = the project root "
+                f"({self.project_dir}). The mission's sibling repositories are "
+                f"in scope and reachable as RELATIVE paths: {_rel}. Read them "
+                f"that way (for example `git -C ../VeriTrial log`). Do not "
+                f"`cd` to a parent directory to reach them -- paths outside "
+                f"the project root are refused by the agent runtime, and an "
+                f"attempt to reach them costs you the verdict.\n\n"
+            )
         prompt = (
             "You are acting as an adversarial code reviewer. Judge whether "
             "the captured change below actually accomplishes the mission "
             "goal. Verification passing is NOT proof of correctness.\n\n"
             f"Mission goal:\n{mission.goal}\n\n"
-            f"Captured change ({name}):\n{excerpt or '(no change captured)'}\n\n"
+            + scope_instruction
+            + f"Captured change ({name}):\n{excerpt or '(no change captured)'}\n\n"
             + evidence_block + vacuity_instruction
             + verdict_instruction
         )
