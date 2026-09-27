@@ -200,7 +200,7 @@ and `grep -riE "pbpk|liver|dili|cyp" parser.py agentic_pipeline.py` is empty.
 
 | mission | tether status | what actually happened |
 |---|---|---|
-| `qed-02-parser-hardening` | **success** | real work: identifier word boundaries, `\frac`, LaTeX macros, fail-closed tokenizer. 4/4 verify, mutation **0.75** (floor 0.7) |
+| `qed-02-parser-hardening` | **success** | real work: identifier word boundaries, `\frac`, LaTeX macros, fail-closed tokenizer, timeout-is-not-a-refutation. 4/4 verify, mutation **0.75** (floor 0.7) |
 | `qed-03-type-inference` | success | **vacuous** — `changed_files: []`, review disabled, no mutation configured |
 | `qed-04-tactic-policy` | success | **vacuous** — see below |
 | `qed-05-integration-validation` | success | **vacuous** — `changed_files: []`, no mutation configured |
@@ -250,10 +250,45 @@ survived / 0 skipped and the floor was vacuously satisfied. Status `success`,
 `changed_files: []`.
 
 That is a gate reporting green while measuring nothing, and it is the failure
-mode this whole exercise exists to catch. The 13 survivors are the real signal
-and they are still unaddressed; `qed-mutation-strength` is the mission that
-owes them teeth. Counting qed-03/-04/-05 as green would repeat the mistake the
-metric definitions in `METRICS.json` (`M3`, `M7`) are about.
+mode this whole exercise exists to catch. Counting qed-03/-04/-05 as green
+would repeat the mistake the metric definitions in `METRICS.json` (`M3`, `M7`)
+are about.
+
+### The 13 survivors turned out to be a cold cache, and are now closed
+
+Measured directly with `run_killrate.py` under both conditions:
+
+| condition | before | after |
+|---|---|---|
+| warm (Mathlib present) | 1.0000 (60/60) | 1.0000 (60/60) |
+| clean room (`use_mathlib=False`) | **0.5167 (31/60)** | **0.5833 (35/60)** |
+
+So the logic was never wrong: the clean room has no `.lake`, every prover test
+fails closed, and the tactic loop is never reached. The survivors were that
+gap wearing a costume. The fix is to pin the *pure* decisions directly, with
+no compiler in the loop, so the coverage stops depending on cache warmth:
+
+* `select_tactic` dispatch — ring / field_simp / linarith / norm_num /
+  decide / simp, including that an ODE goal is *also* polynomial, so the
+  precedence between the ring and field_simp branches is what makes the
+  ordering load-bearing. The turnstile prefix must not change the
+  classification.
+* `get_tactic_candidates` ordering, and that closed numeric equalities lead
+  with `simp`/`decide` rather than `rfl`.
+* **`_execute_with_initial_code`, which qed-01's contract names and which no
+  test covered** — a mutant that broke its delegation to `execute_tactic_loop`
+  survived the whole suite. That one is now dead.
+* the `Int`/`Rat` annotation branches, reachable only by pinning the inferred
+  variable type; the `Int` negative-literal guard is now killed too.
+
+One survivor was **provably equivalent** and is now removed rather than
+tolerated: the `elif '/' in expression and var_type == 'Rat'` body was
+byte-identical to the `else` body, so negating its guard produced an
+identical theorem string and no test could ever kill it.
+
+What is left in the clean room is honest: the sorry-detection and
+toolchain-discovery paths, which genuinely need a working compiler to reach.
+That is stated rather than papered over.
 
 `qed-01-no-sorry-gate` failing is the system working. Its payload — reject any
 `sorry`/`sorryAx` in source *or* compiler output, wired into both
