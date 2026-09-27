@@ -312,6 +312,32 @@ missions now declare 5400s / 24 sends. **Only `max_wall_seconds` and
 `max_attempts`. That buys a run enough time to reach the gates; it does not
 make any gate easier to pass.
 
+## A verification gate mutates the siblings it verifies
+
+Found 2026-09-27 while reconciling QED after a gate run. QED's reflog shows
+three `reset: moving to f0a3574` entries at 13:54-13:55, inside the gate's
+13:08-14:40 clean-room verification stage, stranding the agent's three commits
+(`e5c37c6`, `992fab8`, `e31930d`) out of the branch with their content left in
+the index. The cause is tether's own machinery: `src/tether/git_safety.py`
+runs `git reset --hard <target>` per repository, and the gate's
+`clean_room_copy` lists `../QED` and `../VeriTrial` as workspace repos, so
+staging a clean room moves sibling branches.
+
+The part worth acting on is the ordering. The gate's `git_state_guard` is
+`true` and it lists those same siblings, yet the run reported
+`git_state_violations: None`. The guard compares each sibling HEAD to its
+mission-start baseline, and it runs **after the agent's execution step but
+before clean-room verification** — so a HEAD move performed *by the staging
+itself* is never compared against anything. The guard cannot see the
+mutation it is most exposed to.
+
+This is recorded, not fixed. Changing when the guard samples sibling state
+means changing clean-room staging order, and staging order is load-bearing
+for the gate's 8 verification commands; that wants its own mission rather
+than an edit made at the end of a long session. Until then, treat a gate run
+as something that can move a sibling branch, and re-check sibling HEADs
+afterwards rather than assuming a green run left them alone.
+
 ## Honest limitations
 
 `dogfood-45` and `dogfood-46` did not reach `success`; their work was
