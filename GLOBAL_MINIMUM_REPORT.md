@@ -191,6 +191,92 @@ Verified in isolation against the real gate prompt *before* spending another
 1.5 hours re-running the gate: the reviewer reached `REVIEW: APPROVE` and
 cited the mutant kill, the 18 lemmas, the provenance root and the dt bound.
 
+## Phase 2 (QED): one real green, three hollow greens, one correct refusal
+
+Measured directly and via tether on 2026-09-26. QED invariants all hold:
+**239 passed** in `test_pipeline.py`, **18/18** in `run_tests.py`, project Lean
+sorry-free (the only `sorry` matches are vendored `.lake/packages/mathlib`),
+and `grep -riE "pbpk|liver|dili|cyp" parser.py agentic_pipeline.py` is empty.
+
+| mission | tether status | what actually happened |
+|---|---|---|
+| `qed-02-parser-hardening` | **success** | real work: identifier word boundaries, `\frac`, LaTeX macros, fail-closed tokenizer. 4/4 verify, mutation **0.75** (floor 0.7) |
+| `qed-03-type-inference` | success | **vacuous** — `changed_files: []`, review disabled, no mutation configured |
+| `qed-04-tactic-policy` | success | **vacuous** — see below |
+| `qed-05-integration-validation` | success | **vacuous** — `changed_files: []`, no mutation configured |
+| `qed-01-no-sorry-gate` | failed | **correct refusal** — see below |
+
+### The two findings worth keeping
+
+**A Lean timeout was being reported as a refutation.** qed-02 went red in a
+clean room on two prover tests that pass on a warm machine and in isolation.
+Cause: `subprocess.run(..., timeout=30)` with
+`except subprocess.TimeoutExpired` recording the attempt and *continuing to the
+next tactic* — so a cold Mathlib import exhausted the whole tactic list and the
+pipeline returned `"No tactic succeeded after N attempts"`, the exact wording it
+uses for a statement that does not follow. The only trace was
+`stderr='Timeout'` buried in `attempts`. A verification system whose answer
+depends on cache warmth is lying, silently. Now: a real `lean_compile_timeout`
+setting (default 180s, sized for a cold import, applied at all three compile
+sites), and when no attempt obtained any verdict the result carries
+`infrastructure_failure: True` and says "NOT a refutation" — pinned by a test
+so it can never be confused with real mathematical failure again.
+
+**Two tests asserted the unsatisfiable in a clean room.** Proving
+`ka * A_gut = ka * A_gut` needs Mathlib, and a clean-room checkout has no
+`.lake`, so `assert res["success"] is True` could not hold there. Each test now
+states the requirement for the environment it is in — with Mathlib it must prove
+and be axiom-clean, without it must fail *closed* — and **the no-sorry
+assertion is made in both branches**. Not skipped, not weakened: locally
+`use_mathlib` is True so the proving branch is what 239 tests exercise, and the
+fail-closed branch is what the clean room exercises.
+
+### The hollow greens
+
+`qed-04-tactic-policy` is the one to look at. Its first attempt failed honestly:
+mutation **0.675 against a 0.7 floor**, with 13 surviving mutants clustered
+exactly in the region it exists to fix —
+
+```
+agentic_pipeline.py:1024:27 [flip_bool]   agentic_pipeline.py:338:16 [break_return]
+agentic_pipeline.py:1113:47 [flip_bool]   agentic_pipeline.py:355:12 [break_return]
+agentic_pipeline.py:1122:33 [flip_bool]   + 8 more
+```
+
+— i.e. the tactic-selection logic has no test that can kill a flipped decision.
+The run then escalated to `reset_to_checkpoint`, which **discarded the work**,
+and the final attempt changed nothing, so mutation measured 0 killed / 0
+survived / 0 skipped and the floor was vacuously satisfied. Status `success`,
+`changed_files: []`.
+
+That is a gate reporting green while measuring nothing, and it is the failure
+mode this whole exercise exists to catch. The 13 survivors are the real signal
+and they are still unaddressed; `qed-mutation-strength` is the mission that
+owes them teeth. Counting qed-03/-04/-05 as green would repeat the mistake the
+metric definitions in `METRICS.json` (`M3`, `M7`) are about.
+
+`qed-01-no-sorry-gate` failing is the system working. Its payload — reject any
+`sorry`/`sorryAx` in source *or* compiler output, wired into both
+`execute_tactic_loop` and `_execute_with_initial_code` — is already fully
+implemented (`check_for_sorry` scans both, with word-boundary matching for
+`sorry`, `sorryAx`, `Tactic.sorry`, `Lean.Elab.Tactic.sorry`,
+`declaration uses sorry`, `warning:.*uses sorry`; and
+`_execute_with_initial_code` delegates to `execute_tactic_loop`, which checks
+every path). The reviewer refused to certify an empty patch, and it was right
+to. The one substantive gap it named — *"mutation was not run, so there is no
+evidence the no-sorry criterion was actually exercised or killed"* — is real and
+belongs to `qed-mutation-strength`.
+
+### Mission budgets had to change
+
+qed-02 was first killed by `Mission budget exceeded: max_wall_seconds
+(threshold 1800, observed 2123.7)` while holding a correct fix. The budgets
+were authored for a faster agent (600–1800s wall, 5–15 sends), so all nine QED
+missions now declare 5400s / 24 sends. **Only `max_wall_seconds` and
+`max_sends` changed** — no `fail_below`, no verification command, no probe, no
+`max_attempts`. That buys a run enough time to reach the gates; it does not
+make any gate easier to pass.
+
 ## Honest limitations
 
 `dogfood-45` and `dogfood-46` did not reach `success`; their work was
@@ -204,11 +290,12 @@ semantics on purpose ("strict semantics flag ANY history movement while the
 guard is on") and this gate is `git_state_guard: true`, which makes that
 change load-bearing rather than cosmetic.
 
-The nine QED missions, the VeriTrial `make` chain,
+Four QED missions (`qed-cleanroom-integrity`, `qed-mutation-strength`,
+`qed-docs-truth-audit`, `qed-unit-tests-pass`), the VeriTrial `make` chain,
 `veritrial-formal-gate`, and `qed-veritrial-formal-pipeline` have not been
-re-run here. QED's numbers below were measured directly, not via a mission,
-and the VeriTrial export, olean rebuild and strict formal gate are covered by
-this gate's commands 1–4. Tier 2 (`STANDARD_14_ORGAN_NETWORK` promotion,
+re-run here. The VeriTrial export, olean rebuild and strict formal gate are
+covered by this gate's commands 1-4. `qed-mutation-strength` is the mission
+that owes teeth to the 13 surviving tactic-selection mutants above. Tier 2 (`STANDARD_14_ORGAN_NETWORK` promotion,
 saturable `Vmax`/`Km` clearance) is not started — `Vmax`/`Km` appears nowhere
 in `model.py` today. Promoting 14-organ to `DEFAULT` would also invalidate the
 `Fin 6` export, the `J[5][2]`/`J[5][5]` pins and the 18 lemmas, so it is a
