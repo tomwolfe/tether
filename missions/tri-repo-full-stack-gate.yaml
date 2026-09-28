@@ -147,5 +147,5 @@ recovery:
 adapter: opencode
 adapters:
   opencode:
-    command: ["opencode", "run", "-m", "opencode/space-bunny-free", "{prompt}"]
+    command: ["opencode", "run", "--auto", "-m", "opencode/space-bunny-free", "{prompt}"]
     timeout_seconds: 1800

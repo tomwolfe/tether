@@ -28,7 +28,7 @@ verification:
     adapter: opencode
 adapters:
   opencode:
-    command: ["opencode", "run", "-m", "opencode/space-bunny-free", "{prompt}"]
+    command: ["opencode", "run", "--auto", "-m", "opencode/space-bunny-free", "{prompt}"]
     timeout_seconds: 2700
     # NOT the auto-probe teeth gate. `adapters.<name>` is a free-form settings
     # mapping and the adapter layer already warns "unknown setting" for all

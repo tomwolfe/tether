@@ -93,6 +93,7 @@ adapters:
     command:
     - opencode
     - run
+    - --auto
     - -m
     - opencode/space-bunny-free
     - '{prompt}'

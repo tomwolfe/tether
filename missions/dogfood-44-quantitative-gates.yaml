@@ -33,7 +33,7 @@ verification:
     adapter: opencode
 adapters:
   opencode:
-    command: ["opencode", "run", "-m", "opencode/space-bunny-free", "{prompt}"]
+    command: ["opencode", "run", "--auto", "-m", "opencode/space-bunny-free", "{prompt}"]
     timeout_seconds: 2700
     max_probes: 5
     min_teeth_rate: 0.7

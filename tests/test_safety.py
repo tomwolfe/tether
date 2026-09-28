@@ -1730,3 +1730,47 @@ def test_enforce_mode_detects_gitignored_writes_that_warn_mode_misses():
 
     assert TetherConfig().sandbox_mode == "warn"
     assert TetherConfig(sandbox_mode="enforce").sandbox_mode == "enforce"
+
+
+def test_every_mission_pinning_an_opencode_command_also_auto_approves():
+    # The gap that made the previous fix a no-op for the gate. 43 mission
+    # files pin `adapters.opencode.command` in the MISSION, and mission config
+    # outranks both the project tether.yaml and the built-in adapter default --
+    # so setting --auto in those two places changed nothing for any of them.
+    # The gate went green once and red again with the same
+    # "no valid review verdict found", because its refusal was still being
+    # issued. Every mission that pins the command must pin the same one.
+    missions = Path(__file__).resolve().parent.parent / "missions"
+    pinned = 0
+    for path in sorted(missions.glob("*.yaml")):
+        text = path.read_text(encoding="utf-8")
+        if 'command: ["opencode", "run"' not in text:
+            continue
+        pinned += 1
+        assert '"--auto"' in text, (
+            f"{path.name} pins an opencode command without --auto, so it "
+            f"overrides the project config and the adapter default and the "
+            f"model-side permission layer goes back to auto-rejecting "
+            f"in-scope sibling reads")
+    assert pinned > 1, "expected several missions to pin the command"
+
+
+def test_opencode_command_is_identical_wherever_it_is_pinned():
+    # One command shape, or the enforcement story is a fiction: a mission
+    # that pins a different shape silently opts out of the sandbox pairing.
+    from tether.adapters.experimental import OpencodeAdapter
+    from tether.mission import load_mission
+
+    expected = OpencodeAdapter().settings["command"]
+    missions = Path(__file__).resolve().parent.parent / "missions"
+    for path in sorted(missions.glob("*.yaml")):
+        # Only the TOP-LEVEL adapters block overrides anything: the resolver
+        # reads it as a mission override, and one mission nests a second
+        # `adapters:` under `mission:` where it is inert (load_mission
+        # reports adapters={}), so it cannot opt out of --auto.
+        adapters = load_mission(path).adapters or {}
+        pinned = (adapters.get("opencode") or {}).get("command")
+        if pinned is None:
+            continue
+        assert pinned == expected, (
+            f"{path.name} pins {pinned} but the adapter default is {expected}")
