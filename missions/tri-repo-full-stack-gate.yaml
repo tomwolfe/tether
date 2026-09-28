@@ -136,6 +136,34 @@ verification:
     # These two suites are pure-Python (~3 s), so measuring the teeth they
     # claim is cheap.
     - "env PYTHONPATH=../VeriTrial/src python3 -m pytest ../VeriTrial/src/insilico_trial/tests/test_bridge_mutation_fast.py ../VeriTrial/src/insilico_trial/tests/test_pd.py -q -p no:cacheprovider"
+    # "De-clamped fixed-step/SDIRK solvers under the dynamic Metzler dt bound"
+    # is a named gate, but nothing above ran fixed_step.py or solvers.py -- so a
+    # constant dt bound or a silent jnp.maximum clamp would have passed the
+    # whole gate while contradicting the mission goal. These 13 tests are the
+    # only thing in the tree that pins it: the bound is the Jacobian diagonal
+    # minimum, it tracks the N-state network instead of a constant, an
+    # over-bound dt raises rather than clamps, and concentrations stay
+    # non-negative.
+    #
+    # Teeth measured, not assumed (2026-09-28, applied by hand to
+    # fixed_step.py with this exact pair run afterwards):
+    #   * `return float(min(positive))` -> `return 0.01`
+    #       kills test_dt_bound_is_the_jacobian_diagonal_minimum
+    #   * the `raise ValueError` in assert_dt_stable -> `bound = dt`
+    #       kills test_dt_violating_jacobian_bound_fails_closed
+    #         ("DID NOT RAISE <class 'ValueError'>")
+    # The gate's own 24 mutants do NOT score these two files -- they come from
+    # baseline_targets (export / verify_formal_gate / model / pd) -- so the
+    # mutation evidence for THIS pair has to come from outside the gate, which
+    # is why it is written down here rather than implied by kill_rate.
+    #
+    # `os.chdir` is load-bearing, not boilerplate: several of these tests load
+    # `configs/drug_warfarin.yaml` relative to the cwd (the same trap that made a
+    # reviewer of the 20260928-1045 session report a spurious
+    # FileNotFoundError). PYTHONPATH is resolved by the interpreter at startup
+    # from the room root, so it still selects the room's insilico_trial even
+    # though the process later moves into ../VeriTrial. ~5 s.
+    - "env PYTHONPATH=../VeriTrial/src python3 -c \"import os, sys, pytest; os.chdir(os.path.join(os.getcwd(), '../VeriTrial')); sys.exit(pytest.main(['-q', '-p', 'no:cacheprovider', 'src/insilico_trial/tests/test_fixed_step.py', 'src/insilico_trial/tests/test_solvers.py']))\""
   timeout_seconds: 3600
 review:
   enabled: true
