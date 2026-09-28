@@ -274,10 +274,25 @@ def test_summarize_mutation_passes_when_meeting_gate():
 
 
 def test_summarize_mutation_zero_denominator_never_gates():
+    # Deliberate: a mission with no mutable target has nothing to mutate, so
+    # it must not be failed for that.
     summary = MutationSummary(total=1, skipped=1, kill_rate=0.0)
     passed, text = summarize_mutation(summary, [], fail_below=0.5)
     assert passed is True
     assert "no mutants ran" in text
+
+
+def test_zero_mutants_never_claims_the_floor_was_met():
+    # The verdict above is permissive on purpose; the sentence was not. It
+    # used to fall through to "meets fail_below 0.5" while reporting a kill
+    # rate of 0.0 with nothing measured behind it, so a hollow run read as a
+    # confirmed pass. The floor is now reported as unmeasured.
+    summary = MutationSummary(total=1, skipped=1, kill_rate=0.0)
+    passed, text = summarize_mutation(summary, [], fail_below=0.5)
+    assert passed is True
+    assert "meets fail_below" not in text
+    assert "UNMEASURED" in text
+    assert "neither met nor missed" in text
 
 
 # ------------------------------------------- task 1: mission validation

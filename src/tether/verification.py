@@ -668,7 +668,20 @@ def summarize_mutation(
         return True, (
             f"mutation testing (advisory): {core}; no fail_below "
             f"configured; surviving mutants: {survivor_text}")
-    if denominator > 0 and summary.kill_rate < fail_below:
+    if denominator == 0:
+        # Zero mutants does NOT gate, and that is deliberate: a mission with
+        # no mutable target (a docs-only change) has nothing to mutate, and
+        # failing it for that would be wrong. What was wrong was the WORDING.
+        # The old text fell through to "meets fail_below 0.7" with a kill rate
+        # of 0.0 and no measurement behind it -- an affirmative claim that a
+        # floor was satisfied when nothing had been measured. That is how a
+        # hollow pass reads as a green one. The verdict stays permissive; the
+        # sentence now says the floor is unmeasured instead of met.
+        return True, (
+            f"mutation testing did not gate: {core}; with no mutant ran the "
+            f"kill rate is UNMEASURED, so fail_below {fail_below} is neither "
+            f"met nor missed. Surviving mutants: {survivor_text}")
+    if summary.kill_rate < fail_below:
         return False, (
             f"mutation testing exposed weak verification: {core} is below "
             f"fail_below {fail_below}; surviving mutants: {survivor_text}")
