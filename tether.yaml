@@ -1,0 +1,26 @@
+# Tether project configuration for Tether's own dogfooding missions.
+# Precedence: CLI flags > mission file > this file > defaults.
+#
+# This file did not exist until 2026-09-28. It exists because the opencode
+# preset now runs with `--auto` (see src/tether/adapters/experimental.py), and
+# `--auto` means the opencode CLI stops auto-rejecting in-scope reads instead
+# of the model-side permission layer refusing them. Enforcement therefore has
+# to be held by this project's own write sandbox, which is auditable, rather
+# than by an opaque prompt inside the agent runtime.
+#
+# The gate's other layers already fail closed on their own terms -- a bad
+# command, a kill rate under fail_below, a git-state violation and a rejected
+# review each fail the mission -- but none of them constrains WHERE the agent
+# may write. That is this setting's job, and it is the only one that was
+# running in the permissive default.
+#
+# `enforce` over `warn` also widens detection: it unions the filesystem
+# manifest diff into the changed-file set, so a write to a gitignored path
+# is caught instead of passing unnoticed. Under `warn` that class of write is
+# invisible to the sandbox gate.
+sandbox_mode: enforce
+command_timeout_seconds: 1800
+verification_timeout_seconds: 600
+max_attempts: 3
+audit_dir: .tether/sessions
+default_adapter: opencode

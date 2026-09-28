@@ -1667,3 +1667,66 @@ def test_auto_rollback_config_resolution(tmp_path):
     assert resolve_config(
         tmp_path, cli_overrides={"auto_rollback": False}).auto_rollback is False
 
+
+
+# ---------------------------------------------------------------------------
+# `--auto` at the model layer is only safe while the auditable sandbox holds.
+#
+# The opencode CLI gates its own file access and, run non-interactively,
+# auto-rejects anything outside the project directory. For a multi-repo
+# mission that meant the reviewer could not look at the sibling repositories
+# the mission is explicitly scoped to, and the tri-repo gate failed its review
+# layer three separate times with "no valid review verdict found in reviewer
+# output" while its other eight gates were green. Scoping the review prompt
+# reduced that to roughly 1 run in 3 -- mitigation, not enforcement.
+#
+# So the preset carries `--auto`, and the safety it gives up at the model layer
+# is held by this project's own write sandbox. That trade is only sound while
+# the sandbox enforces, which makes the pairing an invariant rather than a
+# convention: `--auto` without an enforcing sandbox means nothing constrains
+# where the agent writes.
+
+
+def test_opencode_preset_auto_approves_in_scope_reads():
+    # Without this, every multi-repo mission keeps losing its review layer to
+    # a refusal that has nothing to do with the change under review.
+    from tether.adapters.experimental import OpencodeAdapter
+
+    cmd = OpencodeAdapter().settings["command"]
+    assert "--auto" in cmd
+    # The pinned model must survive the change; only permission handling moved.
+    assert "-m" in cmd and "opencode/space-bunny-free" in cmd
+    assert cmd[-1] == "{prompt}"
+
+
+def test_shipped_project_configs_enforce_the_sandbox():
+    # The invariant. QED pins the adapter command in its own tether.yaml;
+    # Tether's dogfooding missions run from the repo root. Both must enforce,
+    # because both now run the preset with --auto.
+    from tether.config import resolve_config
+
+    roots = [Path(__file__).resolve().parent.parent,
+             Path(__file__).resolve().parent.parent.parent / "QED"]
+    checked = 0
+    for root in roots:
+        cfg_file = root / "tether.yaml"
+        if not cfg_file.is_file():
+            continue
+        checked += 1
+        mode = resolve_config(root).sandbox_mode
+        assert mode == "enforce", (
+            f"{root}/tether.yaml has sandbox_mode={mode!r} while the opencode "
+            f"preset runs with --auto; the model-side approval would then be "
+            f"the only permission layer, and it is not auditable")
+    assert checked >= 1, "expected at least one shipped tether.yaml to check"
+
+
+def test_enforce_mode_detects_gitignored_writes_that_warn_mode_misses():
+    # Why `enforce` and not the default `warn`: the filesystem manifest diff
+    # is only unioned into the changed-file set under enforce, so a write to a
+    # gitignored path is invisible to the sandbox gate under warn. This pins
+    # that pairing rather than the wording.
+    from tether.models import TetherConfig
+
+    assert TetherConfig().sandbox_mode == "warn"
+    assert TetherConfig(sandbox_mode="enforce").sandbox_mode == "enforce"

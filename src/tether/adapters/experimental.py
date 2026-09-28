@@ -40,7 +40,18 @@ class OpencodeAdapter(CommandAdapter):
     def __init__(self, settings: Optional[Dict[str, Any]] = None,
                  default_timeout: int = 1800) -> None:
         merged: Dict[str, Any] = {"command": [
-            "opencode", "run", "-m", "opencode/space-bunny-free", "{prompt}",
+            # `--auto` stops the opencode CLI auto-rejecting in-scope reads.
+            # Run non-interactively it otherwise refuses anything outside the
+            # project directory, which for a multi-repo mission means the
+            # reviewer cannot look at the sibling repositories the mission is
+            # scoped to -- observed three times as "no valid review verdict
+            # found in reviewer output" on a run whose other eight gates were
+            # green. Telling the model to use a different tool is not
+            # enforcement and does not hold; this is. The safety given up at
+            # the model layer is held by the project's own write sandbox, so a
+            # project using this preset should set `sandbox_mode: enforce`.
+            "opencode", "run", "--auto", "-m", "opencode/space-bunny-free",
+            "{prompt}",
         ]}
         merged.update(settings or {})
         super().__init__(merged, default_timeout)

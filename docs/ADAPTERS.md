@@ -247,10 +247,28 @@ stragglers. All of these claims are pinned by the acceptance tests in
 Thin presets over CommandAdapter. The command shapes were checked against the
 `--help` output of locally installed CLIs (2026-08):
 
-- opencode: `["opencode", "run", "-m", "opencode/space-bunny-free", "{prompt}"]`
+- opencode: `["opencode", "run", "--auto", "-m", "opencode/space-bunny-free", "{prompt}"]`
   (`opencode run [message..]`; the `-m` model pin avoids a server error some
-  installations hit on bare `opencode run`)
+  installations hit on bare `opencode run`; `--auto` = "auto-approve
+  permissions that are not explicitly denied" — see the pairing note below)
 - pi: `["pi", "--print", "{prompt}"]` (`--print` = non-interactive mode)
+
+**`--auto` and `sandbox_mode` are a pair; neither is safe alone.** The opencode
+CLI gates its own file access, and run non-interactively it auto-rejects
+anything outside the project directory. For a multi-repo mission that means the
+reviewer cannot read the sibling repositories the mission is explicitly scoped
+to — observed three times as `no valid review verdict found in reviewer
+output`, on runs whose other eight gates were green. Instructing the model to
+prefer a different tool reduced that to roughly 1 run in 3, which is
+mitigation rather than enforcement.
+
+So permission handling lives in the adapter's configuration, and the safety
+`--auto` gives up at the model layer is held by Tether's own write sandbox.
+**Any project using this preset should set `sandbox_mode: enforce`**, which
+also widens detection by unioning the filesystem-manifest diff into the
+changed-file set, so a write to a gitignored path is caught instead of passing
+unnoticed. Under the default `warn` that class of write is invisible to the
+sandbox gate. `tests/test_safety.py` pins the pairing.
 
 End-to-end behavior (provider/model setup, exit codes, session handling) is
 **not** exercised by Tether's tests. opencode's real-world behavior has

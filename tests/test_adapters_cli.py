@@ -358,8 +358,13 @@ def test_experimental_adapters_are_unverified_presets():
     # Promoted 2026-08-22 (docs/ADAPTERS.md): certified + multiple real
     # missions (dogfood-14/16/17/18).
     assert oc.verified is True
+    # `--auto`: the CLI auto-rejects paths outside the project directory when
+    # run non-interactively, which starves a multi-repo mission's reviewer of
+    # the siblings it is scoped to. Safety is held by the project's own
+    # sandbox (sandbox_mode: enforce), not by the model-side prompt.
     assert oc.command == [
-        "opencode", "run", "-m", "opencode/space-bunny-free", "{prompt}",
+        "opencode", "run", "--auto", "-m", "opencode/space-bunny-free",
+        "{prompt}",
     ]
     ok, _ = oc.is_available()
     assert isinstance(ok, bool)
