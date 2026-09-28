@@ -55,7 +55,10 @@ verification:
     max_mutants: 6
     # Regression net for verify-only runs: when the agent changes nothing,
     # mutate the gate-critical bridge scripts instead of passing vacuously.
-    # Each mutant re-runs the full 5-command suite (~6 min), hence the cap.
+    # Each mutant re-runs the full 9-command suite, and the Lean
+    # export/rebuild/formal-gate trio dominates its wall time, hence the cap.
+    # 4 targets x max_mutants 6 = 24 sampled, 21 of them scored after the pd
+    # controls below stopped being suppressed.
     baseline_targets:
       - "../VeriTrial/scripts/export_pbpk_to_qed.py"
       - "../VeriTrial/scripts/verify_formal_gate.py"
@@ -87,10 +90,19 @@ verification:
     #   any input reaching them also matches the later whole-lemma pattern.
     # - 509:4 `return None`->None in _elan_bin_dir.
     # - 813:45 missing_ok flip masked by the surrounding try/except-pass.
-    # PD (src/insilico_trial/pd/__init__.py):
-    # - 13:43 Hill exponent mutation: `** 2` to `** 3` changes emax_effect
-    #   and is not behavior-equivalent; it is selected as a real control.
-    # - 62:17 warfarin baseline mutation: `+` to `-` changes inr_effect output.
+    # PD (src/insilico_trial/pd/__init__.py): no equivalent mutants remain.
+    # The two Add->Sub sites this file carried here as "documented
+    # equivalent" are the opposite -- real controls that the suite already
+    # kills -- so they are MEASURED now instead of suppressed. Hand-run
+    # 2026-09-28 against verification command 8, each exits 1:
+    # - 13:43 `emax * C^h / (ec50^h + C^h)`: Add->Sub flips the denominator
+    #   to ec50^h - C^h; killed by test_pd.py::test_emax_is_half_maximal_at_ec50
+    # - 62:17 `baseline_inr + emax_effect(...)`: Add->Sub; killed by
+    #   test_pd.py::test_inr_effect_is_baseline_plus_emax_delta
+    # Suppressing them cost the battery two kills it had already earned and
+    # contradicted this section's own heading. (The mutation spec is read at
+    # session start, so the run that carries this edit is still the one that
+    # reports them skipped; the battery below applies to the next run.)
     # Tether (src/tether/cleanroom.py):
     # - 254:56 exist_ok flip on the sibling-room mkdir: the target is always
     #   freshly created in the materialization path, so exist_ok is vacuous.
@@ -112,8 +124,6 @@ verification:
       - "../VeriTrial/scripts/verify_formal_gate.py:509:4"
       - "../VeriTrial/scripts/verify_formal_gate.py:813:45"
       - "../tether/src/tether/cleanroom.py:254:56"
-      - "../VeriTrial/src/insilico_trial/pd/__init__.py:13:43"
-      - "../VeriTrial/src/insilico_trial/pd/__init__.py:62:17"
   commands:
     - "python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --lean-out ../QED/VeriTrialExport.lean --out /tmp/pbpk_lemmas.txt"
     - "python3 ../VeriTrial/scripts/rebuild_qed_oleans.py"
@@ -145,17 +155,30 @@ verification:
     # over-bound dt raises rather than clamps, and concentrations stay
     # non-negative.
     #
-    # Teeth measured, not assumed (2026-09-28, applied by hand to
-    # fixed_step.py with this exact pair run afterwards):
+    # Teeth MEASURED, not asserted. The gate never mutates these two files --
+    # they are not in baseline_targets -- so the pair was scored by hand on
+    # 2026-09-28 through the gate's own sampler (same per-path seed, same
+    # operator set, same max_mutants=6) with the command below as the battery:
+    #   KILLED    52:12  break_return  test_solver_equivalence_warfarin
+    #   KILLED   344:14  arithmetic    test_fixed_step_batch_shape
+    #   survived 134:4   break_return  provably equivalent: the trailing
+    #                                 `return None` of a `-> None` function
+    #   survived 344:18  arithmetic    n_steps coverage gap
+    #   survived 376:14  arithmetic    n_steps coverage gap
+    #   survived 376:19  arithmetic    n_steps coverage gap
+    # The two invariants this gate line names were killed by hand as well:
     #   * `return float(min(positive))` -> `return 0.01`
     #       kills test_dt_bound_is_the_jacobian_diagonal_minimum
     #   * the `raise ValueError` in assert_dt_stable -> `bound = dt`
     #       kills test_dt_violating_jacobian_bound_fails_closed
     #         ("DID NOT RAISE <class 'ValueError'>")
-    # The gate's own 24 mutants do NOT score these two files -- they come from
-    # baseline_targets (export / verify_formal_gate / model / pd) -- so the
-    # mutation evidence for THIS pair has to come from outside the gate, which
-    # is why it is written down here rather than implied by kill_rate.
+    #
+    # fixed_step.py is deliberately NOT a baseline target yet, and the sample
+    # above is why: adding it today lands at 21/30 = 0.70 against the 0.8
+    # floor, because the four survivors are a real gap -- no test pins
+    # n_steps in solve_pbpk_batch / solve_pbpk_batch_9state -- not
+    # equivalence. The tests come first; adding the target now would fail the
+    # gate for the right reason and read as a flaky regression.
     #
     # `os.chdir` is load-bearing, not boilerplate: several of these tests load
     # `configs/drug_warfarin.yaml` relative to the cwd (the same trap that made a

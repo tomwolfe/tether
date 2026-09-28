@@ -230,12 +230,50 @@ only permission layer. Two existing gates caught the change and were updated
 rather than worked around -- the CLI preset pin and the docs/code consistency
 pin -- and `docs/ADAPTERS.md` documents the pairing for operators.
 
-Result, session `9277f262779b`: `success`, 8/8 verify, kill_rate 1.0, review
-**approve**, no sandbox or git-state violations, `FORMAL GATE PASSED`, and
-**zero permission refusals in the reviewer transcript** -- against the exact
-failure mode that produced three red reviews. The prompt scoping is kept,
-because it is still the right documentation for a human reading a review
+One correction, because the first attempt at this was a no-op and the
+confirmation run caught it: 50 mission files pin `adapters.opencode.command`
+in the **mission**, and a mission override outranks both the project
+`tether.yaml` and the built-in adapter default. So editing the command in
+those two places changed nothing for any of them -- the gate went green once
+and red again with the same `external_directory` refusal, because the command I
+had edited was not the command the gate ran. All 50 are now identical to the
+adapter default across three YAML spellings, and the identical-command test
+reads missions through `load_mission` rather than scraping text, so it checks
+what the resolver actually sees.
+
+After that, session `12beb4081672`: `success`, **9/9** verify, kill_rate 1.0,
+review **approve**, no sandbox or git-state violations, `FORMAL GATE PASSED`,
+and **zero permission refusals in the reviewer transcript** -- against the
+exact failure mode that produced three red reviews. The prompt scoping is
+kept, because it is still the right documentation for a human reading a review
 transcript, but it is no longer load-bearing.
+
+### The ninth command: a gate hole the reviewer found
+
+With the review layer finally working it started earning its keep. It rejected
+an agent that added a ninth verification command to the gate mission
+mid-run -- so the mission on disk claimed 9 commands while the captured
+evidence showed 8/8 -- and whose comment claimed the pair was "verified to
+have teeth" while the run's 24 mutants scored none of those files.
+
+The objection was right on process and the substance turned out to be right
+too. The mission goal forbids `jnp.maximum` concentration clamping and
+requires non-negativity to come from the `dt` bound alone, yet **no command
+ran `test_fixed_step.py` or `test_solvers.py`**: a constant `dt` bound, or a
+silent replacement of the fail-closed `raise` with a clamp, would have passed
+the entire gate while contradicting the stated goal.
+
+So the command stays, with the teeth measured rather than asserted -- applied
+by hand to `fixed_step.py`, with that exact pair run afterwards:
+
+| mutation | killed |
+|---|---|
+| `return float(min(positive))` -> `return 0.01` | `test_dt_bound_is_the_jacobian_diagonal_minimum` |
+| `raise ValueError` in `assert_dt_stable` -> `bound = dt` | `test_dt_violating_jacobian_bound_fails_closed` (`DID NOT RAISE`) |
+
+The note also records *why* that evidence comes from outside the gate: its
+mutants are `baseline_targets` only, so a reader cannot mistake `kill_rate`
+for coverage of the `dt` bound.
 
 Two adapters-run hygiene fixes from the same stretch are load-bearing for
 every one of these numbers: orphaned adapter children are reaped after every
