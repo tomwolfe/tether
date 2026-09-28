@@ -31,7 +31,9 @@ Windows the child gets CREATE_NEW_PROCESS_GROUP and the tree is terminated via
 """
 from __future__ import annotations
 
+import atexit
 import codecs
+import logging
 import os
 import re
 import shlex
@@ -44,6 +46,8 @@ from typing import Any, Callable, Dict, Optional
 
 from tether.adapters.base import AgentAdapter, SessionInfo
 from tether.models import AgentState
+
+log = logging.getLogger("tether.adapters.command")
 
 # Seconds between graceful termination (SIGTERM / taskkill) and force kill.
 TERMINATE_GRACE_SECONDS = 3.0
@@ -94,6 +98,11 @@ class CommandAdapter(AgentAdapter):
         # Active child processes by session id, so cancel(session) can
         # terminate work that is currently in flight.
         self._active_procs: Dict[str, subprocess.Popen] = {}
+        # Backstop: a session that ends by any path we did not anticipate
+        # (uncaught exception, os._exit, a mission aborted mid-send) must not
+        # leave a launcher binary's children running. Registered per instance
+        # and fired at interpreter exit.
+        atexit.register(self._reap_all)
         self._proc_lock = threading.Lock()
         # Opt-in streaming hook (dogfood-32): when set, each stdout/stderr
         # chunk is passed to it as it arrives. Never set by configuration;
@@ -130,6 +139,36 @@ class CommandAdapter(AgentAdapter):
         )
 
     # -- process-tree termination --------------------------------------------
+
+    def _reap_group(self, proc: subprocess.Popen,
+                    grace_seconds: float = TERMINATE_GRACE_SECONDS) -> None:
+        """Kill whatever is left of ``proc``'s process GROUP.
+
+        Distinct from :meth:`_terminate_tree`, which is about stopping work
+        that is still in flight and so gives up once the direct child exits.
+        That early return is correct there and wrong here: ``start_new_session``
+        puts the child in its own group, but the child is a launcher, not the
+        work. ``opencode run`` spawns its own descendants and then exits, so by
+        the time we look, the tracked pid is a zombie while its children are
+        very much alive and still writing to the project.
+
+        This is why a session could leak thousands of live agent processes
+        while ``adapters conformance`` still passed 8/8: conformance drives
+        stub binaries, and the only teardown path (cancel) is reached on
+        Ctrl-C or when the direct child is still running.
+        """
+        if os.name == "nt":
+            self._windows_terminate_tree(proc, grace_seconds)
+            return
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            return
+        self._await_exit(proc, grace_seconds)
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
 
     def _terminate_tree(self, proc: subprocess.Popen,
                         grace_seconds: float = TERMINATE_GRACE_SECONDS) -> None:
@@ -382,6 +421,15 @@ class CommandAdapter(AgentAdapter):
             interrupted = True
             raise
         finally:
+            # Reap the group BEFORE forgetting the handle. The direct child
+            # has usually exited by now, but a launcher binary leaves its own
+            # children behind, and dropping the last reference here is what
+            # leaked them. _reap_group is a no-op when the group is already
+            # empty, so this costs nothing on a clean one-shot command.
+            try:
+                self._reap_group(proc)
+            except Exception:  # noqa: BLE001 - teardown must never mask
+                log.debug("Process-group reap failed", exc_info=True)
             if not interrupted:
                 with self._proc_lock:
                     if self._active_procs.get(session.session_id) is proc:
@@ -413,6 +461,17 @@ class CommandAdapter(AgentAdapter):
             status="failed", logs=logs, error=f"exit code {proc.returncode}",
             result={"exit_code": proc.returncode}, usage=usage,
         )
+
+    def _reap_all(self) -> None:
+        """Reap every still-tracked process group. Never raises."""
+        with self._proc_lock:
+            procs = list(self._active_procs.values())
+        for proc in procs:
+            try:
+                self._reap_group(proc)
+            except Exception:  # noqa: BLE001 - best effort at exit
+                log.debug("Final reap failed for pid %s", proc.pid,
+                          exc_info=True)
 
     def cancel(self, session: SessionInfo) -> None:
         """Terminate the active command for this session, if any.

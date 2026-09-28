@@ -1,6 +1,9 @@
 """Capability metadata + conformance harness tests (dogfood-09)."""
 import json
+import os
 import sys
+import time
+from pathlib import Path
 
 from typer.testing import CliRunner
 
@@ -345,3 +348,97 @@ def test_cli_certify_failure_writes_certificate_naming_stage(tmp_path, monkeypat
     assert cert["ok"] is False
     assert cert["failed_stage"] == "live_probe"
     assert "FAILED at live probe" in cert["verdict_line"]
+
+
+# ---------------------------------------------------------------------------
+# A launcher binary that exits leaves its children running.
+#
+# Measured 2026-09-27: after a session of missions, `pgrep -f "opencode run"`
+# returned 7338 live processes. Conformance still passed 8/8, including
+# cancel_terminates_active and timeout_fails_and_terminates_tree, because every
+# one of those tests drives a stub binary that is its own whole process tree.
+#
+# The real adapter runs a LAUNCHER. `opencode run` spawns its own descendants
+# and exits, so by the time the send returns, the tracked pid is a zombie and
+# its children are alive and still writing to the project. Neither teardown
+# path noticed: _terminate_tree gives up as soon as the direct child exits,
+# and cancel() is only reached on Ctrl-C.
+#
+# These two tests use a stub that really does leave a grandchild behind.
+
+
+def _leaky_launcher(path: Path, pidfile: Path) -> None:
+    """A launcher: spawn a long-lived grandchild, record its pid, exit.
+
+    This is the shape of the real adapter. ``opencode run`` is not the work,
+    it is the thing that starts the work; it exits as soon as it has handed
+    off, and its descendants keep going.
+    """
+    path.write_text(
+        "import subprocess, sys\n"
+        "child = subprocess.Popen([sys.executable, '-c',\n"
+        "                   'import time; time.sleep(300)'])\n"
+        f"open({str(pidfile)!r}, 'w').write(str(child.pid))\n"
+        "print('launcher done')\n"
+    )
+
+
+def _read_pid(pidfile: Path) -> int:
+    for _ in range(50):
+        try:
+            text = pidfile.read_text().strip()
+            if text.isdigit():
+                return int(text)
+        except OSError:
+            pass
+        time.sleep(0.1)
+    raise AssertionError("launcher never recorded a grandchild pid")
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    # A reaped child lingers as a zombie until waited on; treat that as dead.
+    try:
+        state = Path(f"/proc/{pid}/stat")
+        if state.exists():
+            return state.read_text().split(") ", 1)[1].split()[0] != "Z"
+    except OSError:
+        pass
+    return True
+
+
+def test_completed_send_reaps_a_launchers_surviving_children(tmp_path):
+    launcher = tmp_path / "launcher.py"
+    pidfile = tmp_path / "child.pid"
+    _leaky_launcher(launcher, pidfile)
+    adapter = CommandAdapter(
+        {"command": [sys.executable, str(launcher)]}, default_timeout=30)
+    state = adapter.send("go", adapter.start_session(str(tmp_path), "s1"))
+    assert state.status == "completed"
+    child = _read_pid(pidfile)
+    # The launcher really did leave a grandchild behind (non-vacuous setup)...
+    assert child > 0
+    # ...and once the send has returned, that grandchild must be gone.
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and _alive(child):
+        time.sleep(0.2)
+    assert not _alive(child), (
+        f"grandchild pid {child} survived a completed send")
+
+
+def test_reap_group_is_harmless_when_nothing_survives(tmp_path):
+    # The reap runs on every send, so it must be a no-op for an ordinary
+    # one-shot command that leaves nothing behind -- no spurious error, no
+    # delay, and the process is still reported completed.
+    script = tmp_path / "ok.py"
+    script.write_text("print('fine')\n")
+    adapter = CommandAdapter(
+        {"command": [sys.executable, str(script)]}, default_timeout=30)
+    state = adapter.send("go", adapter.start_session(str(tmp_path), "s2"))
+    assert state.status == "completed"
+    assert "fine" in state.logs
