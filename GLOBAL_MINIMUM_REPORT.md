@@ -211,6 +211,39 @@ the pinned `opencode` preset after all -- it is no longer a preference
 between two working options, it is the difference between a gate that passes
 and a gate that flakes.
 
+### Fixed at the right layer
+
+The preset now passes `--auto` ("auto-approve permissions that are not
+explicitly denied"), which stops the CLI second-guessing in-scope reads, and
+the safety it gives up at the model layer is held by Tether's own write
+sandbox: `sandbox_mode: enforce`, set in both `QED/tether.yaml` (which pins
+the command) and a new `tether/tether.yaml` for Tether's own missions.
+`enforce` is also strictly better at detection than the default `warn` -- the
+filesystem-manifest diff is only unioned into the changed-file set under
+enforce, so a write to a **gitignored** path is caught instead of passing
+unnoticed.
+
+Neither half is safe alone, so it is pinned as an invariant in
+`tests/test_safety.py`: the preset carries `--auto`, the pinned model survives,
+every shipped `tether.yaml` enforces, and the model-side approval is never the
+only permission layer. Two existing gates caught the change and were updated
+rather than worked around -- the CLI preset pin and the docs/code consistency
+pin -- and `docs/ADAPTERS.md` documents the pairing for operators.
+
+Result, session `9277f262779b`: `success`, 8/8 verify, kill_rate 1.0, review
+**approve**, no sandbox or git-state violations, `FORMAL GATE PASSED`, and
+**zero permission refusals in the reviewer transcript** -- against the exact
+failure mode that produced three red reviews. The prompt scoping is kept,
+because it is still the right documentation for a human reading a review
+transcript, but it is no longer load-bearing.
+
+Two adapters-run hygiene fixes from the same stretch are load-bearing for
+every one of these numbers: orphaned adapter children are reaped after every
+send (a session once accumulated 7338 live `opencode run` processes, one of
+which was still editing a sibling repo four hours after its mission failed),
+and a zero-mutant mutation run no longer describes itself as having met its
+`fail_below` floor.
+
 ## Phase 2 (QED): one real green, three hollow greens, one correct refusal
 
 Measured directly and via tether on 2026-09-26. QED invariants all hold:
