@@ -190,6 +190,26 @@ captured change plus verification evidence are authoritative.
 Verified in isolation against the real gate prompt *before* spending another
 1.5 hours re-running the gate: the reviewer reached `REVIEW: APPROVE` and
 cited the mutant kill, the 18 lemmas, the provenance root and the dt bound.
+The gate then went green for real (session `c32fb116d309`).
+
+**But the prompt fix is unreliable, and the honest reading is that it is the
+wrong layer.** A later run (session `60da94408f21`) failed the same way
+again -- 8/8 verify, kill_rate 1.0, `FORMAL GATE PASSED`, and then
+`no valid review verdict found in reviewer output`, because the reviewer read
+a sibling with the file-reading tool by absolute path:
+
+```
+! permission requested: external_directory (/Users/tom/Documents/apps/VeriTrial/scripts/*); auto-rejecting
+x Read /Users/tom/Documents/apps/VeriTrial/scripts/verify_formal_gate.py failed
+```
+
+It is the same refusal the scope block was written to prevent, and the block
+was in that prompt. Telling a model not to reach for a tool works about as
+often as it should be expected to. The enforcement belongs in the adapter's
+permission configuration, not in prose, so this is now a case for changing
+the pinned `opencode` preset after all -- it is no longer a preference
+between two working options, it is the difference between a gate that passes
+and a gate that flakes.
 
 ## Phase 2 (QED): one real green, three hollow greens, one correct refusal
 
