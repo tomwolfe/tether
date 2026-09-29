@@ -11,8 +11,11 @@ mission:
       3. Tether: Orchestration and verification control plane
 
     The gate runs the hardened full-stack checks:
-      - Self-contained N-state export (VeriTrialExport.lean, Jacobian-derived Fin N,
-      CompartmentalMatrix instance + mass-dissipation certificate, universal tactic scripts)
+      - Self-contained N-state export (VeriTrialExport.lean, Fin N over the
+        compartment network, CompartmentalMatrix instance + mass-dissipation
+        certificate, universal tactic scripts). For the current model this is
+        Fin 6; see the export_pbpk_to_qed context note before reading it as
+        N-agnostic.
       - Formal gate: every exported lemma verifies through QED (no sorry),
         including the direct-lean-compiled isomorphism (lake env is bypassed:
         it SIGTRAPs) and #print axioms assertion
@@ -22,8 +25,8 @@ context:
   - "QED lakefile.lean declares mathlib4 from leanprover-community/mathlib4"
   - "QED agentic_pipeline.py invokes the pinned toolchain's lean directly with an explicit LEAN_PATH (lake env is bypassed: it SIGTRAPs under this Lake/Lean combination)"
   - "QED Compartmental.lean: domain-agnostic compartmental engine over arbitrary [Fintype n] (Metzler, mass dissipation/conservation, orthant invariance, SDIRK2 M-matrix stage); zero domain leakage"
-  - "VeriTrial export_pbpk_to_qed.py --lean-out emits the N-generic AST<->Lean isomorphism file instantiating CompartmentalMatrix over Fin N (Jacobian-derived dimension)"
-  - "VeriTrial formal_verification.py embeds SHA-256 hashes of verified Lean code"
+  - "VeriTrial export_pbpk_to_qed.py --lean-out emits the N-generic AST<->Lean isomorphism file instantiating CompartmentalMatrix over Fin N. The N-generic machinery is real, but for a model defining make_pbpk_ode the live path takes N = n_states or len(DEFAULT_ORGAN_NETWORK) = 6 (DEFAULT_ORGAN_NETWORK is the 6-organ gut/liver/central/peripheral/effect/elim set), NOT the Jacobian-derived N further down. The Jacobian-derived N is dead for that model shape, and command 1 passes no --fin-n, so THIS GATE CERTIFIES Fin 6 ONLY. _network_for_fin accepts just 6 or 14, so a --fin-n 14 run is a separate unproven path."
+  - "VeriTrial formal_verification.py does NOT embed SHA-256 constants of Lean code. It computes _lean_code_sha256 over attempt[\"lean_code\"], a key check_qed_proofs never puts on the attempt dict, so lean_code_sha256 in the written trail is structurally always {}. The real Lean file digests that feed the Merkle chain are a different mechanism: validation/__init__.py hashes QED/Compartmental.lean and QED/VeriTrialExport.lean directly."
   - "VeriTrial fixed_step.calculate_max_stable_dt derives the dt bound from matrix invariants"
   - "Cross-repo QED is located as sibling of VeriTrial (co-located monorepo layout)"
 workspace_repos:
