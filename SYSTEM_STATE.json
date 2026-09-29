@@ -2,8 +2,8 @@
   "repos": [
     {
       "repo": "tether",
-      "head": "674ae77816d5dee05aba34976c4d9ca21841dedf",
-      "dirty": false,
+      "head": "1c189cc98a2af8603ce84e3bcec761738130b763",
+      "dirty": true,
       "sorry_free": "n/a"
     },
     {
@@ -19,5 +19,5 @@
       "sorry_free": true
     }
   ],
-  "merkle_root": "1a2b5027dfc35e719ba4c8fd0bef3d914828ae4c74612bd4489b34496863f782"
+  "merkle_root": "0831a39628bbc2b44ef9e90d215e5aed658723cc9c6d96c831fb7026dbbc9a3e"
 }

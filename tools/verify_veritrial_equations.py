@@ -11,6 +11,8 @@ from typing import Iterable
 def _function(tree: ast.Module, name: str) -> ast.FunctionDef:
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            if isinstance(node, ast.AsyncFunctionDef):
+                raise AssertionError(f"required function is async: {name}")
             return node
     raise AssertionError(f"required function missing: {name}")
 
@@ -48,6 +50,25 @@ def _contains_source(function: ast.FunctionDef, fragments: Iterable[str]) -> Non
         raise AssertionError(f"equation altered in {function.name}: {missing}")
 
 
+def _lacks_source(function: ast.FunctionDef, fragments: Iterable[str]) -> None:
+    """Fail if any fragment is still *emitted* by ``function``.
+
+    Checks the body statements only, with the docstring dropped: ``ast.unparse``
+    re-emits a docstring as a leading string expression, and these functions
+    document in prose the very emissions they refuse to make.
+    """
+    body = function.body
+    if (body and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)):
+        body = body[1:]
+    source = ast.unparse(ast.Module(body=body, type_ignores=[]))
+    present = [fragment for fragment in fragments if fragment in source]
+    if present:
+        raise AssertionError(
+            f"regressed in {function.name}: {present}")
+
+
 def verify_model(path: Path) -> None:
     tree = ast.parse(path.read_text(encoding="utf-8"))
     function = _function(tree, "make_pbpk_ode")
@@ -73,13 +94,35 @@ def verify_model(path: Path) -> None:
 
 def verify_export(path: Path) -> None:
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    _contains_source(_function(tree, "_dynamic_lemmas"), ("if parametric:", "lemmas.append('(ka_rate) + (-ka_rate) = 0')"))
+    # VeriTrial cf30e47/a112a0a dropped the `(ka_rate) + (-ka_rate) = 0`
+    # tautology as certification theater, taking the export from 18 lemmas to
+    # 9. Pin the three real certificates it emits instead -- a stricter net
+    # than the tautology plus a bare `if` this replaced -- and fail closed if
+    # the tautology ever comes back.
+    _contains_source(_function(tree, "_dynamic_lemmas"), (
+        "if parametric:",
+        "lemmas.append(build_column_sum_certificate(model_path))",
+        "lemmas.append(build_parametric_sum_lemma(model_path))",
+        "lemmas.append('CL * C_p > 0')",
+    ))
+    _lacks_source(_function(tree, "_dynamic_lemmas"), ("(ka_rate) + (-ka_rate) = 0",))
+    # cf30e47 split the one-liner below into named steps with two isinstance
+    # narrowing asserts; the substitution duty is unchanged.
     _contains_source(_function(tree, "_substitute"), (
         "if n.id in env:",
         'return ast.fix_missing_locations(_substitute(env[n.id], {k: v for k, v in env.items() if k != n.id}))',
-        "return ast.fix_missing_locations(_S().visit(ast.parse(ast.unparse(expr)).body[0].value))",
+        "assert isinstance(reparsed, ast.Expr)",
+        "assert isinstance(visited, ast.expr)",
     ))
-    _contains_assignment(_function(tree, "main"), "verifiable", "[l for l in lemmas if not l.strip().startswith('--')]" )
+    # cf30e47 also dropped the `verifiable` split and the "wrote N lemmas"
+    # banner: the file is the artifact, and a stdout banner would corrupt the
+    # count verify_formal_gate takes off the caller's stdout. Pin the contract
+    # that replaced it -- join, write the file, else print the list.
+    _contains_source(_function(tree, "main"), (
+        "text = '\\n'.join(lemmas) + '\\n'",
+        "args.out.write_text(text, encoding='utf-8')",
+        "sys.stdout.write(text)",
+    ))
 
 
 def verify_formal_gate(path: Path) -> None:
