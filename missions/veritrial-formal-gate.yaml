@@ -76,9 +76,16 @@ verification:
     # The parametric sum uses compartment-specific symbolic rates.
     - command: "python3 scripts/export_pbpk_to_qed.py"
       contains: "ka_rate"
-    # The export bridge must emit exactly 7 parametric theorems.
+    # The export bridge must emit exactly 9 parametric theorems, and -- more
+    # to the point -- one Metzler certificate per perfused compartment. The
+    # count alone is not the invariant: 7 was reachable with two of the three
+    # Metzler lemmas dropped, because the gate's coverage check was a count
+    # over a loose regex. Assert the certificates themselves, so a future
+    # reduction cannot buy the count back by giving up coverage.
     - command: "python3 -c \"import pathlib, subprocess; p = '/tmp/tether_pbpk_lemmas_probe.txt'; subprocess.run(['python3', 'scripts/export_pbpk_to_qed.py', '--out', p], check=True); print(len(pathlib.Path(p).read_text().splitlines()))\""
-      matches: "^7$"
+      matches: "^9$"
+    - command: "python3 -c \"import pathlib, re, sys; sys.path.insert(0, 'scripts'); import verify_formal_gate as g; lemmas = pathlib.Path('/tmp/tether_pbpk_lemmas_probe.txt').read_text().splitlines(); t = [x for x in (g._metzler_positivity_tissue(l) for l in lemmas) if x]; print(sorted(set(t))); assert len(t) == len(set(t)) == 3, f'expected one Metzler certificate per perfused tissue, got {t}'\""
+      matches: "\\['effect', 'liver', 'periph'\\]"
   # High-stakes gate: mutation-test the change so the gate has real "teeth"
   # (a trivially-passing gate would be mutated to still pass -> fail_below).
   mutation:
