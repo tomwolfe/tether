@@ -13,9 +13,12 @@ mission:
     can never let VeriTrial's `make validate` report overall_pass = True.
 
     Concretely the gate:
-      1. runs the QED test suite (``QED/run_tests.py``) -- parser hardening,
-         no-sorry gate, and the VeriTrial-shaped lemma tests (numeric witness
-         + symbolic distributive classification) must all pass;
+      1. runs BOTH QED suites -- ``QED/run_tests.py`` (end-to-end pipeline runs
+         plus the no-sorry gate) and ``QED/test_pipeline.py`` (the parser
+         hardening, no-sorry policy and VeriTrial-shaped lemma tests: numeric
+         witness normalization/classification and symbolic/parametric
+         distributive classification). Both must pass; they are separate files
+         and neither subsumes the other;
       2. exports the CURRENT PBPK lemmas from ``VeriTrial/scripts/export_pbpk_to_qed.py``
          (single source of truth, live ``model.py``) and feeds them through
          ``VeriTrial/scripts/verify_formal_gate.py``, which re-derives the live
@@ -29,50 +32,92 @@ context:
   - "QED/verify_pbpk_lemmas.py exits non-zero on ANY lemma that fails or contains sorry"
   - "Bare Lean 4 (no Mathlib) proves identities by rfl and closed numeric field equalities by decide/simp"
   - "Symbolic perfusion/distributive lemmas require Mathlib (field_simp/ring); fail-closed without it"
+  - "QED splits its suite in two: run_tests.py (18 e2e/no-sorry tests) and test_pipeline.py (256 unit tests covering the parser, the no-sorry policy and the VeriTrial-shaped lemma classification)"
+  - "QED/agentic_pipeline.py locates its Lake root by walking up from the CWD and is invoked by bare relative name, so both QED suites must run with CWD=../QED"
 constraints:
   - "Do NOT weaken the no-sorry gate or the fail-closed formal gate"
   - "Do NOT modify Tether's core orchestration logic"
   - "If the QED suite fails, the whole mission fails (VeriTrial must not be certified on a broken multiplier)"
   - "Every exported lemma MUST verify; a single failure fails the whole mission"
   - "Keep all changes backward compatible with existing VeriTrial simulations"
+# QED is a sibling repo reached through ../QED, so declare it rather than
+# letting one command's relative path reach it by accident: the workspace
+# checkpoint (and its dirty-state gate) then covers QED as well as VeriTrial.
+workspace_repos:
+  - "../QED"
 verification:
+  # Orchestration across two sibling repos: commands run in the real tree and
+  # reference ../QED, so a copied clean-room would be incomplete. The mission
+  # performs no code modification of its own; verification is the substance.
+  clean_room: false
+  # test_pipeline.py alone runs ~5 min of real Lean on this host, so the
+  # default 600s per-command timeout leaves no headroom on a loaded machine.
+  timeout_seconds: 900
   commands:
-    # (1) Verify the foundational layer: QED's full suite must be green.
-    - "cd ../QED && python3 run_tests.py"
+    # (1a) Verify the foundational layer, end-to-end suite + no-sorry gate.
+    #
+    #     `cd ../QED && python3 run_tests.py` is NOT a working shell command
+    #     here: Tether splits commands with shlex and runs them with
+    #     shell=False, so `cd` was argv[0] with `&&` and the script name as
+    #     literal trailing arguments -- macOS /usr/bin/cd ignored them, the
+    #     process exited 0, and the whole QED layer reported green without
+    #     running a single test. The os.chdir + runpy wrapper below keeps the
+    #     exit code (SystemExit propagates) while actually running the suite
+    #     from the directory QED requires.
+    - "python3 -c \"import os, runpy, sys; os.chdir('../QED'); sys.argv = ['run_tests.py']; runpy.run_path('run_tests.py', run_name='__main__')\""
+    # (1b) The other half of the QED suite: parser hardening, the no-sorry
+    #     policy, and the VeriTrial-shaped lemma tests (numeric witness
+    #     normalization/classification, symbolic and parametric distributive
+    #     classification). Kept as its own command because it is ~5 min on its
+    #     own and merging it with 1a would put both under one timeout budget.
+    - "python3 -c \"import os; os.chdir('../QED'); import pytest; raise SystemExit(pytest.main(['test_pipeline.py', '-q', '-p', 'no:cacheprovider']))\""
     # (2) Export the CURRENT PBPK lemmas (single source of truth) and run the
     #     enforced formal gate, which re-derives the live lemmas, refuses any
     #     drift, and proves every lemma with QED (no sorry).
     - "python3 scripts/export_pbpk_to_qed.py --out /tmp/pbpk_lemmas.txt"
     - "python3 scripts/verify_formal_gate.py /tmp/pbpk_lemmas.txt"
   assertions:
-    # The formal spec must document the genuine non-reflexive mass-conservation witness.
+    # The formal spec must document the parametric mass-conservation identity
+    # (what the bridge actually emits -- the numeric witnesses it used to
+    # assert are gone, superseded by this lemma).
     - path: "formal_specs/pbpk_mass_conservation.tex"
-      contains: "Lemma 3b"
+      contains: "Lemma 3c"
+    # The formal spec must also document the boundary inflow invariant.
+    - path: "formal_specs/pbpk_mass_conservation.tex"
+      contains: "Lemma 4"
   probes:
-    # The exported lemma set must contain the closed numeric perfusion witness
-    # (a genuine, non-reflexive proof by decide/simp under bare Lean).
+    # One Metzler positivity certificate per perfused compartment -- the count
+    # alone is not the invariant, so assert the certificates themselves.
     - command: "python3 scripts/export_pbpk_to_qed.py"
-      contains: "3 * (5 - 4 / 2) = 3 * 5 - 3 * 4 / 2"
-    # The exported lemma set must contain the genuine mass-conservation witness
-    # (sum of derivative RHS terms = 0), proved non-reflexively by QED.
+      contains: "Q_liver / (V_liver * Kp_liver) > 0"
     - command: "python3 scripts/export_pbpk_to_qed.py"
-      contains: "-6 + 9 + -13 + 4 + 6 + 0 = 0"
-    # The exported lemma set must contain the Rodgers-Rowland Kp witness.
+      contains: "Q_periph / (V_periph * Kp_periph) > 0"
     - command: "python3 scripts/export_pbpk_to_qed.py"
-      contains: "129 = 129"
-    # The exported lemma set must contain the fixed-step solver invariant.
+      contains: "Q_effect / (V_effect * Kp_effect) > 0"
+    # Boundary inflow invariants (non-negative orthant), parametric in the
+    # central compartment rather than closed numeric witnesses.
     - command: "python3 scripts/export_pbpk_to_qed.py"
-      contains: "21 = 21"
-    # The export bridge must emit exactly 9 lemmas (6 structural + 3 extra witnesses).
-    - command: "python3 scripts/export_pbpk_to_qed.py | wc -l | tr -d ' '"
-      equals: "9"
-    # The export bridge must emit the reflexive gut absorption identity.
+      contains: "(Q_liver / (V_central * Kp_liver)) * A_central >= 0"
     - command: "python3 scripts/export_pbpk_to_qed.py"
-      contains: "ka * A_gut = ka * A_gut"
-# Orchestration across two sibling repos: commands run in the real tree and
-# reference ../QED, so a copied clean-room would be incomplete. The mission
-# performs no code modification of its own; verification is the substance.
-clean_room: false
+      contains: "(Q_effect / (V_central * Kp_effect)) * A_central >= 0"
+    # The column-sum certificate: the parametric mass-conservation sum.
+    - command: "python3 scripts/export_pbpk_to_qed.py"
+      contains: "(-(CL + Ql + Qp + Qe)/Vc)"
+    # The parametric mass-dissipation sum uses compartment-specific symbolic
+    # rates (ka_rate), not the reflexive gut-absorption identity.
+    - command: "python3 scripts/export_pbpk_to_qed.py"
+      contains: "ka_rate * A_gut"
+    # The elimination/mass-dissipation inequality.
+    - command: "python3 scripts/export_pbpk_to_qed.py"
+      contains: "CL * C_p > 0"
+    # The export bridge must emit exactly 9 parametric lemmas. This is a
+    # python3 -c command rather than a pipeline because Tether runs commands
+    # with shell=False: `... | wc -l` handed `|` and `wc` to the script as
+    # literal arguments (rc=2, empty stdout). `equals` is not a ProbeSpec
+    # field either -- an unknown key is silently dropped, so that probe
+    # asserted nothing at all. `matches: ^9$` is the field that exists.
+    - command: "python3 -c \"import pathlib, subprocess; p = '/tmp/tether_qed_veritrial_lemmas_probe.txt'; subprocess.run(['python3', 'scripts/export_pbpk_to_qed.py', '--out', p], check=True); print(len(pathlib.Path(p).read_text().splitlines()))\""
+      matches: "^9$"
 # No code changes are produced by this orchestration mission; mutation testing
 # is exercised by the underlying QED/VeriTrial missions instead.
 recovery:
