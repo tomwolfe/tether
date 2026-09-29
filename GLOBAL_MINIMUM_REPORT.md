@@ -156,18 +156,40 @@ were checked by hand before accepting, and both are true:
    Fin 6 only.**
 
 2. **"formal_verification.py embeds SHA-256 hashes of verified Lean code"** —
-   it computes `_lean_code_sha256` over `attempt["lean_code"]`, a key
-   `check_qed_proofs` never sets, so `lean_code_sha256` in the written trail is
-   always `{}`. Confirmed against the real artifact. Note the task brief lists
-   a populated `lean_code_sha256` in `qed_traces.json` as a required
-   deliverable — **it is empty, and that is a real gap**, not a wording
-   problem. The Lean digests that do reach the Merkle chain come from
-   elsewhere: `validation/__init__.py` hashes `QED/Compartmental.lean` and
-   `QED/VeriTrialExport.lean` directly.
+   it computed `_lean_code_sha256` over `attempt["lean_code"]`, a key
+   `check_qed_proofs` never set, so `lean_code_sha256` was always `{}`.
+
+   **This was also a deliverable in the task brief, and it is now FIXED**
+   (`VeriTrial` `94f4848`). The digest is now computed at the boundary where
+   `result` still holds the prover's output, and carried on the attempt dict.
+   It cannot be computed in the consumer — that is precisely the bug. Verified
+   against a real run: **9/9 lemmas carry a 64-hex digest**, and the artifact
+   contains no proof source (the raw text is deliberately not stored, since
+   `attempts` is serialized into the trail JSON; `_write_trail` now strips
+   raw-source keys defensively).
+
+   Why it survived review for so long: the digests are **not** part of the
+   pass/fail condition, so the gate stayed green with them empty. Silent
+   absence of tamper evidence is worse than a loud failure.
 
 Both corrections make the mission's claims *narrower*, which is the safe
 direction. The mission's 9 commands, thresholds, suppression list and
 `fail_below` are untouched.
+
+### A second stale-artifact bug found while fixing the first
+
+`build_regulatory_provenance` only *inserted* a `merkle-root` tag when one was
+absent, and `run_all_validations` regenerates `vvv40_report.html` from scratch
+without one. So re-running validations without re-sealing **stripped the
+provenance chain** — reproduced here. Worse, a report that still carried an
+*old* root kept it, so the HTML and `regulatory_provenance.json` silently
+disagreed while every existence check stayed green: a report attesting to a run
+it no longer describes.
+
+The sealer now **replaces the tag by value**, so the two agree by
+construction. A malformed or foreign tag is neither overwritten nor ignored —
+it is reported as `malformed_merkle_tag` on the returned record, because
+silently leaving it is a lie and destroying it could destroy evidence.
 
 ## Zero leakage
 
@@ -622,7 +644,7 @@ anything.
 
 | check | result |
 |---|---|
-| `pytest src/insilico_trial/tests/` | **187 passed**, 0 failed |
+| `pytest src/insilico_trial/tests/` | **193 passed**, 0 failed |
 | `ruff check` / `mypy` | clean / `Success: no issues found in 34 source files` |
 | benchmarks (warfarin_pgx, moxifloxacin_qtc, midazolam_cyp3a4, metformin_renal, hepatic_impairment) | 5/5 `overall_pass: true` |
 | `validation_summary.json` | `overall_pass: true`, `formal_verification_pass: true` |
