@@ -7,11 +7,11 @@ No mock adapter was used for any gate recorded below.
 
 | repo | HEAD | dirty | sorry_free |
 |---|---|---|---|
-| tether | `20e5e0066a411d879c2db3541df8b92804b7a747` | false | `n/a` (ships no Lean) |
+| tether | `61aaa4e` (report commit; ledger trails by the audit commit) | false | `n/a` (ships no Lean) |
 | QED | `57368a012346c3c04d4e6c8744b9e6b4a676236b` | false | **true** |
 | VeriTrial | `7e7132214b077a7f8b9d0e337f08a722a54416d7` | false | **true** |
 
-`SYSTEM_STATE.json` merkle root: `34396c42164bb1b02c012bf1109f44d1e401e43d27f99b6839273c1696a2a302`
+`SYSTEM_STATE.json` merkle root: `16b0dffa4e7ac84b0e787ef3bfb5b07747b68729a42456758cc0dedb447b7f0f`
 V&V report `<meta name="merkle-root">`: `7abd01eb894ceda380c508588953ac6247da5bda38269e7eca983ed24e80713a`
 
 Regenerated and re-measured 2026-09-29. The report's `<meta name="merkle-root">`
