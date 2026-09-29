@@ -7,11 +7,12 @@ No mock adapter was used for any gate recorded below.
 
 | repo | HEAD | dirty | sorry_free |
 |---|---|---|---|
-| tether | `61aaa4e` (report commit; ledger trails by the audit commit) | false | `n/a` (ships no Lean) |
+| tether | `8979012` (report commit; ledger trails by the audit commit) | false | `n/a` (ships no Lean) |
 | QED | `57368a012346c3c04d4e6c8744b9e6b4a676236b` | false | **true** |
-| VeriTrial | `7e7132214b077a7f8b9d0e337f08a722a54416d7` | false | **true** |
+| VeriTrial | `5516067` | false | **true** |
 
-`SYSTEM_STATE.json` merkle root: `16b0dffa4e7ac84b0e787ef3bfb5b07747b68729a42456758cc0dedb447b7f0f`
+`SYSTEM_STATE.json` merkle root: `ea26e2d0c13de20e…` (full value in
+`SYSTEM_STATE.json`)
 V&V report `<meta name="merkle-root">`: `7abd01eb894ceda380c508588953ac6247da5bda38269e7eca983ed24e80713a`
 
 Regenerated and re-measured 2026-09-29. The report's `<meta name="merkle-root">`
@@ -573,7 +574,7 @@ anything.
 
 | check | result |
 |---|---|
-| `pytest src/insilico_trial/tests/` | **186 passed**, 0 failed |
+| `pytest src/insilico_trial/tests/` | **187 passed**, 0 failed |
 | `ruff check` / `mypy` | clean / `Success: no issues found in 34 source files` |
 | benchmarks (warfarin_pgx, moxifloxacin_qtc, midazolam_cyp3a4, metformin_renal, hepatic_impairment) | 5/5 `overall_pass: true` |
 | `validation_summary.json` | `overall_pass: true`, `formal_verification_pass: true` |
@@ -598,12 +599,24 @@ not be attributed to commits present in the audited history. Re-running
 (`6683b48`), and a re-audit after that commit moved the ledger to `20e5e00`.
 
 Separately, the report and `regulatory_provenance.json` carried **different**
-merkle roots. The cause is benign but worth recording: a pytest run writes
-`regulatory_provenance.json` into `output/validation/` with a lemmas file inside
-a pytest tmpdir, while the HTML still holds the root sealed by the last real
-`make validate`. Re-running `cli validate` re-seals both together, and the
-roots now match. This is an artifact-ordering wart — the two writers can
-interleave — not a soundness break, but it makes a real test look red.
+merkle roots. Root cause, now fixed (`VeriTrial` `5516067`): the formal gate
+wrote `output/validation/qed_traces.json` at a fixed repo-relative path after
+every successful run, and that file is a Merkle **leaf input** of
+`build_regulatory_provenance()`. So any test that drove the gate over a lemmas
+file in a pytest tmpdir replaced the production trace with one pointing into
+that tmpdir — and the provenance root then disagreed with the root already
+embedded in the HTML.
+
+This was a fail-closed test failing for a reason unrelated to soundness, which
+is the worst kind of red: it teaches the operator to re-run until green rather
+than read the failure. Two writers of the same artifact also disagreed about
+where it lives — `formal_verification._trace_path()` honored `QED_TRACE` and
+`verify_formal_gate.py` ignored it. Both now honor it, `tests/conftest.py`
+redirects it session-wide so no test can write the repo artifact, and
+`test_gate_honors_qed_trace_redirect` pins it (confirmed to fail when the
+redirect is reverted). Verified by snapshotting all three artifacts, running the
+full gate-driving suite, and confirming the report root, provenance root and
+traces file are byte-identical afterward.
 
 One thing that looked like a defect and was not: the audit reported tether
 `dirty: true` mid-session. That was a **transient artifact of this session's own
