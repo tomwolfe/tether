@@ -34,6 +34,22 @@ def _contains_assignment(function: ast.FunctionDef, target: str, expression: str
     raise AssertionError(f"required equation missing: {target} = {expression}")
 
 
+def _fails(message: str) -> bool:
+    """Always False, after raising. For use as `cond or _fails(...)`."""
+    raise AssertionError(message)
+
+
+def _has_assignment(function: ast.FunctionDef, target: str, expression: str) -> bool:
+    """Does ``target`` carry exactly this RHS anywhere in ``function``?"""
+    for node in ast.walk(function):
+        if not isinstance(node, ast.Assign):
+            continue
+        names = [part.id for target_node in node.targets for part in ast.walk(target_node) if isinstance(part, ast.Name)]
+        if target in names and ast.unparse(node.value) == expression:
+            return True
+    return False
+
+
 def _contains_dict_entry(function: ast.FunctionDef, key: str, expected: str) -> None:
     for node in ast.walk(function):
         if isinstance(node, ast.Return) and isinstance(node.value, ast.Dict):
@@ -73,7 +89,31 @@ def verify_model(path: Path) -> None:
     tree = ast.parse(path.read_text(encoding="utf-8"))
     function = _function(tree, "make_pbpk_ode")
     _contains_assignment(function, "dA_gut", "-ka * A_gut")
-    _contains_assignment(function, "dA_elim", "CL * C_p")
+    # dA_elim accumulates the linear clearance plus the opt-in saturable
+    # hepatic metabolic flux. Both spellings are accepted because the model
+    # gates the saturable term on vmax_metabolic/km_metabolic; what is pinned
+    # is that the LINEAR clearance is present and that the saturable term, if
+    # present, is the Michaelis-Menten form rather than some other drain.
+    # The saturable hepatic flux is a TRANSFER: the liver removes it and elim
+    # accumulates it, so BOTH sides must be present. Checking either alone
+    # would pass a one-sided flux, which manufactures or destroys mass -- so
+    # this asserts the pair, not each member.
+    _has_assignment(function, "dA_liver", "flows[0] - liver_metabolic") or _fails(
+        "saturable flux removed from the liver: dA_liver must subtract "
+        "liver_metabolic")
+    _has_assignment(function, "dA_elim", "CL * C_p + liver_metabolic") or _fails(
+        "saturable flux not accumulated in elim: dA_elim must add "
+        "liver_metabolic")
+    # The flux must be genuinely SATURABLE (Vmax*C/(Km+C)), not a linear drain
+    # wearing the same name.
+    _contains_assignment(
+        function, "liver_metabolic", "vmax * C_liver / (km + C_liver)")
+    # ...and it must stay OPT-IN, so the default model is the linear one.
+    # `ast.unparse` parenthesises each comparison inside the `and` chain, so
+    # the pinned form is the parenthesised one.
+    _contains_source(function, (
+        "if vmax is not None and km is not None and (vmax > 0) and (km > 0):",
+    ))
     _contains_source(
         function,
         (
@@ -101,7 +141,10 @@ def verify_export(path: Path) -> None:
     # the tautology ever comes back.
     _contains_source(_function(tree, "_dynamic_lemmas"), (
         "if parametric:",
-        "lemmas.append(build_column_sum_certificate(model_path))",
+        # `fin_n` is threaded through: the conservation certificate is a
+        # function of the organ network, and building it for a different
+        # network than the lemmas describe would certify the wrong Jacobian.
+        "lemmas.append(build_column_sum_certificate(model_path, fin_n))",
         "lemmas.append(build_parametric_sum_lemma(model_path))",
         "lemmas.append('CL * C_p > 0')",
     ))
