@@ -56,6 +56,47 @@ verification:
     # 2) Feed every generated lemma into QED through the portable gate runner,
     #    which fails the mission if ANY lemma cannot be verified (no sorry).
     - "python3 scripts/verify_formal_gate.py /tmp/pbpk_lemmas.txt"
+    # 2b) Run the test suite that pins the bridge and the gate.
+    #
+    #     Without this the gate has no teeth over its own logic. Steps 1-2
+    #     invoke the two scripts, so a mutation lands in a test file that
+    #     nothing in this mission ever executes and survives at 100% -- the
+    #     kill rate was reporting green on a gate that could not see its own
+    #     regression. These are the tests that pin the lemma set, the
+    #     per-tissue Metzler coverage and the fail-closed paths.
+    - "python3 -m pytest src/insilico_trial/tests/test_bridge_mutation_fast.py src/insilico_trial/tests/test_formal_verification.py src/insilico_trial/tests/test_fixed_step.py -q"
+    # 3) Mutation-teeth battery for the baseline_targets below.
+    #
+    # This command is the fix for a gate that reported kill rate 30% (12/40)
+    # against its own 0.8 floor, and it is not a threshold problem. The two
+    # commands above only ever OBSERVE the emitted theorem set, so a mutant
+    # is killable only if it changes those nine strings. Measured through
+    # this gate's own sampler (per-path seed, these three operators,
+    # max_mutants 10 x 4 targets): 33 of the 40 sampled mutants leave the
+    # export byte-identical, 5 crash it, and only 2 change what it emits.
+    # The 33 sit in the saturable-flux detector, the Metzler/DILI and
+    # mass-conservation guards, the Jacobian helper, the fixpoint expander
+    # and the column-sum cross-check -- code the theorem set never exercises.
+    # A suite that cannot see them reports them as SURVIVING while
+    # certifying itself, which is the same "0.77 against a 0.8 floor, purely
+    # from suite selection" defect the tri-repo gate fixed the same way.
+    #
+    # These are the suites that actually cover the four baseline_targets:
+    # test_bridge_mutation_fast.py pins both gate scripts, test_pd.py pins
+    # pd/__init__.py, test_fixed_step.py pins the pbpk/model.py Jacobian
+    # against jax.jacfwd. Together they kill 33 of the 40 -- the run's score
+    # goes 0.30 -> 0.825, measured, not projected, and nothing is suppressed
+    # to buy it (no `equivalent:` entries, no lower floor, no dropped
+    # target). They are pure-Python (~5 s), which matters because the
+    # mutation battery re-runs this whole suite once per mutant;
+    # test_formal_verification.py was left out for exactly that reason (it
+    # drives real Lean: 2 m13 s per pass, ~90 min over the battery).
+    #
+    # PYTHONPATH=src is load-bearing, not boilerplate: the host carries an
+    # editable install of insilico_trial, which would otherwise shadow the
+    # clean room's own (possibly mutated) sources and make every mutant here
+    # unkillable. -p no:cacheprovider keeps pytest from writing into the room.
+    - "env PYTHONPATH=src python3 -m pytest src/insilico_trial/tests/test_bridge_mutation_fast.py src/insilico_trial/tests/test_pd.py src/insilico_trial/tests/test_fixed_step.py -q -p no:cacheprovider"
   assertions:
     # The formal spec must document the parametric mass-conservation identity.
     - path: "formal_specs/pbpk_mass_conservation.tex"
@@ -96,11 +137,23 @@ verification:
       - arithmetic
     max_mutants: 10
     fail_below: 0.8
+    # Scored by command 3 above, not by the export's theorem set: the two
+    # export commands observe only the nine emitted strings, and 33 of the
+    # 40 mutants these four targets yield leave those strings untouched. Do
+    # not read a low score here as an equivalence claim about the code -- it
+    # is a statement about which suite the mutation battery re-runs.
+    # The gate's own logic and the tests that pin it. `baseline_targets` is
+    # used when the session changes nothing mutatable, and when the agent
+    # edits a file that is not listed here the runner mutates THAT file
+    # instead -- so the test file has to be a target in its own right, or an
+    # agent touching it is scored on mutants nothing in the mission runs.
     baseline_targets:
       - "scripts/export_pbpk_to_qed.py"
       - "scripts/verify_formal_gate.py"
       - "src/insilico_trial/pbpk/model.py"
       - "src/insilico_trial/pd/__init__.py"
+      - "src/insilico_trial/tests/test_bridge_mutation_fast.py"
+      - "src/insilico_trial/tests/test_formal_verification.py"
   recovery:
     max_attempts: 3
     strategy: cumulative
