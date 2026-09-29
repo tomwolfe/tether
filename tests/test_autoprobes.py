@@ -167,14 +167,15 @@ def test_parse_salvages_valid_probes_from_mixed_response():
 
 
 def test_parse_salvages_when_one_entry_breaks_yaml():
-    # A shell command whose quotes are nested inside a quoted scalar is a
-    # YAML error, and a single such entry used to take the whole response
-    # down with it. One bad entry must cost only itself.
+    # An entry YAML can never read costs only itself. (Quoted scalars with
+    # unescaped inner quotes are no longer such a case — those are repaired;
+    # see the single-quote repair tests below. This uses a flow-sequence
+    # left open, which no scalar repair can rescue.)
     response = (
         "```yaml\n"
         "probes:\n"
-        "  - command: 'python -c 'print(1)''\n"
-        "    contains: '1'\n"
+        "  - command: 'echo broken'\n"
+        "    contains: [unclosed\n"
         "  - command: \"echo hi\"\n"
         "    contains: \"hi\"\n"
         "```"
@@ -190,8 +191,8 @@ def test_parse_salvages_when_broken_entry_comes_last():
         "probes:\n"
         "  - command: \"echo first\"\n"
         "    contains: \"first\"\n"
-        "  - command: 'bash -c 'echo second''\n"
-        "    contains: 'second'\n"
+        "  - command: 'echo broken'\n"
+        "    contains: [unclosed\n"
         "  - command: \"echo third\"\n"
         "    matches: 'thi'\n"
         "```"
@@ -236,10 +237,10 @@ def test_parse_fails_when_no_entry_survives_bad_yaml():
     response = (
         "```yaml\n"
         "probes:\n"
-        "  - command: 'python -c 'print(1)''\n"
-        "    contains: '1'\n"
-        "  - command: 'bash -c 'echo x''\n"
-        "    contains: 'x'\n"
+        "  - command: 'echo a'\n"
+        "    contains: [unclosed\n"
+        "  - command: 'echo b'\n"
+        "    matches: [unclosed\n"
         "```"
     )
     with pytest.raises(ProbeSynthesisError):
@@ -269,8 +270,8 @@ def test_salvage_keeps_sibling_when_others_break():
     response = (
         "```yaml\n"
         "probes:\n"
-        "  - command: 'python -c 'print(1)''\n"
-        "    contains: '1'\n"
+        "  - command: 'echo broken'\n"
+        "    contains: [unclosed\n"
         "  - command: \"echo ok\"\n"
         "    matches: '([unclosed'\n"
         "  - command: \"echo fine\"\n"
@@ -426,3 +427,75 @@ def test_placeholder_probe_is_dropped_but_real_siblings_survive():
     specs = parse_generated_probes(mixed)
     assert len(specs) == 1
     assert specs[0].command.endswith("conformance mock")
+
+
+def test_single_quoted_command_with_inner_single_quotes_is_recovered():
+    # A model that wraps a shell command in single quotes but leaves the
+    # shell's own inner quotes unescaped: `command: 'python -c 'print(1)''`.
+    # YAML reads that as the scalar `python -c 'print(1)` plus stray text and
+    # rejects the block. The repair closes the shell argument and escapes
+    # every inner quote, so the command survives verbatim.
+    from tether.autoprobes import parse_generated_probes
+
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command: 'python -c 'print(1)''\n"
+        "    contains: '1'\n"
+        "```"
+    )
+    specs = parse_generated_probes(response)
+    assert len(specs) == 1
+    assert specs[0].command == "python -c 'print(1)'"
+    assert specs[0].contains == "1"
+
+
+def test_single_quote_repair_does_not_double_an_already_escaped_scalar():
+    # A correctly escaped single-quoted scalar has an even number of quotes
+    # and must keep its own interpretation: the repair must not re-escape it
+    # into `'python -c ''''print(1)'''''''`.
+    from tether.autoprobes import parse_generated_probes
+
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command: 'python -c ''print(1)'''\n"
+        "    contains: '1'\n"
+        "```"
+    )
+    specs = parse_generated_probes(response)
+    assert specs[0].command == "python -c 'print(1)'"
+
+
+def test_single_quote_repair_keeps_regex_backslashes_verbatim():
+    # The repair is quote-only. A regex backslash is data and must survive,
+    # not be treated as an escape.
+    from tether.autoprobes import parse_generated_probes
+
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command: 'grep '\\d+' f'\n"
+        "    contains: 'x'\n"
+        "```"
+    )
+    specs = parse_generated_probes(response)
+    assert specs[0].command == r"grep '\d+' f"
+
+
+def test_broken_single_quoted_entry_costs_only_itself():
+    # Salvage stays per-entry across both repair kinds: a single-quote
+    # casualty does not sink a readable sibling.
+    from tether.autoprobes import parse_generated_probes
+
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command: 'python -c 'print(1)''\n"
+        "    contains: '1'\n"
+        "  - command: 'echo hi'\n"
+        "    contains: 'hi'\n"
+        "```"
+    )
+    specs = parse_generated_probes(response)
+    assert [s.command for s in specs] == ["python -c 'print(1)'", "echo hi"]

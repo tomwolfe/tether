@@ -211,6 +211,60 @@ def _relax_double_quoted_scalars(text: str) -> str:
     return "\n".join(_relax_scalar_line(line) for line in text.split("\n"))
 
 
+def _relax_single_quoted_scalars(text: str) -> str:
+    r"""Repair ``key: '...''...'`` — inner single quotes left unescaped.
+
+    The double-quote repair above covers a model that wraps a command in
+    double quotes. The mirror failure is a model that wraps it in single
+    quotes but forgets to double the shell's own inner quotes:
+    ``command: 'python -c 'print(1)''``. YAML reads that as the scalar
+    ``python -c 'print(1)`` followed by stray text, so the whole block
+    fails to parse and the probes are lost.
+
+    The repair doubles every inner ``'``, which is exactly what YAML
+    requires to mean "a literal quote inside a single-quoted scalar", so
+    the value the model meant survives verbatim. Only lines YAML actually
+    chokes on are rewritten, and a correctly escaped scalar keeps its own
+    interpretation.
+    """
+    return "\n".join(_relax_single_quoted_line(line) for line in text.split("\n"))
+
+
+def _relax_single_quoted_line(line: str) -> str:
+    match = _KEYED_LINE_RE.match(line)
+    if match is None:
+        return line
+    value = match.group("value")
+    if not value.startswith("'"):
+        return line
+    # The closing quote is the LAST one whose trailing text is still a plain
+    # comment. For `python -c 'print(1)'` the final quote closes the scalar
+    # and everything between the first quote and it is data.
+    closing = value.rfind("'")
+    if closing <= 0:
+        return line
+    inner, tail = value[1:closing], value[closing + 1:]
+    if not _SCALAR_TAIL_RE.fullmatch(tail):
+        return line
+    try:
+        yaml.safe_load("'" + inner + "'")
+    except yaml.YAMLError:
+        pass
+    else:
+        return line
+    # The model opened the scalar and then wrote the shell's own quotes
+    # unescaped, so the final quote of the value is ambiguous: it may be the
+    # wrapper's close, or the close of the shell argument the wrapper was
+    # supposed to contain. An odd number of inner quotes is exactly the case
+    # where the two collapsed into one and the shell argument is left open;
+    # closing it restores the command the model meant. The count parity is
+    # what decides, so a correctly escaped scalar (always an even count)
+    # is left exactly as written.
+    if inner.count(chr(39)) % 2:
+        inner += chr(39)
+    return f"{match.group('prefix')}'{inner.replace(chr(39), chr(39) * 2)}'{tail}"
+
+
 def _relax_scalar_line(line: str) -> str:
     match = _KEYED_LINE_RE.match(line)
     if match is None:
@@ -317,8 +371,9 @@ def _parse_entry_chunk(chunk: str) -> list[object]:
     treats that entry as malformed and moves on to the next one.
     """
     document = "probes:\n" + chunk
-    for relaxed in (False, True):
-        text = _relax_double_quoted_scalars(document) if relaxed else document
+    repairs = (None, _relax_double_quoted_scalars, _relax_single_quoted_scalars)
+    for relax in repairs:
+        text = document if relax is None else relax(document)
         try:
             data = yaml.safe_load(text)
         except yaml.YAMLError:
@@ -334,9 +389,8 @@ def _salvaged_specs(block: str) -> list[ProbeSpec]:
 
     Each ``- `` item is read and validated independently, so a single
     unparsable entry costs only itself. Unreadable items are dropped, never
-    guessed at: a chunk that still will not parse after the double-quote
-    repair — a shell command nested inside a single-quoted scalar is the
-    usual case — simply yields nothing.
+    guessed at: a chunk that still will not parse after either scalar repair
+    — a flow sequence the model left open, say — simply yields nothing.
     """
     specs: list[ProbeSpec] = []
     examined = 0
