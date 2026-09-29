@@ -583,12 +583,15 @@ guard is on") and this gate is `git_state_guard: true`, which makes that
 change load-bearing rather than cosmetic.
 
 Four QED missions (`qed-cleanroom-integrity`, `qed-mutation-strength`,
-`qed-docs-truth-audit`, `qed-unit-tests-pass`) and the other
-agent-in-the-loop `tether run missions/...` invocations have not been re-run
-here. The **tri-repo full-stack gate itself has** — see above, session
-`c44712be2b03` — so the clean-room staging, sandbox enforcement, mutation
-battery, git-state guard and review layer are all exercised by a real run
-rather than asserted.
+`qed-docs-truth-audit`, `qed-unit-tests-pass`) have not been re-run as
+agent-in-the-loop missions. The QED *invariants* they assert have been measured
+directly (256 passed, 18/18, sorry-free, zero leakage, OOD proofs, and the
+tactic-selection mutation gap now at 1.0000).
+
+The **tri-repo full-stack gate itself has** been run for real — see above,
+session `c44712be2b03` — so the clean-room staging, sandbox enforcement,
+mutation battery, git-state guard and review layer are all exercised by an
+actual run rather than asserted.
 
 What that run does **not** cover is the QED-side mission suite. The QED
 invariants below were measured directly, which is the same signal for
@@ -606,9 +609,19 @@ deterministic commands but carries no review or sandbox layer:
 | 8 | `test_bridge_mutation_fast.py test_pd.py` | 94 passed |
 | 9 | `test_fixed_step.py test_solvers.py` | 15 passed |
 
-`qed-mutation-strength` is still the mission that owes teeth to the 13
-surviving tactic-selection mutants described above; that gap is untouched by
-this pass.
+`qed-mutation-strength` is the mission that owes teeth to the 13 surviving
+tactic-selection mutants described above. **Re-measured 2026-09-29 against the
+tactic-selection region: kill rate 1.0000 (12/12, zero survivors)**, with 40
+tactic tests passing. The dedicated `select_tactic` and `get_tactic_candidates`
+tests do now kill flipped decisions, and
+`test_execute_with_initial_code_delegates_to_the_tactic_loop` — the delegation
+that previously had no coverage at all — exists. The clean-room gap described
+earlier (0.5167) was a cold-cache artifact, not missing logic.
+
+One operational hazard, recorded because it cost a recovery: `run_killrate.py`
+mutates the target **in place** and restores it on normal exit, so killing the
+process mid-run leaves `agentic_pipeline.py` mutated in the working tree. A
+`git checkout --` is the recovery. Worth a trap in the tool.
 
 Tier 2 (`STANDARD_14_ORGAN_NETWORK` promotion, saturable `Vmax`/`Km` clearance)
 is **not started**, and is not recommended as written. `Vmax`/`Km` appears
@@ -693,6 +706,25 @@ One thing that looked like a defect and was not: the audit reported tether
 concurrent mutation runs** holding tracked files mid-write. The tree was clean
 before and after. Worth knowing, because the symptom is indistinguishable from
 a real dirty tree in the artifact.
+
+### The ledger's one-commit lag is the design, not a wart
+
+I previously suggested the ledger should stop recording tether's own HEAD to
+make the commit-then-audit cycle go away. **That was wrong, and reading the
+test says so.** `test_report_commits_to_ancestors_of_the_ledger_heads` states
+it directly:
+
+> Exact SHA equality is unsatisfiable here and asserting it would be a fake
+> check: the ledger records tether's HEAD, but writing and committing the
+> ledger is itself a tether commit, so the committed ledger necessarily trails
+> the report by exactly one commit. The sound relation is containment.
+
+The test asserts `git merge-base --is-ancestor`, which tolerates exactly that
+lag and rejects anything else — a report may not attribute results to commits
+absent from the audited history. Dropping tether's own HEAD would have made the
+cycle disappear by weakening the thing the ledger exists to attest to. The lag
+is the honest encoding of "the ledger cannot contain its own commit", and it is
+already stated in the report's ledger section. No change made.
 
 ## What this pass did not do
 
