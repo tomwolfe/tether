@@ -132,12 +132,17 @@ verification:
     # Tether-side regression net: the mission mutates changed tether files, so
     # the clean-room suite must exercise them (sibling .git preservation,
     # .lake/symlink carries, gitlink pointers); otherwise those mutants are
-    # unkillable by construction. PYTHONPATH=../tether/src defeats the host
-    # editable install (which would otherwise shadow the room's mutated
-    # sources) and points at the room's own, possibly mutated, copy.
-    - "env PYTHONPATH=../tether/src python3 -m pytest ../tether/tests/test_cleanroom.py ../tether/tests/test_multirepo_capture.py -q -p no:cacheprovider"
+    # unkillable by construction.
+    #
+    # Room-relative, NOT `../tether/...`. The room root IS the tether checkout
+    # (project_dir is `.`), and mutation targets are written relative to it --
+    # so `../tether/tools/verify_veritrial_equations.py` executed the
+    # *sibling* copy that nothing mutates, and every mutant in it survived by
+    # construction: kill rate 0/6. PYTHONPATH=src still defeats the host
+    # editable install, which would otherwise shadow the room's sources.
+    - "env PYTHONPATH=src python3 -m pytest tests/test_cleanroom.py tests/test_multirepo_capture.py -q -p no:cacheprovider"
     - "env PYTHONPATH=../VeriTrial/src python3 -m pytest ../VeriTrial/src/insilico_trial/tests/test_mission_regressions.py -q -p no:cacheprovider"
-    - "python3 ../tether/tools/verify_veritrial_equations.py --source-root ../VeriTrial"
+    - "python3 tools/verify_veritrial_equations.py --source-root ../VeriTrial"
     # Mutation-teeth battery for the baseline_targets above. The gate mutated
     # export_pbpk_to_qed.py / verify_formal_gate.py / pd but only ran
     # test_mission_regressions.py, so mutants that these files' own suites kill
