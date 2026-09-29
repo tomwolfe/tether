@@ -7,7 +7,7 @@ No mock adapter was used for any gate recorded below.
 
 | repo | HEAD | dirty | sorry_free |
 |---|---|---|---|
-| tether | `8979012` (report commit; ledger trails by the audit commit) | false | `n/a` (ships no Lean) |
+| tether | `2d42c5c` (report + mission-correction commit) | false | `n/a` (ships no Lean) |
 | QED | `57368a012346c3c04d4e6c8744b9e6b4a676236b` | false | **true** |
 | VeriTrial | `5516067` | false | **true** |
 
@@ -117,6 +117,57 @@ suppression list.
 scored against the gate battery; a whole-file run against `tests/` was started
 during this session and abandoned as both slow and off-contract. Scoring it
 would report a number the gate never claimed.
+
+## The tri-repo gate re-run for real (2026-09-29)
+
+The agent/review/sandbox layer was finally exercised, closing the gap this
+report previously carried as unverified. `tri-repo-full-stack-gate.yaml`,
+session **`c44712be2b03`**, `--adapter opencode`, real (not dry) run:
+
+| layer | result |
+|---|---|
+| status | **success** |
+| clean-room verification | **9/9 commands exit 0**, in a real clean room at `/tmp/tether-cleanroom-i9whbk9s` |
+| mutation | **kill_rate 1.0000** — 23 killed, 0 survived, 1 documented-equivalent skipped (`fail_below` 0.8) |
+| review | **approve** |
+| sandbox violations | **none** (`[]`) |
+| git_state_violations | none reported |
+| formal gate | `all 9 lemmas verified by QED (no sorry)` / `FORMAL GATE PASSED` |
+| siblings after the run | QED `57368a0` and VeriTrial `5516067`, both **clean and unmoved** |
+
+The sibling-safety question is now answered by measurement rather than
+caution. The report previously warned that a gate run can move a sibling
+branch, because `git_safety.py` issues `git reset --hard` per repository. That
+did not happen here: clean-room staging uses `git archive` (read-only), and
+`rollback` refuses on a dirty tree, so the risk is bounded. Recorded as
+"did not occur in this run", not as a claim that it cannot occur.
+
+### The run found two false claims in the mission's own context
+
+The agent audited the context it was handed and rejected two statements. Both
+were checked by hand before accepting, and both are true:
+
+1. **"emits the N-generic … isomorphism file … (Jacobian-derived dimension)"** —
+   for a model defining `make_pbpk_ode` the live path takes
+   `N = len(DEFAULT_ORGAN_NETWORK) = 6`. The Jacobian-derived `N` further down
+   is dead for that model shape and command 1 passes no `--fin-n`. The emitted
+   file contains only `Fin 6` and `Fin 9`; `_network_for_fin` accepts just 6 or
+   14, so `--fin-n 14` is a separate, unproven path. **The gate certifies
+   Fin 6 only.**
+
+2. **"formal_verification.py embeds SHA-256 hashes of verified Lean code"** —
+   it computes `_lean_code_sha256` over `attempt["lean_code"]`, a key
+   `check_qed_proofs` never sets, so `lean_code_sha256` in the written trail is
+   always `{}`. Confirmed against the real artifact. Note the task brief lists
+   a populated `lean_code_sha256` in `qed_traces.json` as a required
+   deliverable — **it is empty, and that is a real gap**, not a wording
+   problem. The Lean digests that do reach the Merkle chain come from
+   elsewhere: `validation/__init__.py` hashes `QED/Compartmental.lean` and
+   `QED/VeriTrialExport.lean` directly.
+
+Both corrections make the mission's claims *narrower*, which is the safe
+direction. The mission's 9 commands, thresholds, suppression list and
+`fail_below` are untouched.
 
 ## Zero leakage
 
@@ -510,11 +561,16 @@ guard is on") and this gate is `git_state_guard: true`, which makes that
 change load-bearing rather than cosmetic.
 
 Four QED missions (`qed-cleanroom-integrity`, `qed-mutation-strength`,
-`qed-docs-truth-audit`, `qed-unit-tests-pass`) and the agent-in-the-loop
-`tether run missions/...` invocations have not been re-run here.
+`qed-docs-truth-audit`, `qed-unit-tests-pass`) and the other
+agent-in-the-loop `tether run missions/...` invocations have not been re-run
+here. The **tri-repo full-stack gate itself has** — see above, session
+`c44712be2b03` — so the clean-room staging, sandbox enforcement, mutation
+battery, git-state guard and review layer are all exercised by a real run
+rather than asserted.
 
-**The verification commands were run directly instead.** All 8 commands in
-`tri-repo-full-stack-gate.yaml` were executed by hand and all 8 exit 0:
+What that run does **not** cover is the QED-side mission suite. The QED
+invariants below were measured directly, which is the same signal for
+deterministic commands but carries no review or sandbox layer:
 
 | # | command | result |
 |---|---|---|
@@ -525,16 +581,8 @@ Four QED missions (`qed-cleanroom-integrity`, `qed-mutation-strength`,
 | 5 | `test_cleanroom.py test_multirepo_capture.py` | 56 passed |
 | 6 | `test_mission_regressions.py` | 2 passed |
 | 7 | `verify_veritrial_equations.py` | passed |
-| 8 | `test_bridge_mutation_fast.py test_pd.py` | 93 passed |
+| 8 | `test_bridge_mutation_fast.py test_pd.py` | 94 passed |
 | 9 | `test_fixed_step.py test_solvers.py` | 15 passed |
-
-These are deterministic commands, so running them directly yields the same
-signal as a mission run at a fraction of the cost, and with reproducible
-output. What is **not** reproduced this way is the agent/review layer: the
-review verdict, sandbox-violation detection and the clean-room staging
-behavior are exercised only by an actual `tether run`. Those claims below are
-carried over from earlier sessions, not re-earned here, and should be read as
-unverified in this pass.
 
 `qed-mutation-strength` is still the mission that owes teeth to the 13
 surviving tactic-selection mutants described above; that gap is untouched by
