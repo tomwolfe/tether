@@ -7,12 +7,18 @@ No mock adapter was used for any gate recorded below.
 
 | repo | HEAD | dirty | sorry_free |
 |---|---|---|---|
-| tether | `1c230d60d8a0` | false | `n/a` (ships no Lean) |
-| QED | `a873a3dd90c7c5282ad54a5c3a28f8fb05867eb9` | false | **true** |
-| VeriTrial | `8f14e72819d392e1b8ed19d6f7aca5fb75437120` | false | **true** |
+| tether | `20e5e0066a411d879c2db3541df8b92804b7a747` | false | `n/a` (ships no Lean) |
+| QED | `57368a012346c3c04d4e6c8744b9e6b4a676236b` | false | **true** |
+| VeriTrial | `7e7132214b077a7f8b9d0e337f08a722a54416d7` | false | **true** |
 
-`SYSTEM_STATE.json` merkle root: `442344c24adaee4320f012e05ff20d24c7be17962dfe12cf0f3746e152f46208`
-V&V report `<meta name="merkle-root">`: `650b530c5a438dac6cda4a267ee04b6b3d9331b31b4cec10f7f02acbf8b6f266`
+`SYSTEM_STATE.json` merkle root: `34396c42164bb1b02c012bf1109f44d1e401e43d27f99b6839273c1696a2a302`
+V&V report `<meta name="merkle-root">`: `7abd01eb894ceda380c508588953ac6247da5bda38269e7eca983ed24e80713a`
+
+Regenerated and re-measured 2026-09-29. The report's `<meta name="merkle-root">`
+now **matches** `output/validation/regulatory_provenance.json` exactly; they
+disagreed before, because a pytest run had overwritten the provenance JSON with
+a root built from a tmpdir lemmas file while the HTML still carried the root
+sealed by the last real `make validate`.
 
 These two roots are **different quantities and are not expected to match**: the
 report chains six validation leaves (tether report, QED traces, benchmark
@@ -39,12 +45,30 @@ All are generic over `[Fintype n] [DecidableEq n]`; `Compartmental.lean`
 compiles under `leanprover/lean4:v4.34.0-rc2` with **0 errors** (warnings only).
 No theorem in the file is closed by `rfl`.
 
-## Formal gate — 18/18, no sorry
+## Formal gate — 9/9, no sorry
+
+Re-measured 2026-09-29 via
+`export_pbpk_to_qed.py --out /tmp/pbpk_lemmas.txt --parametric` then
+`verify_formal_gate.py /tmp/pbpk_lemmas.txt --strict` (exit 0):
 
 ```
-all 18 lemmas verified by QED (no sorry)
-FORMAL GATE PASSED
+all 9 lemmas verified by QED (no sorry)
+FORMAL GATE PASSED: all required PBPK lemmas verified by QED (no sorry).
 ```
+
+Earlier revisions of this report recorded **18/18**. That number is stale: the
+current six-organ export emits **9** lemmas, and `verify_formal_gate.py` reports
+`n_lemmas: 9`. Both the report and the artifact agree at 9, which is the number
+that matters; the 18 was from an earlier export shape. The 9 include the
+parametric column-sum identity and the mass-dissipation identity, both proved
+rather than assumed:
+
+- column sum: the full thirteen-term central-column sum `= 0`, including the
+  non-trivial `(-(CL + Ql + Qp + Qe)/Vc)` that offsets `Ql/Qp/Qe/CL` over `Vc`.
+- dissipation: the eleven-term `= 0` identity for the gut/central rate balance.
+
+`#print axioms` on both export theorems returns exactly
+`[propext, Classical.choice, Quot.sound]`.
 
 Spot-checks of the emitted Jacobian (autodiff vs. the analytic form used for
 the dt bound), `n_states=6`, perfused `[1,3,4]`, central 2, elim 5:
@@ -68,28 +92,30 @@ Column sums of `J` are zero to float32 precision
 
 | target | suite | rate |
 |---|---|---|
+| tri-repo gate (`baseline_targets`, 4 files) | gate battery | **1.0000** (23/23) |
 | `tether/src/tether/cleanroom.py` | `tests/test_cleanroom.py` | **0.9518** (79/83) |
-| `VeriTrial/scripts/export_pbpk_to_qed.py` | `test_bridge_mutation_fast.py` | **1.0000** (40/40) |
-| `VeriTrial/scripts/verify_formal_gate.py` | `test_bridge_mutation_fast.py` | **1.0000** (40/40) |
-| `VeriTrial/src/insilico_trial/pd/__init__.py` | `test_pd.py` | **1.0000** (38/38) |
-| `VeriTrial/src/insilico_trial/pbpk/model.py` | `test_fixed_step.py` | **1.0000** (40/40) |
 
-`cleanroom.py`'s 4 survivors are **provably equivalent**: `break_return` rewrites
-`return expr` to `return None` and `expr` is already `None` (73:8, 75:8); the
-sibling target mkdir is preceded by an unlink/rmtree prelude on every branch, so
-neither of its flags is reachable (254:41, 254:56).
+The tri-repo row was re-measured on 2026-09-29 by reproducing the gate's own
+sampler exactly — `generate_mutants`, the same per-file seed
+(`sha256(rel)[:8]`), the same operator set, the same `max_mutants: 6` cap and
+the same 16-entry `equivalent` suppression list read from
+`missions/tri-repo-full-stack-gate.yaml`. **23 killed, 0 survived**, which
+clears the 0.80 floor and also satisfies the `= 1.0` requirement for
+`export_pbpk_to_qed.py`, `verify_formal_gate.py`, `pbpk/model.py` and
+`pd/__init__.py` individually.
 
-The tri-repo gate measured **0.7727 against a 0.8 floor** in its earlier full
-run — not because its mutants were equivalent, but because the suite it ran
-(`test_mission_regressions.py`) could not kill them. The gate's own
-`baseline_targets` are now measured against the suites that cover them.
+`cleanroom.py`'s 4 survivors are **provably equivalent**, and the claim was
+re-checked against the current source rather than inherited:
+`break_return` rewrites `return expr` to `return None` and `expr` is already
+`None` (73:8, 75:8); the sibling-target `mkdir` is preceded by an
+unlink/rmtree prelude on every branch, so neither of its flags is reachable
+(254:41, 254:56). All four sites are the ones named in the mission's
+suppression list.
 
-Re-measured end to end on 2026-09-26 (session `8a3ff2654e70`):
-**kill_rate 1.0 — 19 killed, 0 survived, 5 documented-equivalent skipped**
-(`fail_below` 0.8). Per file: `export_pbpk_to_qed.py` 4/4,
-`verify_formal_gate.py` 5/5, `pbpk/model.py` 6/6, `pd/__init__.py` 4/4. The
-three genuinely-equivalent gate mutants are documented in the mission with
-their proofs.
+`src/tether/orchestrator.py` is **not** a gate target and is deliberately not
+scored against the gate battery; a whole-file run against `tests/` was started
+during this session and abandoned as both slow and off-contract. Scoring it
+would report a number the gate never claimed.
 
 ## Zero leakage
 
@@ -97,8 +123,47 @@ their proofs.
 → no matches. QED's parser and pipeline are domain-agnostic.
 
 OOD, verified with zero changes to QED: SEIR conservation, SEIR positivity,
-3-tank cascade, matrix-entry equality — plus `run_tests.py` 18/18 and
-`test_pipeline.py` 200 passed.
+3-tank cascade, matrix-entry equality (6 tests, 8.4 s) — plus `run_tests.py`
+18/18 and `test_pipeline.py` **256 passed**. The 200 figure in earlier
+revisions of this report is stale; the suite has grown.
+
+## The pinned toolchain's `lake` is broken; `lean` is not
+
+`leanprover/lean4:v4.34.0-rc2` ships a `lake` that **dies with SIGTRAP (exit
+133) on every invocation**, after printing correct output:
+
+```
+$ lake --version
+Lake version 5.0.0-src+6a10ac8 (Lean version 4.34.0-rc2)
+$ echo $?
+133
+```
+
+It reproduces in an empty directory with no project involved, and the Python
+subprocess reports `returncode -5` (signal 5, SIGTRAP). The same toolchain's
+`lean` is fine (`lean --version` exits 0, and a Lean compile of `QED.lean` /
+`Compartmental.lean` / `VeriTrialExport.lean` exits 0). Under
+`ELAN_TOOLCHAIN=leanprover/lean4:v4.0.0` the same `lake` exits 0, so the fault
+is in the rc2 toolchain, not in this repo or its Lake project.
+
+Consequence: **`lake build` cannot be run at all** under the pinned toolchain,
+so a literal "`lake build` 0 errors" check is unsatisfiable here. The
+equivalent check was performed instead by invoking `lean` directly with a
+`LEAN_PATH` reconstructed from `lake-manifest.json` (all 8 package build dirs
+plus the local `.lake/build/lib/lean`):
+
+```
+LEAN_PATH=... lean -DautoImplicit=false QED.lean              -> exit 0
+LEAN_PATH=... lean -DautoImplicit=false Compartmental.lean    -> exit 0 (warnings only)
+LEAN_PATH=... lean -DautoImplicit=false VeriTrialExport.lean  -> exit 0 (warnings only)
+```
+
+This is not a workaround invented for this session: `missions/tri-repo-full-stack-gate.yaml`
+already records the same SIGTRAP in its context block ("`lake env` is bypassed:
+it SIGTRAPs"), and `scripts/rebuild_qed_oleans.py` calls `elan run ... lean`
+directly rather than through `lake`. The project is consistent; the toolchain
+binary is at fault. **Upstream report: this is worth filing against
+`leanprover/lean4` v4.34.0-rc2.**
 
 ## What was actually broken this session
 
@@ -285,7 +350,8 @@ and a zero-mutant mutation run no longer describes itself as having met its
 ## Phase 2 (QED): one real green, three hollow greens, one correct refusal
 
 Measured directly and via tether on 2026-09-26. QED invariants all hold:
-**239 passed** in `test_pipeline.py`, **18/18** in `run_tests.py`, project Lean
+**239 passed** in `test_pipeline.py` (256 as of 2026-09-29), **18/18** in
+`run_tests.py`, project Lean
 sorry-free (the only `sorry` matches are vendored `.lake/packages/mathlib`),
 and `grep -riE "pbpk|liver|dili|cyp" parser.py agentic_pipeline.py` is empty.
 
@@ -443,15 +509,43 @@ guard is on") and this gate is `git_state_guard: true`, which makes that
 change load-bearing rather than cosmetic.
 
 Four QED missions (`qed-cleanroom-integrity`, `qed-mutation-strength`,
-`qed-docs-truth-audit`, `qed-unit-tests-pass`), the VeriTrial `make` chain,
-`veritrial-formal-gate`, and `qed-veritrial-formal-pipeline` have not been
-re-run here. The VeriTrial export, olean rebuild and strict formal gate are
-covered by this gate's commands 1-4. `qed-mutation-strength` is the mission
-that owes teeth to the 13 surviving tactic-selection mutants above. Tier 2 (`STANDARD_14_ORGAN_NETWORK` promotion,
-saturable `Vmax`/`Km` clearance) is not started — `Vmax`/`Km` appears nowhere
-in `model.py` today. Promoting 14-organ to `DEFAULT` would also invalidate the
-`Fin 6` export, the `J[5][2]`/`J[5][5]` pins and the 18 lemmas, so it is a
-breaking change that wants its own decision, not a quiet stretch goal.
+`qed-docs-truth-audit`, `qed-unit-tests-pass`) and the agent-in-the-loop
+`tether run missions/...` invocations have not been re-run here.
+
+**The verification commands were run directly instead.** All 8 commands in
+`tri-repo-full-stack-gate.yaml` were executed by hand and all 8 exit 0:
+
+| # | command | result |
+|---|---|---|
+| 1 | `export_pbpk_to_qed.py --lean-out ... --out ...` | exit 0 |
+| 2 | `rebuild_qed_oleans.py` | exit 0, both oleans rebuilt |
+| 3 | `verify_formal_gate.py /tmp/pbpk_lemmas.txt` | `FORMAL GATE PASSED` |
+| 4 | run-all-validations + `build_regulatory_provenance` | exit 0 |
+| 5 | `test_cleanroom.py test_multirepo_capture.py` | 56 passed |
+| 6 | `test_mission_regressions.py` | 2 passed |
+| 7 | `verify_veritrial_equations.py` | passed |
+| 8 | `test_bridge_mutation_fast.py test_pd.py` | 93 passed |
+| 9 | `test_fixed_step.py test_solvers.py` | 15 passed |
+
+These are deterministic commands, so running them directly yields the same
+signal as a mission run at a fraction of the cost, and with reproducible
+output. What is **not** reproduced this way is the agent/review layer: the
+review verdict, sandbox-violation detection and the clean-room staging
+behavior are exercised only by an actual `tether run`. Those claims below are
+carried over from earlier sessions, not re-earned here, and should be read as
+unverified in this pass.
+
+`qed-mutation-strength` is still the mission that owes teeth to the 13
+surviving tactic-selection mutants described above; that gap is untouched by
+this pass.
+
+Tier 2 (`STANDARD_14_ORGAN_NETWORK` promotion, saturable `Vmax`/`Km` clearance)
+is **not started**, and is not recommended as written. `Vmax`/`Km` appears
+nowhere in `model.py` today. Promoting 14-organ to `DEFAULT` would invalidate
+the `Fin 6` export, the `J[5][2]`/`J[5][5]` pins and the exported lemmas, so it
+is a breaking change that wants its own decision. Adding saturable clearance
+changes the physiology of every simulation. Both are substantive scientific
+decisions rather than gate-closing, so they are left for an explicit call.
 
 ### Dogfood status this session
 
@@ -474,6 +568,58 @@ placeholder, so synthesis fell back to the human battery. The schema-echo
 filter is working as designed; the gap is generator behavior, not parser
 behavior, and it means the teeth gate has still never actually measured
 anything.
+
+## VeriTrial
+
+| check | result |
+|---|---|
+| `pytest src/insilico_trial/tests/` | **186 passed**, 0 failed |
+| `ruff check` / `mypy` | clean / `Success: no issues found in 34 source files` |
+| benchmarks (warfarin_pgx, moxifloxacin_qtc, midazolam_cyp3a4, metformin_renal, hepatic_impairment) | 5/5 `overall_pass: true` |
+| `validation_summary.json` | `overall_pass: true`, `formal_verification_pass: true` |
+| throughput | **790.0 patients/sec** (CPU, 1000 patients, 168 timepoints) — against a ~99/sec target |
+| report ↔ provenance merkle root | **match** |
+
+Benchmark throughput is CPU by design: `diffrax`/`lineax` are incompatible with
+the JAX Metal backend on Apple Silicon, so the ODE solver is forced to CPU at
+import. That is a device-capability constraint, not a regression, and the note
+is carried in the benchmark output itself.
+
+## What this pass actually changed
+
+One real defect, found by a gate failing closed rather than by inspection:
+
+**The ledger was stale and the provenance chain had drifted.** `SYSTEM_STATE.json`
+recorded tether at `1c189cc`/`dirty: true` while the V&V report attested to
+`0f26e2e`, so
+`test_report_commits_to_ancestors_of_the_ledger_heads` failed: the report could
+not be attributed to commits present in the audited history. Re-running
+`scripts/audit_system_state.py` on a clean tree fixed the head and the dirty flag
+(`6683b48`), and a re-audit after that commit moved the ledger to `20e5e00`.
+
+Separately, the report and `regulatory_provenance.json` carried **different**
+merkle roots. The cause is benign but worth recording: a pytest run writes
+`regulatory_provenance.json` into `output/validation/` with a lemmas file inside
+a pytest tmpdir, while the HTML still holds the root sealed by the last real
+`make validate`. Re-running `cli validate` re-seals both together, and the
+roots now match. This is an artifact-ordering wart — the two writers can
+interleave — not a soundness break, but it makes a real test look red.
+
+One thing that looked like a defect and was not: the audit reported tether
+`dirty: true` mid-session. That was a **transient artifact of this session's own
+concurrent mutation runs** holding tracked files mid-write. The tree was clean
+before and after. Worth knowing, because the symptom is indistinguishable from
+a real dirty tree in the artifact.
+
+## What this pass did not do
+
+No threshold was lowered, no `fail_below` relaxed, and no fail-closed guard
+weakened — the run needed no such change, because the failures it hit were
+stale-artifact and toolchain bugs rather than real regressions.
+
+The agent-in-the-loop layers were not exercised: no `tether run missions/...`
+was executed. See "Honest limitations" for exactly which claims that leaves
+carried over rather than re-earned.
 
 * Nothing below was relaxed to manufacture a pass: no `min_teeth_rate`,
   `fail_below`, or `sorry_free` threshold was lowered, and no fail-closed
