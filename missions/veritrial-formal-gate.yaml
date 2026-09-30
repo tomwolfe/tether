@@ -52,10 +52,28 @@ verification:
   commands:
     # 1) Generate fresh lemmas from the CURRENT PBPK source (also enforces the
     #    structural mass-balance invariant; exits non-zero if broken).
-    - "python3 scripts/export_pbpk_to_qed.py --out /tmp/pbpk_lemmas.txt"
+    #
+    #    PYTHONPATH=src is load-bearing, exactly as in command 3: the host
+    #    carries an editable install of insilico_trial pointing at the live
+    #    VeriTrial checkout, so without it the bridge imports the HOST
+    #    model.py and certifies sources that are not in this clean room.
+    #
+    #    --lean-out is load-bearing too. QED is materialized as a sibling of
+    #    the room, so its VeriTrialExport.lean is whatever QED HEAD committed
+    #    (currently the Fin 14 artifact). Emitting here makes the Lean file
+    #    the gate compiles and axiom-checks the one derived from the same
+    #    six-organ model as the lemma set below, instead of a stale export of
+    #    a different organ network. Same shape as the tri-repo gate.
+    - "env PYTHONPATH=src python3 scripts/export_pbpk_to_qed.py --lean-out ../QED/VeriTrialExport.lean --out /tmp/pbpk_lemmas.txt"
     # 2) Feed every generated lemma into QED through the portable gate runner,
     #    which fails the mission if ANY lemma cannot be verified (no sorry).
-    - "python3 scripts/verify_formal_gate.py /tmp/pbpk_lemmas.txt"
+    #
+    #    --fin-n is REQUIRED, not defaulted: the emitted lemma set is a
+    #    function of the organ network (one Metzler and one inflow invariant
+    #    per perfused tissue), so the gate refuses to certify a file against
+    #    an assumed network. The export above uses the default six-organ
+    #    network, hence 6. --strict is the fail-closed mode.
+    - "env PYTHONPATH=src python3 scripts/verify_formal_gate.py /tmp/pbpk_lemmas.txt --fin-n 6 --strict"
     # 2b) Run the test suite that pins the bridge and the gate.
     #
     #     Without this the gate has no teeth over its own logic. Steps 1-2
@@ -64,7 +82,10 @@ verification:
     #     kill rate was reporting green on a gate that could not see its own
     #     regression. These are the tests that pin the lemma set, the
     #     per-tissue Metzler coverage and the fail-closed paths.
-    - "python3 -m pytest src/insilico_trial/tests/test_bridge_mutation_fast.py src/insilico_trial/tests/test_formal_verification.py src/insilico_trial/tests/test_fixed_step.py -q"
+    #     PYTHONPATH=src / -p no:cacheprovider for the same reasons as
+    #     command 3: the host editable install must not shadow the room's
+    #     sources, and pytest must not write into the clean room.
+    - "env PYTHONPATH=src python3 -m pytest src/insilico_trial/tests/test_bridge_mutation_fast.py src/insilico_trial/tests/test_formal_verification.py src/insilico_trial/tests/test_fixed_step.py -q -p no:cacheprovider"
     # 3) Mutation-teeth battery for the baseline_targets below.
     #
     # This command is the fix for a gate that reported kill rate 30% (12/40)
@@ -105,17 +126,21 @@ verification:
     - path: "formal_specs/pbpk_mass_conservation.tex"
       contains: "Lemma 4"
   probes:
+    # PYTHONPATH=src on the probes for the same reason as on command 1: the
+    # host's editable insilico_trial install would otherwise let these assert
+    # against live sources rather than the clean room's copy.
+    #
     # The exported theorem set must contain the Metzler positivity invariant.
-    - command: "python3 scripts/export_pbpk_to_qed.py"
+    - command: "env PYTHONPATH=src python3 scripts/export_pbpk_to_qed.py"
       contains: "Q_liver / (V_liver * Kp_liver) > 0"
     # The exported theorem set must contain the mass dissipation inequality.
-    - command: "python3 scripts/export_pbpk_to_qed.py"
+    - command: "env PYTHONPATH=src python3 scripts/export_pbpk_to_qed.py"
       contains: "CL * C_p > 0"
     # The exported theorem set must contain a boundary inflow invariant.
-    - command: "python3 scripts/export_pbpk_to_qed.py"
+    - command: "env PYTHONPATH=src python3 scripts/export_pbpk_to_qed.py"
       contains: "(Q_liver / (V_central * Kp_liver)) * A_central >= 0"
     # The parametric sum uses compartment-specific symbolic rates.
-    - command: "python3 scripts/export_pbpk_to_qed.py"
+    - command: "env PYTHONPATH=src python3 scripts/export_pbpk_to_qed.py"
       contains: "ka_rate"
     # The export bridge must emit exactly 9 parametric theorems, and -- more
     # to the point -- one Metzler certificate per perfused compartment. The
@@ -123,9 +148,9 @@ verification:
     # Metzler lemmas dropped, because the gate's coverage check was a count
     # over a loose regex. Assert the certificates themselves, so a future
     # reduction cannot buy the count back by giving up coverage.
-    - command: "python3 -c \"import pathlib, subprocess; p = '/tmp/tether_pbpk_lemmas_probe.txt'; subprocess.run(['python3', 'scripts/export_pbpk_to_qed.py', '--out', p], check=True); print(len(pathlib.Path(p).read_text().splitlines()))\""
+    - command: "env PYTHONPATH=src python3 -c \"import pathlib, subprocess; p = '/tmp/tether_pbpk_lemmas_probe.txt'; subprocess.run(['python3', 'scripts/export_pbpk_to_qed.py', '--out', p], check=True); print(len(pathlib.Path(p).read_text().splitlines()))\""
       matches: "^9$"
-    - command: "python3 -c \"import pathlib, re, sys; sys.path.insert(0, 'scripts'); import verify_formal_gate as g; lemmas = pathlib.Path('/tmp/tether_pbpk_lemmas_probe.txt').read_text().splitlines(); t = [x for x in (g._metzler_positivity_tissue(l) for l in lemmas) if x]; print(sorted(set(t))); assert len(t) == len(set(t)) == 3, f'expected one Metzler certificate per perfused tissue, got {t}'\""
+    - command: "env PYTHONPATH=src python3 -c \"import pathlib, re, sys; sys.path.insert(0, 'scripts'); import verify_formal_gate as g; lemmas = pathlib.Path('/tmp/tether_pbpk_lemmas_probe.txt').read_text().splitlines(); t = [x for x in (g._metzler_positivity_tissue(l) for l in lemmas) if x]; print(sorted(set(t))); assert len(t) == len(set(t)) == 3, f'expected one Metzler certificate per perfused tissue, got {t}'\""
       matches: "\\['effect', 'liver', 'periph'\\]"
   # High-stakes gate: mutation-test the change so the gate has real "teeth"
   # (a trivially-passing gate would be mutated to still pass -> fail_below).
