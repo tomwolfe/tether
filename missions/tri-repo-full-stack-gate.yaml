@@ -127,6 +127,27 @@ verification:
       - "../VeriTrial/scripts/verify_formal_gate.py:509:4"
       - "../VeriTrial/scripts/verify_formal_gate.py:813:45"
       - "../tether/src/tether/cleanroom.py:254:56"
+      # Two survivors in export_pbpk_to_qed.py, both inside the LEGACY branch
+      # of emit_lean_export. The function forks at
+      #   1375:  if "def make_pbpk_ode(" in source:
+      # and the make_pbpk_ode branch returns at 1486; lines 1487-1601 are the
+      # fallback for a model file that does NOT define make_pbpk_ode. Every
+      # model this gate exports (src/insilico_trial/pbpk/model.py, which the
+      # battery mutates and re-exports) does define it, so that whole branch is
+      # unreachable here and neither mutation is observable:
+      #   1494:25  arithmetic  the message string of a fail-closed SystemExit in
+      #                          that same unreachable branch
+      #   1600:34  flip_bool   `lean_out.parent.mkdir(parents=True, ...)` on
+      #                          the late path. Note the OTHER mkdir, at 1484,
+      #                          is a different, mutually exclusive branch, so
+      #                          1600 is the only mkdir on this path and the
+      #                          mutation is only unreachable because the branch
+      #                          itself never runs -- not because a sibling
+      #                          mkdir covers for it.
+      # If the legacy branch is ever brought back under test, drop both
+      # entries: they are recorded as unobservable, not as harmless.
+      - "../VeriTrial/scripts/export_pbpk_to_qed.py:1494:25"
+      - "../VeriTrial/scripts/export_pbpk_to_qed.py:1600:34"
   commands:
     - "python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --lean-out ../QED/VeriTrialExport.lean --out /tmp/pbpk_lemmas.txt"
     - "python3 ../VeriTrial/scripts/rebuild_qed_oleans.py"
