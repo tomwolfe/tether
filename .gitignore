@@ -5,3 +5,10 @@ dist/
 build/
 .tether/
 .pytest_cache/
+# Build cache written by `ruff check`, which several missions run as a
+# verification command. Unlike `.tether/` (excluded in code), gitignore is the
+# only thing keeping it out of `git status`, and a path that shows up there is
+# handed to the write sandbox -- whose allowed_paths is a strict allowlist with
+# no cache-directory exemption. Without this line a mission that merely runs its
+# own `ruff` verification fails closed on its own artifacts.
+.ruff_cache/

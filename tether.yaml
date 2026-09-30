@@ -19,8 +19,14 @@
 # is caught instead of passing unnoticed. Under `warn` that class of write is
 # invisible to the sandbox gate.
 sandbox_mode: enforce
-command_timeout_seconds: 1800
-verification_timeout_seconds: 600
+# The tri-repo gate's execution step re-derives the whole cross-repo result
+# (clean-room staging, Lean rebuild, mutation kill rates) and was killed at
+# 1800 s mid-verification, failing the mission for a budget reason rather than a
+# correctness one. Align the agent budget with the mission's own
+# `verification.timeout_seconds: 3600` so a run that is going to be scored
+# against a 3600 s window is not first truncated at 1800 s.
+command_timeout_seconds: 3600
+verification_timeout_seconds: 1800
 max_attempts: 3
 audit_dir: .tether/sessions
 default_adapter: opencode

@@ -26,7 +26,7 @@ context:
   - "QED agentic_pipeline.py invokes the pinned toolchain's lean directly with an explicit LEAN_PATH (lake env is bypassed: it SIGTRAPs under this Lake/Lean combination)"
   - "QED Compartmental.lean: domain-agnostic compartmental engine over arbitrary [Fintype n] (Metzler, mass dissipation/conservation, orthant invariance, SDIRK2 M-matrix stage); zero domain leakage"
   - "VeriTrial export_pbpk_to_qed.py --lean-out emits the N-generic AST<->Lean isomorphism file instantiating CompartmentalMatrix over Fin N. The N-generic machinery is real, but for a model defining make_pbpk_ode the live path takes N = n_states or len(DEFAULT_ORGAN_NETWORK) = 6 (DEFAULT_ORGAN_NETWORK is the 6-organ gut/liver/central/peripheral/effect/elim set), NOT the Jacobian-derived N further down. The Jacobian-derived N is dead for that model shape, and command 1 passes no --fin-n, so THIS GATE CERTIFIES Fin 6 ONLY. _network_for_fin accepts just 6 or 14, so a --fin-n 14 run is a separate unproven path."
-  - "VeriTrial formal_verification.py does NOT embed SHA-256 constants of Lean code. It computes _lean_code_sha256 over attempt[\"lean_code\"], a key check_qed_proofs never puts on the attempt dict, so lean_code_sha256 in the written trail is structurally always {}. The real Lean file digests that feed the Merkle chain are a different mechanism: validation/__init__.py hashes QED/Compartmental.lean and QED/VeriTrialExport.lean directly."
+  - "VeriTrial formal_verification.py computes lean_code_sha256 at the PRODUCER (the attempt dict carries result[\"lean_code\"]'s digest, since check_qed_proofs strips the raw source before the attempt is built) and _write_trail consumes it into the per-lemma hash map. An earlier revision claimed this was structurally always {} because the digest was computed over a key the attempt never carried; that was fixed in VeriTrial 94f4848 and the bullet no longer holds. The Lean FILE digests that feed the Merkle chain are a separate mechanism: validation/__init__.py hashes QED/Compartmental.lean and QED/VeriTrialExport.lean directly."
   - "VeriTrial fixed_step.calculate_max_stable_dt derives the dt bound from matrix invariants"
   - "Cross-repo QED is located as sibling of VeriTrial (co-located monorepo layout)"
 workspace_repos:
@@ -211,4 +211,10 @@ adapter: opencode
 adapters:
   opencode:
     command: ["opencode", "run", "--auto", "-m", "opencode/space-bunny-free", "{prompt}"]
-    timeout_seconds: 1800
+    # Must be >= verification.timeout_seconds (3600). Per-adapter settings are
+    # deep-merged with precedence mission-file > project config, so THIS value
+    # wins over tether.yaml's command_timeout_seconds -- the 1800 recorded here
+    # is what actually SIGTERM'd the agent mid-run on 2026-09-29 (usage.exit_code
+    # -15 at elapsed 1800.055 s) even though all 9 verification commands had
+    # already exited 0. It is a harness budget, not a correctness signal.
+    timeout_seconds: 3600
