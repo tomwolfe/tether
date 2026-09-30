@@ -1,0 +1,153 @@
+# Stage 2 (corrected scope): remove the provably-unreachable legacy export path
+# and the two suppressions that exist only because of it.
+#
+# SCOPE CORRECTION vs. the original stage-2 brief. That brief also asked to
+# "remove the legacy `if len(organ_network) == 6:` branch in make_pbpk_ode".
+# That instruction is REFUSED here, on measured evidence:
+#
+#   * VeriTrial/src/insilico_trial/pbpk/model.py:150-162 carries a `# noqa: F841`
+#     comment stating that the `dA_liver`/`dA_periph`/`dA_effect` bindings are
+#     inert but LOAD-BEARING, because export_pbpk_to_qed._ode_rhs_asts derives
+#     the exported STATE ORDER from which `dA_*` names appear in the AST.
+#   * Measured on a scratch copy with that branch removed:
+#         CURRENT  state_order (6) = [dA_gut, dA_liver, dA_central,
+#                                     dA_periph, dA_effect, dA_elim]
+#         BRANCH REMOVED  state_order (3) = [dA_gut, dA_central, dA_elim]
+#     and the real exporter then fails closed with
+#         "MASS CONSERVATION VIOLATED: ... Refusing to export lemmas."
+#
+# So that edit collapses Fin 6 from 6 states to 3 and destroys the column-sum
+# certificate. It is NOT in scope.
+#
+# The saturable-hepatic-clearance half of the brief (make the Michaelis-Menten
+# flux a native conservative transfer) is ALREADY IMPLEMENTED at model.py
+# :142-149 and :181 -- vmax/km gated to >0 else jnp.zeros_like, subtracted at
+# the liver inside the GENERIC perfused loop, added into dA_elim. Nothing to do.
+#
+# What remains real: the dead branch at export_pbpk_to_qed.py:1487-1601 and the
+# two mutation suppressions that exist solely because of it.
+mission:
+  name: gate-stage2-dead-export-path
+  goal: |
+    TASK 1 - DELETE THE UNREACHABLE LEGACY EXPORT BRANCH.
+
+    In VeriTrial/scripts/export_pbpk_to_qed.py, function `emit_lean_export`
+    forks at line 1375 on `if "def make_pbpk_ode(" in source:`. The
+    `make_pbpk_ode` branch RETURNS at line 1486. Lines 1487-1601 are therefore
+    a fallback for a model file that does NOT define `make_pbpk_ode`.
+
+    Delete exactly that dead span (1487 through 1601 inclusive). Everything
+    from the `if not check_mass_conservation(model_path):` guard after the
+    `return` at 1486, through the second
+    `lean_out.parent.mkdir(parents=True, exist_ok=True)` +
+    `lean_out.write_text(body, encoding="utf-8")` pair at 1600-1601.
+
+    Consequences you must respect:
+      * Do NOT touch lines 1-1486. In particular the `lean_out.parent.mkdir`
+        at 1484 is the live path's only mkdir and must survive.
+      * Do NOT delete or rename check_mass_conservation,
+        extract_symbolic_derivatives, compute_jacobian or check_dili_model.
+        They are all still called from the surviving code
+        (check_mass_conservation at 769/1322/1376/1667,
+         extract_symbolic_derivatives at 772/789/1269/1278,
+         compute_jacobian at 1103/1129). Only the 1487+ call sites die with
+        the branch, so the defs stay live and ruff must stay clean.
+      * After deletion the module must still import and `--lean-out` must
+        still emit QED/VeriTrialExport.lean byte-identically.
+
+    TASK 2 - REMOVE THE TWO SUPPRESSIONS THAT ONLY EXISTED FOR THAT BRANCH.
+
+    In missions/tri-repo-full-stack-gate.yaml, remove the `equivalent:` list
+    entries "../VeriTrial/scripts/export_pbpk_to_qed.py:1494:25" and
+    "../VeriTrial/scripts/export_pbpk_to_qed.py:1600:34", AND the explanatory
+    comment block immediately above them (the block starting with the comment
+    "Two survivors in export_pbpk_to_qed.py, both inside the LEGACY branch" and
+    ending "recorded as unobservable, not as harmless"). Do not touch any OTHER
+    `equivalent:` entry.
+
+    Leave in place, verbatim, the other suppressions: 132:62, 186:69, 379:61,
+    692:8, 767:61, verify_formal_gate.py 50:43 / 190:22 / 225:30 / 329:34 /
+    340:36 / 388:16 / 388:23 / 390:16 / 390:23 / 509:4 / 813:45, and
+    src/tether/cleanroom.py:254:56.
+
+    TASK 3 - ADD FIN 14 TO THE GATE.
+
+    The gate mission's own `context` note concedes "THIS GATE CERTIFIES Fin 6
+    ONLY ... a --fin-n 14 run is a separate unproven path." Fin 14 has since
+    been measured green (25/25 lemmas, no sorry, axioms exactly
+    [propext, Classical.choice, Quot.sound]). Add two commands to
+    missions/tri-repo-full-stack-gate.yaml `verification.commands`, after the
+    existing Fin 6 pair:
+
+      - "python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --out /tmp/pbpk_lemmas_14.txt --fin-n 14 --parametric --saturable"
+      - "python3 ../VeriTrial/scripts/verify_formal_gate.py /tmp/pbpk_lemmas_14.txt --fin-n 14 --strict --saturable"
+
+    Omit `--lean-out` on purpose: the Lean file must stay Fin 6 (rebuild_qed_oleans
+    and the axiom assertions depend on it) and these two commands only prove the
+    Fin 14 lemma SET verifies. Then update that stale `context` bullet so it no
+    longer claims Fin 14 is unproven.
+
+    TASK 4 - REPOINT THE STALE PROSE.
+
+    GLOBAL_MINIMUM_REPORT.md documents both removed suppressions in a bulleted
+    list (search for `export_pbpk_to_qed.py:1494:25` and
+    `export_pbpk_to_qed.py:1600:34`). Amend that list so it records that the
+    legacy branch and its two suppressions were DELETED, rather than listing
+    them as live equivalent mutants. Keep the change to that passage.
+
+    Leave all work UNCOMMITTED in the working tree.
+context:
+  - "export_pbpk_to_qed.py:1375 forks on 'def make_pbpk_ode('; the make_pbpk_ode branch returns at 1486, so 1487-1601 is dead for every model this gate exports"
+  - "Every model the gate exports defines make_pbpk_ode: VeriTrial/src/insilico_trial/pbpk/model.py, which the mutation battery itself mutates and re-exports"
+  - "Removing lines 1487-1601 shifts nothing above 1487, and every surviving `equivalent:` entry for this file (132:62, 186:69, 379:61, 692:8, 767:61) points above that span, so all stay valid"
+  - "verify_formal_gate.py accepts ONLY: lemmas_file, --strict, --no-strict, --fin-n <int>, --saturable. Never invent --must-have-positivity"
+  - "Fin 14 export emits EXACTLY 25 lemmas (11 Metzler + 11 boundary inflow + column sum + parametric sum + dissipation). Never assert 21"
+  - "Fin 6 emits EXACTLY 9 lemmas"
+workspace_repos:
+  - "../QED"
+  - "../VeriTrial"
+  - "../tether"
+constraints:
+  - "DO NOT modify VeriTrial/src/insilico_trial/pbpk/model.py at all - the six-organ branch is certificate-load-bearing"
+  - "DO NOT modify any `equivalent:` entry other than the two removed ones"
+  - "DO NOT add new suppressions to buy a passing kill rate"
+  - "Do NOT introduce sorry axioms in any QED output"
+  - "No jnp.maximum concentration clamping; non-negativity via the dt bound only"
+  - "verify_formal_gate.py must be invoked only with the flags listed in context"
+  - "All work remains uncommitted in the working tree until tether reports success"
+verification:
+  clean_room: false
+  commands:
+    # The dead span is gone and no new suppression crept in.
+    - "python3 -c \"import sys; sys.path.insert(0,'../VeriTrial/scripts'); import export_pbpk_to_qed; print('import ok')\""
+    - "python3 -c \"from pathlib import Path; t=Path('../VeriTrial/scripts/export_pbpk_to_qed.py').read_text(); assert 'lean_out.parent.mkdir(parents=True, exist_ok=True)' in t; assert t.count('lean_out.parent.mkdir')==1, t.count('lean_out.parent.mkdir'); assert 'liver perfusion sign violated' not in t; print('dead branch removed, live mkdir intact')\""
+    - "env PYTHONPATH=../VeriTrial/src python3 -m ruff check ../VeriTrial/scripts/export_pbpk_to_qed.py"
+    # Suppressions: the two are gone, the rest are intact.
+    - "python3 -c \"from pathlib import Path; t=Path('missions/tri-repo-full-stack-gate.yaml').read_text(); assert '1494:25' not in t and '1600:34' not in t, 'dead-branch suppressions still present'; [ (t.count(k),k) for k in ['export_pbpk_to_qed.py:132:62','export_pbpk_to_qed.py:186:69','export_pbpk_to_qed.py:379:61','export_pbpk_to_qed.py:692:8','export_pbpk_to_qed.py:767:61','verify_formal_gate.py:50:43','cleanroom.py:254:56'] ]; assert all(t.count(k)==1 for k in ['export_pbpk_to_qed.py:132:62','export_pbpk_to_qed.py:186:69','export_pbpk_to_qed.py:379:61','export_pbpk_to_qed.py:692:8','export_pbpk_to_qed.py:767:61','verify_formal_gate.py:50:43','cleanroom.py:254:56']), 'a surviving suppression was disturbed'; assert 'pbpk_lemmas_14.txt' in t and '--fin-n 14 --strict --saturable' in t, 'Fin 14 not wired into the gate'; print('suppressions correct, Fin 14 wired')\""
+    # Behaviour: both networks still export and both still verify. ~2-4 min each.
+    - "env PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --out /tmp/s2_lem6.txt --fin-n 6 --parametric"
+    - "env PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/verify_formal_gate.py /tmp/s2_lem6.txt --fin-n 6 --strict"
+    - "env PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --out /tmp/s2_lem14.txt --fin-n 14 --parametric --saturable"
+    - "env PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/verify_formal_gate.py /tmp/s2_lem14.txt --fin-n 14 --strict --saturable"
+    # Counts are pinned: 9 and 25, never 21.
+    - "python3 -c \"a=open('/tmp/s2_lem6.txt').read().strip().splitlines(); b=open('/tmp/s2_lem14.txt').read().strip().splitlines(); assert len(a)==9, len(a); assert len(b)==25, len(b); print('counts 9 and 25 ok')\""
+    # The export's own suites still pass.
+    - "env PYTHONPATH=../VeriTrial/src python3 -m pytest ../VeriTrial/src/insilico_trial/tests/test_bridge_mutation_fast.py ../VeriTrial/src/insilico_trial/tests/test_pd.py -q -p no:cacheprovider"
+  timeout_seconds: 3600
+mutation:
+  enabled: false
+review:
+  enabled: true
+  required: true
+  adapter: opencode
+  retry_on_rejection: true
+recovery:
+  max_attempts: 1
+git_state_guard: true
+budget:
+  max_wall_seconds: 3600
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "--auto", "-m", "opencode/space-bunny-free", "{prompt}"]
+    timeout_seconds: 3600
