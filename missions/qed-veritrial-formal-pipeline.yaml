@@ -50,8 +50,11 @@ verification:
   # reference ../QED, so a copied clean-room would be incomplete. The mission
   # performs no code modification of its own; verification is the substance.
   clean_room: false
-  # test_pipeline.py alone runs ~5 min of real Lean on this host, so the
-  # default 600s per-command timeout leaves no headroom on a loaded machine.
+  # Per-command, not per-run. test_pipeline.py is the long pole at 299.2 s
+  # measured (real Lean), so the default 600 s leaves no headroom on a loaded
+  # machine and a timeout returns passed=False (verification.py:77-79) -- an
+  # overrun would be indistinguishable from a genuine failure. 900 s is ~3x the
+  # measured worst case.
   timeout_seconds: 900
   commands:
     # (1a) Verify the foundational layer, end-to-end suite + no-sorry gate.
@@ -74,8 +77,28 @@ verification:
     # (2) Export the CURRENT PBPK lemmas (single source of truth) and run the
     #     enforced formal gate, which re-derives the live lemmas, refuses any
     #     drift, and proves every lemma with QED (no sorry).
-    - "python3 scripts/export_pbpk_to_qed.py --out /tmp/pbpk_lemmas.txt"
-    - "python3 scripts/verify_formal_gate.py /tmp/pbpk_lemmas.txt"
+    #
+    #     PYTHONPATH=src keeps the bridge and the gate reading THIS checkout's
+    #     src/ rather than the host's editable install of insilico_trial, which
+    #     points at whatever VeriTrial tree the host happens to carry.
+    - "env PYTHONPATH=src python3 scripts/export_pbpk_to_qed.py --out /tmp/pbpk_lemmas.txt"
+    #     --fin-n is REQUIRED, not defaulted (verify_formal_gate.py declares it
+    #     required=True): the emitted lemma set is a function of the organ
+    #     network -- one Metzler and one boundary-inflow invariant per perfused
+    #     tissue -- so the gate refuses to certify a file against an assumed
+    #     network instead of guessing. The export above uses the default
+    #     six-organ network, hence 6; without the flag this command died with
+    #     argparse rc=2 and the whole application layer was never certified.
+    #     --strict is the fail-closed mode: it makes a skipped Mathlib-dependent
+    #     symbolic lemma a failure rather than a quiet degradation. (It is also
+    #     the default, but stating it keeps the guarantee readable here.)
+    - "env PYTHONPATH=src python3 scripts/verify_formal_gate.py /tmp/pbpk_lemmas.txt --fin-n 6 --strict"
+    #     No --lean-out here, unlike the clean-room formal-gate mission: this
+    #     mission runs against the LIVE tree, so emitting would overwrite
+    #     QED's committed VeriTrialExport.lean (currently the Fin 14 artifact)
+    #     and dirty a repo the mission must leave alone. The gate still
+    #     rebuilds QED's oleans from source and axiom-checks whatever export
+    #     file QED ships, so nothing is certified against a stale .olean.
   assertions:
     # The formal spec must document the parametric mass-conservation identity
     # (what the bridge actually emits -- the numeric witnesses it used to
@@ -118,6 +141,25 @@ verification:
     # asserted nothing at all. `matches: ^9$` is the field that exists.
     - command: "python3 -c \"import pathlib, subprocess; p = '/tmp/tether_qed_veritrial_lemmas_probe.txt'; subprocess.run(['python3', 'scripts/export_pbpk_to_qed.py', '--out', p], check=True); print(len(pathlib.Path(p).read_text().splitlines()))\""
       matches: "^9$"
+    # The no-sorry claim, asserted on the gate's OWN OUTPUT rather than left
+    # to the exit code alone: "all 9 lemmas verified by QED (no sorry)" is the
+    # line VeriTrial's gate emits only after every lemma is proved, so a
+    # weakened no-sorry policy that still exited 0 (a skipped symbolic lemma, a
+    # dropped lemma) would make this probe fail. --fin-n 6 matches command 4.
+    # This re-runs the full gate, hence the ~3 min: it is the one place the
+    # mission proves the application layer actually certified, not merely that
+    # a script returned 0.
+    - command: "env PYTHONPATH=src python3 -c \"import subprocess, sys; subprocess.run([sys.executable, 'scripts/export_pbpk_to_qed.py', '--out', '/tmp/tether_qed_veritrial_nosorry.txt'], check=True, stdout=subprocess.DEVNULL); g = subprocess.run([sys.executable, 'scripts/verify_formal_gate.py', '/tmp/tether_qed_veritrial_nosorry.txt', '--fin-n', '6', '--strict'], capture_output=True, text=True); sys.stdout.write(g.stdout + g.stderr); print('gate_rc=%d' % g.returncode)\""
+      contains: "all 9 lemmas verified by QED (no sorry)"
+    # Fail-closed negative control: injecting a `sorry` lemma must make the
+    # gate REFUSE the file, never certify around it. Without this the mission
+    # would only ever show the happy path -- a gate that had quietly stopped
+    # rejecting sorry would still satisfy the probe above. Asserted on the
+    # fail-closed message plus a non-zero rc, so a gate that printed the
+    # message and exited 0 does not pass.
+    - command: "env PYTHONPATH=src python3 -c \"import pathlib, subprocess, sys; p = '/tmp/tether_qed_veritrial_sorry_lemmas.txt'; subprocess.run([sys.executable, 'scripts/export_pbpk_to_qed.py', '--out', p], check=True, stdout=subprocess.DEVNULL); f = pathlib.Path(p); f.write_text(f.read_text() + 'sorry\\n'); g = subprocess.run([sys.executable, 'scripts/verify_formal_gate.py', p, '--fin-n', '6', '--strict'], capture_output=True, text=True); sys.stdout.write(g.stdout + g.stderr); print('gate_rc=%d' % g.returncode)\""
+      contains: "FORMAL GATE FAILED (fail-closed)"
+      matches: "gate_rc=[1-9]"
 # No code changes are produced by this orchestration mission; mutation testing
 # is exercised by the underlying QED/VeriTrial missions instead.
 recovery:
@@ -127,6 +169,29 @@ review:
   enabled: false
 budget:
   max_sends: 5
-  max_wall_seconds: 1800
+  # Measured on this host, not guessed (one full verification attempt):
+  # QED run_tests.py 23.2 s, QED test_pipeline.py 299.2 s, export 0.9 s,
+  # formal gate 183.0 s -> ~507 s of commands; probes add ~195 s (the
+  # no-sorry probe re-runs the whole gate by design). Wall clock is checked
+  # against this ceiling at _require_budget, which is also called after every
+  # send and around the verification loop (orchestrator.py:2300), so
+  # verification time counts against it. At the old 1800 s a single repair
+  # send would die of budget_exceeded after the first attempt alone had spent
+  # ~700 s, with recovery.max_attempts: 2 -- i.e. the recovery loop the file
+  # declares could never actually run. 3600 s covers two full attempts plus
+  # the mock adapter's sends.
+  max_wall_seconds: 3600
 adapter: mock
-git_state_guard: false
+# Top level, not nested under `verification:` -- mission.py:416 reads it with
+# data.get("git_state_guard") at the top of the file, so a nested key validated
+# cleanly and then ran with the guard OFF.
+#
+# ON for a certifying gate. The P0 dirty-tree abort already refuses to start
+# when VeriTrial or QED (workspace_repos: ../QED, folded into
+# checkpoint.dirty via workspace_is_dirty) is dirty, so uncertified local edits
+# cannot be certified; this key adds the second half the P0 gate cannot see --
+# a HEAD that moves mid-session (history rewritten, the sibling QED HEAD
+# advanced to a different tactic policy) is a violation after every send,
+# because commands 1a/1b and the gate would then have certified a different
+# tree than the one that started the run.
+git_state_guard: true
