@@ -7,13 +7,13 @@ No mock adapter was used for any gate recorded below.
 
 | repo | HEAD | dirty | sorry_free |
 |---|---|---|---|
-| tether | `2d42c5c` (report + mission-correction commit) | false | `n/a` (ships no Lean) |
-| QED | `57368a012346c3c04d4e6c8744b9e6b4a676236b` | false | **true** |
-| VeriTrial | `5516067` | false | **true** |
+| tether | `b27f959` (ledger names the head the report attests to) | false | `n/a` (ships no Lean) |
+| QED | `8207365` (Fin 14 export + saturable transports) | false | **true** |
+| VeriTrial | `90ae4f6` (formal gate generalized to Fin N, saturable clearance) | false | **true** |
 
-`SYSTEM_STATE.json` merkle root: `ea26e2d0c13de20e…` (full value in
+`SYSTEM_STATE.json` merkle root: `e503d3e2c003388f…` (full value in
 `SYSTEM_STATE.json`)
-V&V report `<meta name="merkle-root">`: `7abd01eb894ceda380c508588953ac6247da5bda38269e7eca983ed24e80713a`
+V&V report `<meta name="merkle-root">`: `923664f2b6786a6f95ce0aa25064662f7f021d0d1934b907fa46033d3e58bdd2`
 
 Regenerated and re-measured 2026-09-29. The report's `<meta name="merkle-root">`
 now **matches** `output/validation/regulatory_provenance.json` exactly; they
@@ -657,7 +657,7 @@ anything.
 
 | check | result |
 |---|---|
-| `pytest src/insilico_trial/tests/` | **193 passed**, 0 failed |
+| `pytest src/insilico_trial/tests/` | **216 passed**, 0 failed (this pass; the 193 above is the prior pass's figure) |
 | `ruff check` / `mypy` | clean / `Success: no issues found in 34 source files` |
 | benchmarks (warfarin_pgx, moxifloxacin_qtc, midazolam_cyp3a4, metformin_renal, hepatic_impairment) | 5/5 `overall_pass: true` |
 | `validation_summary.json` | `overall_pass: true`, `formal_verification_pass: true` |
@@ -743,3 +743,246 @@ carried over rather than re-earned.
   until the gate's suite selection was fixed. Test-coverage gaps of that
   shape are the most dangerous kind of finding here, because every gate still
   reports green.
+
+
+---
+
+# Pass 2 (2026-09-29): Fin N generalization + saturable clearance
+
+Model for every run below: **`opencode/space-bunny-free`**, no mock adapter.
+All three repos clean at the close of this pass.
+
+## Premise audit: four of the brief's claims did not survive checking
+
+Every claim below was tested before acting on it. Recording the corrections
+matters more than the changes: three of them would have meant writing code
+against a bug that was not there.
+
+1. **"`lake` throws SIGTRAP on `lake build`"** — true, but the brief's framing
+   ("so Lake compilation fails") is wrong. `lake --version` prints a correct
+   version and *then* exits 133; so does `lake env` and `lake query`. The crash
+   is at process teardown, not in the work, and it happens in an empty
+   directory with no project involved. Meanwhile `lake build` had in fact
+   been writing fresh `.olean`s. So the tool is unusable, but "the build
+   fails" was the wrong inference. The fix was therefore *not* to change the
+   toolchain; it was to stop depending on `lake` at all — see below.
+
+2. **"the platform is locked to a 6-compartment linear model"** — half true.
+   The *model* already handled 14 organs (`STANDARD_14_ORGAN_NETWORK`,
+   N-generic `_jacobian_diagonal`, `--fin-n 14` on the exporter). What was
+   locked to 6 was the **formal gate**: four separate places each
+   independently re-derived six-organ expectations. A correct 14-organ lemma
+   file was rejected by the gate for the wrong reason.
+
+3. **"auto-probes fail on LLM string formatting"** — true, and precisely
+   localized. The single-quoted variant (`command: 'python -c 'print(1)''`)
+   was genuinely dropped. The code even documented it as a known loss.
+
+4. **"9/9 lemmas verify and benchmarks pass"** — true, but it described the
+   6-organ LINEAR path only. Nothing about the saturable work existed.
+
+## Lean: the toolchain is broken, so the build path was replaced
+
+`leanprover/lean4:v4.34.0-rc2`'s `lake` exits 133 after printing correct
+output, on every subcommand, with no project involved. `lean` itself is
+healthy. Since the gate's soundness argument rests on `#print axioms` reading
+the *compiled* modules, the real hazard is not the exit code — it is a stale
+`.olean` silently certifying yesterday's theorems.
+
+`verify_formal_gate.py` now **rebuilds QED's oleans from source** before the
+axiom check, driving `elan run <pinned> lean -o` directly with an explicit
+`LEAN_PATH`, and fails closed if the rebuild fails. Previously the gate would
+check fresh sources against whatever `.olean` happened to be on disk. This
+closes the stale-artifact hole at the point where it matters rather than
+relying on a mission command having run first.
+
+`--fin-n 14` also required real work in the export: `fin_cases` is O(N²), so
+the default 200k heartbeats is exhausted around N = 14 (`maxHeartbeats` is now
+scaled with N²), and the per-state positivity hypotheses had been hardcoded to
+indices 0–5 — so a 14-organ theorem *asserted* `0 < Q i` for fourteen tissues
+while *assuming* it for six. Both fixed.
+
+## The Fin N gate, measured on all 14 states
+
+`--fin-n 14 --saturable`, both directions of the real gate:
+
+```
+all 25 lemmas verified by QED (no sorry)
+FORMAL GATE PASSED: all required PBPK lemmas verified by QED (no sorry).
+```
+
+and the six-organ default still reports `all 9 lemmas verified`.
+
+`--fin-n` is **required**, not defaulted. The emitted lemma set is a function
+of the network (one Metzler and one inflow invariant per perfused tissue), so
+a default would be a guess about which network a file belongs to; the gate now
+refuses rather than assuming. Every call site and mission line was updated,
+including the gate mission itself.
+
+Four independent under-certifications were fixed, each of which had to be fixed
+*separately* because each was sufficient on its own:
+
+- the lemma oracle tokenized a hardcoded `_LIVER_IDX`/`_PERIPHERAL_IDX` table
+  and walked the six-organ branch's assignments even for a 14-organ run;
+- it read the state list from the exporter, so the N-organ branch — which
+  writes its derivatives positionally and therefore has **no `dA_<organ>` name
+  in the AST at all** — was reported as a 4-state model;
+- symbol suffixes were keyed on state *index*, which labels the 14-organ
+  kidney (index 3) "Qp" and the lung (index 4) "Qe": certifying a kidney flow
+  under the peripheral tissue's symbol;
+- every organ shared one volume symbol `V`, so a mutation swapping two
+  organs' volumes passed.
+
+That last one is the reason this was worth doing properly: with a single `V`
+the cross-check cannot distinguish `Q_a/(Kp_a*V_b)` from `Q_a/(Kp_a*V_a)`.
+
+## Saturable clearance: a transfer, and how that was kept honest
+
+`make_pbpk_ode` now carries opt-in Michaelis–Menten hepatic clearance. It is a
+**transfer, not a sink**: the liver loses `Vmax*C_liver/(Km+C_liver)` and the
+`elim` accumulator gains it, so total mass is still conserved.
+
+Keeping that honest took two changes:
+
+- `check_mass_conservation` requires **both sides** of the transfer. Booking
+  the flux in `elim` alone, or removing it from the liver alone, is refused in
+  both directions. The six-organ central equation now subtracts the perfusion
+  *fluxes* (`- flows[0] - flows[1] - flows[2]`) rather than the tissue
+  derivatives, precisely so the saturable term is booked exactly once.
+- `verify_symbolic_cancellation` was a substring test for negated names. It now
+  sums the expressions and asks sympy — which is what lets it see that the
+  flux-subtraction spelling discharges the same balance, instead of accepting a
+  sum that merely *looks* balanced.
+
+Five mutations confirm the teeth on the VeriTrial side and five more on the
+tether equation gate (drop either side of the transfer; degrade the flux to a
+linear drain; make it unconditional; drop the Km positivity check): all
+refused.
+
+The nonlinear flux is certified by **transport of QED's generic theorems**
+(`saturableFlux_nonneg` / `_bounded`), not re-derived — so `QED/` stays
+domain-agnostic, and VeriTrial supplies its own `C_liver`. The gate requires
+both instantiations in the axiom output, and the Jacobian delta against the
+linear case must be *exactly* the metabolic self-drain, so no other
+nonlinearity can ride on that certificate.
+
+## Stability: the bound, and what it does not clamp
+
+`calculate_max_stable_dt` adds the saturable stiffness using the **supremum**
+of the self-drain (at `C = 0`), because the instantaneous rate is
+state-dependent and evaluating it at one operating point would certify a step
+that is unstable where the concentration is lower. Verified:
+
+- the bound dominates the autodiff diagonal at concentrations spanning
+  `1e-6 … 1e3`, for both networks;
+- forward Euler at the bound keeps every state non-negative over 50-step runs
+  from starts spanning ten orders of magnitude — **no `jnp.maximum` clamp is
+  involved**, which is the whole point of the Metzler argument;
+- the saturable term reaches the liver diagonal and *only* the liver diagonal,
+  by exactly `Vmax/(Km*V_liver)`.
+
+One measured detail worth recording: for warfarin the saturable term does
+**not** change `dt`, because central is the binding state, not liver. The
+first test asserted otherwise and was wrong. The claim pinned is now the liver
+diagonal itself (plus a separate case where the liver *is* binding), which is
+what the saturable term is actually required to move.
+
+## Auto-probe parser: recovered by parity, not by guessing
+
+`command: 'python -c 'print(1)''` is now recovered. The repair closes the shell
+argument and doubles the inner quotes, and the decision is made by
+**quote-count parity**: the model's wrapper quote and the shell argument's
+closing quote collapse into one, leaving an odd count. A correctly escaped
+scalar always has an even count and is left exactly as written — so the repair
+cannot re-escape a good scalar into a run of quotes.
+
+Four existing tests asserted the *old* behaviour (the single-quote case
+unrecoverable). They were retargeted at a flow sequence left open — genuinely
+unrecoverable, and unaffected by any scalar repair — rather than deleted, so
+the per-entry salvage contract is still pinned.
+
+## The gate re-run for real
+
+`tri-repo-full-stack-gate.yaml`, session `2df7d345`, `--adapter opencode`,
+real run:
+
+| layer | result |
+|---|---|
+| status | **success** |
+| clean-room verification | **9/9 commands exit 0** |
+| mutation | **kill_rate 0.9167** — 22 killed / 24, `fail_below` 0.8 |
+| review | **approve**, on cited evidence |
+| sandbox violations | none (`[]`) |
+| formal gate | `all 9 lemmas verified by QED (no sorry)` |
+
+The kill rate is **0.9167, not 1.0**, and is reported as measured. The two
+survivors are `export_pbpk_to_qed.py:1494` (arithmetic) and `:1600`
+(flip_bool). Both sit in the **legacy export path** — the branch that runs only
+for models *without* `make_pbpk_ode`, which the live model takes an early
+return past. So they are unreachable coverage, not undetected defects; that
+was confirmed by inspection rather than assumed, but it is a coverage gap and
+is named as one rather than suppressed.
+
+This is a genuine drop from the 1.0000 the previous revision recorded. The
+cause is visible in the run log: `mutation targets fall back to baseline_targets
+(agent changed nothing mutatable)`, so the sampler took a different set of
+sites than the hand-scored run the earlier number came from. Recorded as
+measured, not reconciled to the older figure.
+
+## Verification totals
+
+| check | result |
+|---|---|
+| `QED/test_pipeline.py` | **256 passed** |
+| `VeriTrial src/insilico_trial/tests` | **216 passed**, 0 failed |
+| `tether` autoprobe suites | **56 passed** (was 52) |
+| six-organ formal gate | 9/9 lemmas, no sorry |
+| 14-organ + saturable formal gate | 25/25 lemmas, no sorry |
+| clinical benchmarks | 5/5 `overall_pass: true` |
+| `#print axioms` | exactly `[propext, Classical.choice, Quot.sound]` on every headline theorem, including the two new saturable transports |
+| report ↔ provenance merkle root | **match** (`923664f2…`) |
+
+`#print axioms` on all seven exported theorems, verified by the gate's own
+axiom check:
+
+```
+'extracted_offDiag_nonneg'            depends on axioms: [propext, Classical.choice, Quot.sound]
+'extracted_colSum_eq_zero'            depends on axioms: [propext, Classical.choice, Quot.sound]
+'veritrial_compartmental'             depends on axioms: [propext, Classical.choice, Quot.sound]
+'veritrial_mass_dissipation'          depends on axioms: [propext, Classical.choice, Quot.sound]
+'veritrial_dili_block'                depends on axioms: [propext, Classical.choice, Quot.sound]
+'veritrial_saturable_flux_nonneg'     depends on axioms: [propext, Classical.choice, Quot.sound]
+'veritrial_saturable_flux_bounded'    depends on axioms: [propext, Classical.choice, Quot.sound]
+```
+
+## The ledger lag, measured again (three times, the hard way)
+
+`test_report_commits_to_ancestors_of_the_ledger_heads` asserts containment, not
+equality, because committing the ledger is itself a tether commit. That is the
+documented design. This pass hit it three times because the ordering matters
+and it is easy to get backwards: the audit must run **at the head the report
+attests to**, and the report must not be regenerated afterwards. Getting the
+order wrong fails closed with a message that reads like drift but is really a
+sequencing mistake.
+
+Left the ledger naming `b27f959` with all three repos clean and
+`sorry_free` recorded honestly (`n/a` for tether, which ships no Lean).
+
+## What this pass did not do
+
+- **No threshold was weakened.** `min_teeth_rate`, `fail_below`, and every
+  `sorry_free` assertion are untouched. The 0.9167 kill rate is reported as
+  measured and clears its own floor on merit.
+- **No numerical clamping** was introduced anywhere; non-negativity remains a
+  consequence of the step size, and the saturable bound is stated as a
+  supremum for exactly that reason.
+- **The saturable path is opt-in and off by default.** It is compiled into the
+  ODE but inactive unless `vmax_metabolic`/`km_metabolic` are supplied, so the
+  default configuration is still the linear model the existing certificates
+  describe. Asking for `--saturable` against a model that does not implement
+  the path fails closed.
+- **`fixed_step.py` and `model.py` remain unmeasured for mutation kill rate**
+  beyond the gate's baseline sampling. The new saturable logic in `model.py`
+  gained five equation-gate controls and a full test battery, but a
+  whole-file mutation sweep against those tests has not been run, so no
+  per-file kill rate is claimed for it.
