@@ -39,6 +39,23 @@ constraints:
   - "Keep all changes backward compatible with existing VeriTrial simulations"
   - "Every exported lemma MUST verify; a single failure fails the whole mission"
   - "Parametric export is the default (Mathlib-backed CI proves field_simp/ring goals hermetically)"
+# QED is in scope for this mission, not just for the clean room. The goal
+# anticipates the agent repairing a broken lemma or a QED tactic policy, and
+# without this declaration such a repair is invisible to every gate layer:
+# no patch_QED.diff / untracked_QED.txt capture (orchestrator.py:1055-1062), no
+# QED checkpoint or rollback, no git-state enforcement, and no reviewer scope
+# instruction (orchestrator.py:1572) -- so the mission could go green on an
+# uncertified edit to the very code that decides whether the lemmas prove.
+# clean_room_copy below still materializes a pristine ../QED in the room; this
+# key is what makes the HOST sibling's edits attributable to the session.
+workspace_repos:
+  - "../QED"
+# High-stakes gate: refuse to run unless the working tree is clean (a dirty
+# tree would defeat the clean-room guarantee). Top level, not nested under
+# `verification:` -- mission.py:416 reads it with data.get("git_state_guard")
+# at the top of the file, so a nested key validated cleanly and then ran with
+# the guard OFF.
+git_state_guard: true
 verification:
   # Clean-room: verify the bridge + lemmas against a pristine checkout plus
   # only this session's captured change. QED lives in a sibling repo; it is
@@ -179,22 +196,78 @@ verification:
       - "src/insilico_trial/pd/__init__.py"
       - "src/insilico_trial/tests/test_bridge_mutation_fast.py"
       - "src/insilico_trial/tests/test_formal_verification.py"
-  recovery:
-    max_attempts: 3
-    strategy: cumulative
-  review:
-    enabled: true
-    required: true
-    adapter: opencode
-    retry_on_rejection: true
-  budget:
-    max_sends: 20
-    max_wall_seconds: 3600
-  # High-stakes gate: refuse to run unless the working tree is clean (a dirty
-  # tree would defeat the clean-room guarantee).
-  git_state_guard: true
+  # Per-command AND per-mutant-suite budget (orchestrator.py:682-684 feeds this
+  # to both run_verification and the mutation battery). The default is 600 s,
+  # and the project config cannot raise it here: this mission runs with
+  # --project-dir ../VeriTrial, which has no tether.yaml, so config.py:34
+  # resolves nothing.
+  #
+  # Measured in a room-equivalent checkout (git archive HEAD of both repos +
+  # the carried QED/.lake cache), per command:
+  #     export_pbpk_to_qed.py                       0.9 s
+  #     verify_formal_gate.py --fin-n 6 --strict  89.7 s  (olean rebuild + 9 proofs)
+  #     pytest bridge+formal_verification+fixed_step 144.6 s
+  #     pytest bridge+pd+fixed_step                  9.6 s
+  # The 600 s default clears the one-shot run, but the battery re-runs this
+  # WHOLE suite once per mutant (orchestrator.py:1223-1231) and a timed-out
+  # command comes back passed=False (verification.py:77-79), which the battery
+  # scores as KILLED. So the risk at 600 s is not a lost kill rate, it is a
+  # FALSE one: a mutant that merely overran is indistinguishable from a mutant
+  # the gate caught. 3600 s is the value the tri-repo gate already measured as
+  # necessary, and it keeps that distinction honest.
+  timeout_seconds: 3600
+# The four blocks below were previously indented under `verification:`, where
+# they validated cleanly and then did nothing: mission.py:416,345,324,422 read
+# git_state_guard / review / recovery / budget with data.get(...) at the TOP
+# level of the file, so all four resolved to None and the mission ran with no
+# guard, no review, no retry and no budget. The goal text claims "Review is
+# required and retries on rejection"; that claim was false for this file alone.
+# No `verification:`-level unknown-key check exists, so this mis-nesting is
+# invisible to validate-mission. Hoisted to top level, matching the convention
+# used by the other 52 mission files (this was the only one of 53 that nested
+# any of the four).
+review:
+  enabled: true
+  required: true
   adapter: opencode
-  adapters:
-    opencode:
-      command: ["opencode", "run", "--auto", "-m", "opencode/space-bunny-free", "{prompt}"]
-      timeout_seconds: 1800
+  retry_on_rejection: true
+recovery:
+  max_attempts: 3
+  strategy: cumulative
+budget:
+  max_sends: 20
+  # Sized from measurement, not taste. The wall clock is cumulative over the
+  # whole mission and keeps growing during the mutation battery, and a repair
+  # send is wall-checked at orchestrator.py:2697. The battery is the dominant
+  # term: 6 baseline_targets x max_mutants 10 = 60 mutants (max_mutants is
+  # PER FILE, verification.py:582), each re-running the full 4-command suite
+  # measured above at ~253 s => ~15,200 s, i.e. ~4.2 h.
+  #
+  # So 3600 s -- the value this block shipped with while still inert -- would
+  # not have bounded anything useful, and once armed it would have made
+  # recovery unreachable: a rejected review is answered by a repair send, and
+  # by then the battery alone has spent more than 3600 s of wall clock, so the
+  # repair would die of budget_exceeded instead of getting to address the
+  # reviewer's objections. That is the one outcome the goal rules out
+  # ("retries on rejection so the agent can repair a broken lemma").
+  # 43200 s (12 h) covers two full agent+verify+battery+review cycles.
+  #
+  # NOTE for whoever tunes cost next: `budget` does NOT bound the battery --
+  # it is only checked pre-send and once pre-verification (:2300), so the 4.2 h
+  # of mutation runs uninterrupted inside a single verification attempt. The
+  # real lever is the battery's per-mutant suite, not this number. Dropping
+  # max_mutants is the cheapest cut, but it is deliberately NOT done here
+  # because the 0.825 kill rate cited above command 3 was measured at
+  # max_mutants 10, and resampling smaller would invalidate that evidence.
+  max_wall_seconds: 43200
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "--auto", "-m", "opencode/space-bunny-free", "{prompt}"]
+    # Must be >= verification.timeout_seconds (3600). Per-adapter settings are
+    # deep-merged with precedence mission-file > project config, so THIS value
+    # wins over tether.yaml's command_timeout_seconds. The 1800 recorded before
+    # is the value that SIGTERM'd the tri-repo gate's agent mid-run at
+    # 1800.055 s (usage.exit_code -15) after all 9 of its verification commands
+    # had already exited 0 -- a harness budget, not a correctness signal.
+    timeout_seconds: 3600
