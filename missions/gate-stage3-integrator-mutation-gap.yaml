@@ -39,6 +39,30 @@ mission:
     grid interpolation, plus the implicit-solver mass-balance poison, and
     report the resulting mutation kill rate honestly.
 
+    ########################################################################
+    # READ THIS FIRST. A previous attempt at this mission produced good tests
+    # AND ALSO REWROTE src/insilico_trial/pbpk/fixed_step.py -- 371 changed
+    # lines: single-quoted every string, collapsed the import block, deleted
+    # blank lines, and DELETED the long comment justifying why saturable
+    # hepatic clearance keeps the Metzler diagonal valid (the saturableFlux_
+    # nonneg argument). The mission was failed by the last verification
+    # command for exactly that.
+    #
+    # THE TESTS ARE THE DELIVERABLE. THE SOLVER SOURCE IS READ-ONLY.
+    #   * DO NOT modify fixed_step.py or solvers.py in any way -- not to make
+    #     a local variable observable, not to export it, not to rename it,
+    #     not to reformat, re-quote, reorder imports or delete comments.
+    #   * Do NOT add a public accessor for n_steps "for testability".
+    #   * If n_steps appears unobservable from outside, THAT IS A CONSTRAINT
+    #     OF THE TASK, NOT AN OBSTACLE TO REFACTOR AROUND: count the steps
+    #     from outside instead -- monkeypatch/spy on the RK4 step helper or
+    #     on jax.lax.scan to record its `length`, or compare the trajectory
+    #     against an independently stepped reference.
+    #   * Deleting the saturable-clearance / Metzler comment is a REGRESSION:
+    #     it is the written justification for constraint 4 (non-negativity
+    #     derives from the Metzler bound, with no jnp.maximum clamping).
+    ########################################################################
+
     TASK 1 - n_steps ACROSS NON-INTEGER TIME SPANS (test_fixed_step.py).
 
     `n_steps = int((t1 - t0) / dt) + 1` appears at fixed_step.py:348, :391,
@@ -51,9 +75,12 @@ mission:
     `solve_pbpk_batch_9state` over spans that are deliberately NOT integral
     multiples of dt. A test must be able to detect an off-by-one step count,
     so assert the OBSERVABLE consequence, not the local variable: the number
-    of integration steps actually performed, recovered from the solver (for
-    example via `jax.lax.scan`'s length, a spy/monkeypatched step counter, or
-    by comparing the trajectory against an independently stepped reference).
+    of integration steps actually performed, recovered from OUTSIDE the
+    solver -- e.g. monkeypatch `insilico_trial.pbpk.fixed_step.jax.lax.scan`
+    (or the module-level `_rk4_step`) to record the `length` it is handed,
+    or compare against an independently stepped reference. Patching a module
+    attribute from the test is a test-side technique and is allowed; editing
+    the solver to expose the value is not.
     Cover both a span that is an exact multiple of dt and one that is not.
 
     TASK 2 - GRID INTERPOLATION BOUNDARIES (test_fixed_step.py).
