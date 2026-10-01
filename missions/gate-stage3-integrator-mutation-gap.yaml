@@ -1,0 +1,149 @@
+# Stage 3: close the integrator mutation gap, and measure it HONESTLY.
+#
+# Two things this mission corrects about the original brief.
+#
+# (1) THE MEASUREMENT COMMAND IN THE BRIEF IS VACUOUS. Run verbatim from the
+#     tether project dir:
+#         .venv/bin/python tools/mutation_killrate.py \
+#           --target ../VeriTrial/src/insilico_trial/pbpk/fixed_step.py \
+#           --suite  ../VeriTrial/src/insilico_trial/tests/test_fixed_step.py
+#     the tool runs pytest via `sys.executable -m pytest -x -q` from the
+#     tether cwd, where the collection FAILS:
+#         ImportError ... test_fixed_step.py:5: in <module>
+#         ModuleNotFoundError: No module named 'numpy'
+#     Every mutant therefore "dies" because the suite errors regardless of the
+#     mutation, and the tool reports a beautiful, meaningless 1.0000 (131/131).
+#     Verified: that exact command prints 1.0000 with zero survivors while the
+#     same suite, run properly, is green.
+#
+# (2) 0.85 IS NOT ACHIEVABLE FOR THE WORK DESCRIBED, and must not be claimed.
+#     Measured correctly (cwd=VeriTrial, PYTHONPATH=src, system python3):
+#         0.3893 -- killed 51/131, 80 survivors
+#     The 0.70 in the gate mission's comment came from a 6-mutant SAMPLE
+#     (max_mutants=6 across 4 targets), not the full sweep. The real gap is 80
+#     mutants spread across the whole file -- RK4 stages (241-243), _initial_state
+#     (263-264), the multi-dose boundary logic (530-573, 645-673), and dozens of
+#     trailing returns. The three test areas in the brief cannot reach 0.85: the
+#     n_steps sites are ~11 mutants, and the solve_implicit requirement lives in
+#     solvers.py and contributes ZERO to fixed_step.py's rate.
+#
+# So this mission does the genuinely valuable, bounded work the brief asks for,
+# and then REPORTS the true number. It does not suppress anything, and it does
+# not assert 0.85. Reaching a high full-file rate is a separate, much larger
+# mission; the acceptance floor below is set from what these tests can honestly
+# deliver, and the real teeth are the specific-mutant assertions.
+mission:
+  name: gate-stage3-integrator-mutation-gap
+  goal: |
+    Add the missing coverage for the integrator's step-count derivation and
+    grid interpolation, plus the implicit-solver mass-balance poison, and
+    report the resulting mutation kill rate honestly.
+
+    TASK 1 - n_steps ACROSS NON-INTEGER TIME SPANS (test_fixed_step.py).
+
+    `n_steps = int((t1 - t0) / dt) + 1` appears at fixed_step.py:348, :391,
+    :423 and :463. The `int()` TRUNCATES, so a span that is not an exact
+    multiple of dt loses a step: e.g. (t1-t0)/dt == 24.999999999999996
+    truncates to 24 instead of 25. No test in the file currently references
+    n_steps, 9state, or _solve_on_grid_fixed -- confirmed by grep.
+
+    Pin the step count for `solve_pbpk_batch_fixed_step` and
+    `solve_pbpk_batch_9state` over spans that are deliberately NOT integral
+    multiples of dt. A test must be able to detect an off-by-one step count,
+    so assert the OBSERVABLE consequence, not the local variable: the number
+    of integration steps actually performed, recovered from the solver (for
+    example via `jax.lax.scan`'s length, a spy/monkeypatched step counter, or
+    by comparing the trajectory against an independently stepped reference).
+    Cover both a span that is an exact multiple of dt and one that is not.
+
+    TASK 2 - GRID INTERPOLATION BOUNDARIES (test_fixed_step.py).
+
+    `_solve_on_grid_fixed` builds `t_internal = jnp.linspace(t0, t1, n_steps)`
+    and returns `jnp.interp(t_eval, t_internal, col)`. Pin the boundary
+    behaviour of that interpolation: the first output sample must equal the
+    initial state y0 exactly at t0, the last must land at t1, and `jnp.interp`
+    CLAMPS for t_eval outside [t_internal[0], t_internal[-1]] -- i.e. a
+    t_eval beyond the window returns the edge value rather than extrapolating
+    or raising. Also pin that the returned array has one row per t_eval entry.
+
+    TASK 3 - TRAJECTORY-LEVEL MASS-BALANCE POISON (test_solvers.py).
+
+    `solve_implicit` (solvers.py:129-140) monitors the first min(n,6) states,
+    computes `final_gain`, and sets `poison` when
+    `final_gain > 1e-6 * dose_scale` OR the gain is non-finite; it then
+    replaces the WHOLE trajectory with NaN. Add tests in test_solvers.py (NOT
+    test_fixed_step.py -- different module) that pin:
+      * a mass-CONSERVING ODE is NOT poisoned (trajectory finite);
+      * an ODE that GAINS mass beyond the 1e-6 relative tolerance IS poisoned
+        (entire trajectory NaN, including the t0 row -- the vstack happens
+        before the where, so y0 must be NaN too);
+      * a blowup that makes the final gain non-finite IS poisoned even though
+        it is not "positive gain" in the ordinary sense.
+    Note this task does not and cannot move fixed_step.py's kill rate.
+
+    TASK 4 - REPORT THE TRUE RATE.
+
+    Do not add any mutation suppression anywhere. Do not weaken an existing
+    test expectation. Do not edit the assertion in an existing test to make a
+    mutant die. Only ADD tests (and only the minimal import/helper lines they
+    need). fixed_step.py and solvers.py themselves must not be modified.
+
+    In your final message, state the before/after kill rate for
+    fixed_step.py vs test_fixed_step.py, measured with a WORKING harness, and
+    state plainly that the 1.0 obtainable from the tether-cwd invocation is a
+    collection error, not a result.
+context:
+  - "Honest baseline, measured correctly (cwd=VeriTrial, PYTHONPATH=src, system python3): fixed_step.py vs test_fixed_step.py = 0.3893, killed 51/131, 80 survivors"
+  - "The 0.70 figure in tri-repo-full-stack-gate.yaml came from a 6-mutant sample, not the full sweep"
+  - "The tether-cwd invocation of tools/mutation_killrate.py errors at collection (no numpy) and reports a vacuous 1.0000"
+  - "solve_implicit lives in src/insilico_trial/pbpk/solvers.py and is covered by tests/test_solvers.py; it cannot affect fixed_step.py's kill rate"
+  - "test_fixed_step.py currently has zero references to n_steps, solve_pbpk_batch_9state, _solve_on_grid_fixed or solve_implicit"
+  - "Several survivors are genuinely equivalent, e.g. `return None` inside a `-> None` function; those are NOT to be 'fixed' by suppression here, and the full-file rate is reported as-is"
+workspace_repos:
+  - "../VeriTrial"
+  - "../QED"
+constraints:
+  - "DO NOT modify fixed_step.py or solvers.py - tests only"
+  - "DO NOT add any mutation suppression or `equivalent:` entry"
+  - "DO NOT weaken or delete an existing test expectation"
+  - "DO NOT assert 0.85 - it is not achievable for this work and must not be claimed"
+  - "No jnp.maximum concentration clamping; non-negativity via the dt bound only"
+  - "All work remains uncommitted in the working tree until tether reports success"
+verification:
+  clean_room: false
+  commands:
+    - "env PYTHONPATH=../VeriTrial/src python3 -m ruff check ../VeriTrial/src/insilico_trial/tests/test_fixed_step.py ../VeriTrial/src/insilico_trial/tests/test_solvers.py"
+    # Both suites green. cwd matters: these tests load configs/drug_warfarin.yaml
+    # relative to the cwd, and several load configs by relative path.
+    - "env PYTHONPATH=../VeriTrial/src python3 -c \"import os, sys, pytest; os.chdir(os.path.join(os.getcwd(), '../VeriTrial')); sys.exit(pytest.main(['-q', '-p', 'no:cacheprovider', 'src/insilico_trial/tests/test_fixed_step.py', 'src/insilico_trial/tests/test_solvers.py']))\""
+    # The harness must be REAL: prove the suite collects and passes from the
+    # exact cwd/PYTHONPATH/interpreter the mutation sweep below will use.
+    - "env PYTHONPATH=../VeriTrial/src python3 -c \"import os,sys,subprocess; os.chdir('../VeriTrial'); e=dict(os.environ); e['PYTHONPATH']='src'; r=subprocess.run([sys.executable,'-m','pytest','-q','-p','no:cacheprovider','src/insilico_trial/tests/test_fixed_step.py'],capture_output=True,text=True,env=e); print(r.stdout[-800:]); sys.exit(r.returncode)\""
+    # THE REAL MUTATION SWEEP (~17 min: 131 mutants x one pytest run each).
+    # cwd=VeriTrial + PYTHONPATH=src + system python3, i.e. the only combination
+    # under which the suite is importable at all. Two teeth:
+    #   (a) an honest floor, and
+    #   (b) the specific n_steps arithmetic mutants are GONE from the survivor
+    #       list -- this is the assertion that actually pins TASK 1, and it is
+    #       what the brief's 0.85 number was standing in for.
+    - "env PYTHONPATH=../VeriTrial/src python3 -c \"import os,sys,subprocess,re; os.chdir('../VeriTrial'); e=dict(os.environ); e['PYTHONPATH']='src'; r=subprocess.run([sys.executable,'../tether/tools/mutation_killrate.py','--repo-root','.','--target','src/insilico_trial/pbpk/fixed_step.py','--suite','src/insilico_trial/tests/test_fixed_step.py'],capture_output=True,text=True,env=e); out=r.stdout+r.stderr; open('/tmp/kr3.log','w').write(out); print(out[:3000]); m=re.search(r'\\(([0-9.]+) of ([0-9.]+)\\)', out) or re.search(r'([0-9.]+)\\s+\\(killed', out); rate=float(m.group(1)); surv=out.split('surviving mutants:')[-1]; bad=[t for t in ('348:','391:','423:','463:') if t in surv]; assert not bad, 'n_steps mutants STILL SURVIVE at '+str(bad); assert rate>=0.45, 'kill rate %.4f below honest floor 0.45 (baseline was 0.3893)'%rate; print('STAGE3 OK: n_steps mutants killed, kill rate %.4f'%rate)\""
+    # Nothing was suppressed to get there.
+    - "python3 -c \"from pathlib import Path; import subprocess; t=Path('missions/tri-repo-full-stack-gate.yaml').read_text(); assert 'fixed_step.py' not in t.split('baseline_targets:')[1].split('equivalent:')[0], 'fixed_step.py was added to baseline_targets without meeting the bar'; d=subprocess.run(['git','-C','../VeriTrial','diff','--name-only'],capture_output=True,text=True).stdout.split(); bad=[f for f in d if f.endswith(('fixed_step.py','solvers.py'))]; assert not bad, 'solver sources modified: '+str(bad); print('no solver source edits, no new suppressions')\""
+  timeout_seconds: 3600
+mutation:
+  enabled: false
+review:
+  enabled: true
+  required: true
+  adapter: opencode
+  retry_on_rejection: true
+recovery:
+  max_attempts: 1
+git_state_guard: true
+budget:
+  max_wall_seconds: 3600
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "--auto", "-m", "opencode/space-bunny-free", "{prompt}"]
+    timeout_seconds: 3600
