@@ -57,14 +57,27 @@ Mission goal:
 Captured change ({artifact_name}):
 {excerpt}
 
-Respond with EXACTLY ONE fenced yaml block shaped like:
+Respond with EXACTLY ONE fenced yaml block shaped exactly like this example:
 ```yaml
 probes:
-  - command: <single-line command, run with cwd = project root>
-    contains: <literal substring required in combined stdout+stderr>
-  - command: <single-line command>
-    matches: <python regex required in combined stdout+stderr>
+  - command: "python -c \\"import mymodule; print(mymodule.test())\\""
+    contains: "expected_output"
+  - command: 'python -m pytest -q tests/test_mymodule.py'
+    matches: '1 passed'
 ```
+
+Quoting (the examples above are the rule, restated):
+- A command that contains a double quote, a colon followed by a space, or a \
+leading special character MUST be written as a double-quoted YAML scalar \
+with every inner double quote escaped as \\". Unquoted, YAML reads only the \
+text up to the first quote and then chokes on the rest, so the probe is \
+silently dropped and less gets verified than looks verified.
+- Otherwise prefer a single-quoted YAML scalar, e.g. command: 'python -m \
+pytest -q', whenever the command itself contains no single quote: single \
+quotes take backslashes, colons and inner double quotes literally, so a \
+regex or a shell fragment cannot break out of the scalar.
+- Put a real command and a real marker in every field; a bracketed \
+placeholder left in a field is rejected and never executed.
 
 Rules:
 - At least one of contains/matches per probe; both are allowed.

@@ -6,6 +6,8 @@ probes on their measured ability to kill mutants of the captured change.
 The end-to-end orchestrator integration lives in
 ``tests/test_autoprobes_mission.py``.
 """
+import re
+import shlex
 import sys
 
 import pytest
@@ -60,6 +62,108 @@ def test_prompt_clips_change_excerpt_to_budget():
     huge = "x" * (AUTO_PROBE_CONTEXT_BUDGET * 4)
     prompt = build_synthesis_prompt("g", "patch.diff", huge)
     assert len(prompt) < AUTO_PROBE_CONTEXT_BUDGET + 4096
+
+
+# ------------------------------------------- the template's quoting lesson
+
+
+# What the template must teach, pinned from the outside: the escaped-inner-
+# quote double-quoted scalar for a shell one-liner, and a single-quoted
+# scalar for a command with no shell quoting of its own.
+DQ_ONE_LINER = ('command: "python -c \\"import mymodule; '
+                'print(mymodule.test())\\"\"')
+SQ_PYTEST = "command: 'python -m pytest -q tests/test_mymodule.py'"
+
+# Each advertised example, with the argv it must produce once the real parse
+# and validation path has read it.
+ADVERTISED = [
+    (DQ_ONE_LINER,
+     'python -c "import mymodule; print(mymodule.test())"',
+     ["python", "-c", "import mymodule; print(mymodule.test())"],
+     "expected_output", None),
+    (SQ_PYTEST,
+     "python -m pytest -q tests/test_mymodule.py",
+     ["python", "-m", "pytest", "-q", "tests/test_mymodule.py"],
+     None, "1 passed"),
+]
+
+
+def _prompt() -> str:
+    return build_synthesis_prompt("g", "patch.diff", "x")
+
+
+def test_prompt_teaches_escaped_double_quoted_shell_one_liner():
+    prompt = _prompt()
+    assert DQ_ONE_LINER in prompt
+    # The inner double quotes are backslash-escaped, i.e. the YAML scalar is
+    # readable rather than truncated at the first quote.
+    assert '\\"import mymodule;' in prompt
+    assert "contains: \"expected_output\"" in prompt
+
+
+def test_prompt_teaches_single_quoted_scalar_and_both_keys():
+    prompt = _prompt()
+    assert SQ_PYTEST in prompt
+    assert "matches: '1 passed'" in prompt
+    # Both criteria keys are demonstrated, and the prose names the
+    # single-quoted form as the safer default with a reason.
+    assert "single-quoted YAML scalar" in prompt
+    assert "literally" in prompt
+
+
+def test_prompt_teaches_the_quoting_rule_in_prose():
+    prompt = _prompt()
+    lowered = prompt.lower()
+    assert "double-quoted yaml scalar" in lowered
+    assert "escaped as" in prompt
+    for trigger in ("double quote", "colon", "special character"):
+        assert trigger in lowered
+
+
+def test_prompt_keeps_the_rules_that_guard_probe_teeth():
+    prompt = _prompt()
+    assert "failure output" in prompt
+    assert "exit code is recorded but never decides" in prompt
+    assert "At least one of contains/matches" in prompt
+
+
+def test_prompt_examples_all_survive_the_real_parse_and_validate_path():
+    # Route the prompt's OWN examples through parse_generated_probes -- the
+    # fence -> YAML -> salvage -> _validated_probe path a generated response
+    # goes through. A template that advertises a form the validator rejects
+    # (an unescaped double-quoted shell fragment, say) loses a probe here and
+    # the count/equality assertions below catch it.
+    prompt = _prompt()
+    specs = _parse(prompt)
+    assert len(specs) == len(ADVERTISED)
+    for spec, (_, command, argv, contains, matches) in zip(specs, ADVERTISED):
+        assert isinstance(spec, ProbeSpec)
+        assert spec.command == command
+        assert shlex.split(spec.command) == argv
+        assert spec.contains == contains
+        assert spec.matches == matches
+
+
+def test_prompt_advertises_one_example_per_advertised_command():
+    # Guards ADVERTISED against drifting out of sync with the template: every
+    # pinned entry must actually appear in the prompt it claims to pin.
+    prompt = _prompt()
+    for entry, _command, _argv, _contains, _matches in ADVERTISED:
+        assert entry in prompt
+    assert prompt.count("- command:") == len(ADVERTISED)
+
+
+def test_prompt_teaches_no_bare_bracketed_metavariable_command():
+    # RAW-TEXT check on purpose. The validator drops a placeholder probe
+    # before any caller can see it, so routing the template through
+    # parse_generated_probes and asserting on the result is tautological --
+    # it would still pass with the offending line re-added. The prompt text
+    # itself has to be free of it.
+    prompt = _prompt()
+    assert re.search(r"command:[ \t]*<[^>\n]*>", prompt) is None
+    # And no field of a probe example may be a bare bracketed metavariable.
+    assert re.findall(r"^[ \t]*(?:-[ \t]+)?\w+:[ \t]*<[^>\n]+>[ \t]*$",
+                      prompt, re.MULTILINE) == []
 
 
 # ------------------------------------------------------------------ parser
