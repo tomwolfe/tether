@@ -1,0 +1,191 @@
+# Stage 6: make insilico_trial's precision/backend policy enforceable.
+#
+# THE DEFECT, with its true blast radius.
+#
+# src/insilico_trial/__init__.py sets two environment variables BEFORE jax is
+# expected to be imported:
+#     os.environ["JAX_PLATFORM_NAME"] = "cpu"     (darwin, unless VERITRIAL_ALLOW_METAL=1)
+#     os.environ.setdefault("JAX_ENABLE_X64", "1")
+# Its own docstring and comment say this "must be set before JAX is imported
+# anywhere" -- but NOTHING ENFORCES IT, and jax reads both at its OWN first
+# import and caches them. Measured:
+#
+#     import insilico_trial                      -> x64 = True,  backend = cpu
+#     import jax; import insilico_trial          -> x64 = False, backend = METAL
+#
+# On the second (entirely natural) order, actually solving reproduces the very
+# failure the module documents:
+#     jax.errors.JaxRuntimeError: UNKNOWN: -:0:0: error: unknown attribute code: 22
+# and where it does not crash it is SILENTLY FLOAT32, which is the dangerous
+# mode: the mass-conservation monitor and the Metzler dt bound are stated in
+# real arithmetic with 1e-6 tolerances, and float32 invalidates them.
+#
+# SCOPE CORRECTION, because an earlier reading of this overreached. The
+# in-tree TEST SUITE IS NOT AFFECTED. src/insilico_trial/tests/__init__.py
+# exists, so pytest imports test modules as `insilico_trial.tests.*`, which
+# forces the package __init__ to run first. Verified: under real pytest,
+# x64 = True and backend = cpu. (A claim that test_solvers.py and gate
+# command 8 ran in float32 was an artifact of importing those modules
+# directly, outside the pytest import chain, and is retracted.)
+#
+# The remaining, genuine exposure is EXTERNAL consumers, and it is a fail-open:
+# the package documents a hard precondition and then, when it is violated,
+# either crashes cryptically or silently loses the precision its correctness
+# arguments rest on. This mission makes it fail closed, or self-heal where
+# self-healing is possible.
+mission:
+  name: gate-stage6-jax-policy-fail-closed
+  goal: |
+    Make insilico_trial's float64 and CPU-backend policy hold REGARDLESS of
+    whether jax was imported first -- self-healing the recoverable half, and
+    failing closed with an actionable message on the half that cannot be
+    recovered.
+
+    Background, all measured:
+      * jax caches JAX_ENABLE_X64 and the platform at its own first import.
+      * Setting the env var after jax is imported is INERT (verified: flag
+        stays False).
+      * jax.config.update("jax_enable_x64", True) DOES work after the fact
+        (verified: False -> True).
+      * The BACKEND cannot be recovered: once jax is imported the devices are
+        already bound (verified: [METAL(id=0)]), and forcing CPU afterwards is
+        not possible.
+
+    So the two halves need different treatment. Do not try to fix the backend
+    by mutating it; it is not fixable, and pretending otherwise would be worse
+    than the current behaviour.
+
+    TASK 1 - SELF-HEAL THE PRECISION HALF.
+
+    In src/insilico_trial/__init__.py, after the existing
+    `os.environ.setdefault("JAX_ENABLE_X64", "1")`, add a guarded block that
+    runs ONLY when jax has already been imported into sys.modules, and in
+    that case calls jax.config.update("jax_enable_x64", True).
+
+    Requirements:
+      * Import jax INSIDE the guard. Importing it unconditionally at package
+        init would initialise the backend at the wrong moment and defeat the
+        CPU policy that the lines above exist to set.
+      * Do not remove or weaken the existing env-var lines. They remain the
+        primary, correct mechanism and are what the normal path uses.
+      * Comment WHY the second path exists (jax caches the flag; the env var
+        is too late once jax is loaded), so the next reader does not delete it
+        as redundant.
+
+    TASK 2 - FAIL CLOSED ON THE UNRECOVERABLE HALF.
+
+    On darwin, when VERITRIAL_ALLOW_METAL is not "1", the package intends CPU.
+    If jax was ALREADY imported when insilico_trial loads, the platform env
+    vars above had no effect and the process may be bound to Metal, which
+    cannot be corrected. In exactly that case, raise a clear exception
+    (ImportError or RuntimeError) whose message states what happened AND the
+    fix, naming the required import order: import insilico_trial (or any
+    insilico_trial submodule) BEFORE jax.
+
+    Requirements:
+      * The message must be actionable -- a reader must be able to fix it
+        without reading this mission. Name the ordering rule explicitly.
+      * It must NOT fire on the normal path (insilico_trial imported first,
+        jax absent from sys.modules) -- that is the overwhelmingly common
+        case, including the CLI and the whole test suite.
+      * It must NOT fire when VERITRIAL_ALLOW_METAL=1, since Metal is then
+        explicitly opted into.
+      * Prefer checking the already-initialised backend (e.g.
+        jax.default_backend()) over guessing from os.environ, and only when
+        jax is already in sys.modules, so importing insilico_trial never
+        initialises a backend as a side effect.
+      * Do not change the documented policy in the module docstring; keep
+        VERITRIAL_ALLOW_METAL=1 as the escape hatch.
+
+    TASK 3 - PIN IT, IN FRESH INTERPRETERS.
+
+    The behaviour is import-order dependent and the flag is cached at first
+    jax import, so a test that imports the modules in the same process
+    CANNOT observe it. Every test here must therefore run in a FRESH
+    subprocess (sys.executable -c ... or subprocess.run), asserting on what
+    that child reports. Add to the VeriTrial test suite (choose the existing
+    file that best matches; if none fits, add a new test module under
+    src/insilico_trial/tests/ -- note that directory is a package, with an
+    __init__.py, so submodule imports are covered by the package import).
+
+    Cover:
+      a) natural consumer order -- `import jax` then `from insilico_trial...`
+         -- ends with x64 ENABLED;
+      b) the normal order -- insilico_trial first -- still ends with x64
+         ENABLED and raises nothing;
+      c) on darwin, natural consumer order WITHOUT the fail-closed would
+         leave a non-CPU backend, so assert the package refuses: either a
+         clear exception naming the ordering fix, or that it did NOT silently
+         proceed on a non-CPU backend. Assert the message mentions the
+         ordering rule, not merely that "an error happened";
+      d) VERITRIAL_ALLOW_METAL=1 does not trigger the refusal;
+      e) the existing test suite and CLI are unaffected.
+
+    TASK 4 - CONFIRM NO REGRESSION.
+
+    The full VeriTrial suite, the formal gate for both networks, and the
+    tether-side suites must all stay green. Do not weaken any existing test
+    expectation, and do not add a mutation suppression.
+context:
+  - "jax reads JAX_ENABLE_X64 and the platform at ITS first import and caches both; setting the env var afterwards is inert"
+  - "jax.config.update('jax_enable_x64', True) DOES work after the fact (verified False -> True)"
+  - "The backend CANNOT be recovered once jax is imported: devices are already bound (verified [METAL(id=0)])"
+  - "src/insilico_trial/tests/__init__.py exists, so pytest imports test modules as insilico_trial.tests.* and the package __init__ runs FIRST -- the test suite is structurally protected and runs at x64=True/cpu"
+  - "cli/__main__.py imports insilico_trial first, so the CLI is already correct"
+  - "scripts/benchmark_hardware.py already demonstrates the correct order with the comment 'forces CPU backend before jax import'"
+  - "The mass-conservation monitor and the Metzler dt bound are stated in real arithmetic with 1e-6 tolerances; float32 silently invalidates them"
+workspace_repos:
+  - "../VeriTrial"
+  - "../QED"
+constraints:
+  - "DO NOT weaken or delete the existing env-var policy lines in __init__.py"
+  - "DO NOT import jax unconditionally at package init -- that would initialise the backend and defeat the CPU policy"
+  - "DO NOT mutate the backend to force CPU; it is not recoverable and faking it is worse than failing closed"
+  - "DO NOT change the documented policy or remove VERITRIAL_ALLOW_METEL=1 as the escape hatch"
+  - "Tests asserting import-order behaviour MUST use a fresh subprocess; an in-process test cannot observe it"
+  - "DO NOT weaken or delete any existing test expectation"
+  - "No sorry axioms in any QED output; no jnp.maximum clamping"
+  - "All work remains uncommitted in the working tree until tether reports success"
+verification:
+  clean_room: false
+  commands:
+    - "env PYTHONPATH=../VeriTrial/src python3 -m ruff check ../VeriTrial/src/insilico_trial/__init__.py"
+    # (a) the natural consumer order must now self-heal to float64. This is
+    # the defect; it is the headline gate and it fails on today's tree.
+    - "env PYTHONPATH=../VeriTrial/src python3 -c \"import subprocess,sys; r=subprocess.run([sys.executable,'-c','import jax, jax.numpy as jnp\\nfrom insilico_trial.pbpk.fixed_step import solve_pbpk_fixed_step\\nimport jax as j\\nassert j.config.jax_enable_x64, \\'x64 still disabled for a natural consumer import order\\'\\nprint(\\'x64=\\', j.config.jax_enable_x64)'],capture_output=True,text=True); print(r.stdout, r.stderr[-500:]); sys.exit(r.returncode)\""
+    # (b) the normal order is unchanged: no exception, x64 on, CPU backend.
+    - "env PYTHONPATH=../VeriTrial/src python3 -c \"import subprocess,sys; r=subprocess.run([sys.executable,'-c','import insilico_trial, jax as j\\nassert j.config.jax_enable_x64, \\'normal order lost x64\\'\\nprint(\\'backend=\\', j.default_backend(), \\'x64=\\', j.config.jax_enable_x64)'],capture_output=True,text=True); print(r.stdout, r.stderr[-500:]); sys.exit(r.returncode)\""
+    # (d) the escape hatch still works and does not trip the refusal.
+    # The unrecoverable half must not be SILENT. On darwin without
+    # VERITRIAL_ALLOW_METAL, a natural consumer import order used to leave the
+    # process on METAL and merely produce a cryptic failure much later, in
+    # somebody else's stack trace. Require that insilico_trial either refuses
+    # (child exits non-zero, message naming the ordering fix) or reports a CPU
+    # backend -- never a silent non-CPU proceed. The child program is
+    # deliberately quote-free so this nests cleanly in the YAML.
+    - "env PYTHONPATH=../VeriTrial/src python3 -c \"import subprocess,sys; r=subprocess.run([sys.executable,'-c','import jax, insilico_trial, jax as j; print(j.default_backend())'],capture_output=True,text=True); out=(r.stdout or '')+(r.stderr or ''); print(out[-400:]); refused=r.returncode!=0; assert refused or 'cpu' in r.stdout, 'silently proceeded on a non-CPU backend: '+out[-200:]; assert (not refused) or ('insilico_trial' in out or 'before' in out), 'refusal does not name the ordering fix: '+out[-200:]; print('backend fail-closed ok')\""
+    - "env PYTHONPATH=../VeriTrial/src VERITRIAL_ALLOW_METAL=1 python3 -c \"import subprocess,sys,os; r=subprocess.run([sys.executable,'-c','import insilico_trial, jax as j\\nprint(\\'ALLOW_METAL ok, x64=\\', j.config.jax_enable_x64)'],capture_output=True,text=True,env=dict(os.environ)); print(r.stdout, r.stderr[-400:]); sys.exit(r.returncode)\""
+    - "env PYTHONPATH=../VeriTrial/src python3 -m pytest -q -p no:cacheprovider ../VeriTrial/src/insilico_trial/tests/"
+    # Formal gates for both networks must be untouched by the change.
+    - "env PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --out /tmp/s6_lem6.txt --fin-n 6 --parametric"
+    - "env PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/verify_formal_gate.py /tmp/s6_lem6.txt --fin-n 6 --strict"
+    - "env PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --out /tmp/s6_lem14.txt --fin-n 14 --parametric --saturable"
+    - "env PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/verify_formal_gate.py /tmp/s6_lem14.txt --fin-n 14 --strict --saturable"
+  timeout_seconds: 3600
+mutation:
+  enabled: false
+review:
+  enabled: true
+  required: true
+  adapter: opencode
+  retry_on_rejection: true
+recovery:
+  max_attempts: 1
+git_state_guard: true
+budget:
+  max_wall_seconds: 14400
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "--auto", "-m", "opencode/space-bunny-free", "{prompt}"]
+    timeout_seconds: 3600
