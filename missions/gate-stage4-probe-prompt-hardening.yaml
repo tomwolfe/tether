@@ -75,8 +75,30 @@ mission:
         assert each yields a valid ProbeSpec with the intended argv. This is
         what stops a future template edit from teaching a form the validator
         rejects.
-      * assert the template still does not teach any form whose command is a
-        bare bracketed metavariable.
+      * assert the template does not teach any form whose command is a bare
+        bracketed metavariable.
+
+    ########################################################################
+    # TASK 2's THIRD BULLET MUST INSPECT THE RAW PROMPT TEXT.
+    #
+    # A previous attempt got this wrong and the review gate caught it. It
+    # routed the template's examples through parse_generated_probes -- i.e.
+    # through the very validator that rejects bracketed metavariables -- and
+    # then asserted on the RESULT. That assertion is TAUTOLOGICAL: re-adding
+    # the exact offending line
+    #     - command: <single-line command, run with cwd = project root>
+    # to the template still passed 50/50, because the placeholder entry is
+    # silently DROPPED by the validator before the assertion can see it. A
+    # test that cannot fail on the bug it names is worse than no test: it
+    # reports coverage it does not have.
+    #
+    # So the metavariable check MUST look at the prompt text itself, e.g.
+    #     re.search(r"command:\s*<[^>\n]*>", prompt)
+    # and assert that finds nothing. Prove it has teeth: temporarily put a
+    # bare `- command: <metavar>` line into the template, confirm the test
+    # FAILS, then remove it. Same for any assertion that is meant to detect
+    # something the validator would otherwise swallow.
+    ########################################################################
 
     TASK 3 - CONFIRM EXISTING PLACEHOLDER REJECTION IS INTACT.
 
@@ -111,6 +133,7 @@ verification:
     # The template must actually teach the escaped double-quoted one-liner.
     # Built from chr() so no backslash/quote escaping is needed in the YAML.
     - "env PYTHONPATH=src python3 -c \"from tether.autoprobes import build_synthesis_prompt as b; p=b('g','a.patch','x'); q=chr(34); e=chr(92)+q; assert 'python -c' in p, 'no shell one-liner example'; assert 'command: '+q+'python -c' in p, 'one-liner is not shown double-quoted'; assert e in p, 'no escaped inner quotes taught'; assert 'matches:' in p, 'no matches example'; print('template teaches escaped double-quoted one-liners and a matches example')\""
+    - "env PYTHONPATH=src python3 -c \"import pathlib,subprocess,sys\ntry:\n  p=pathlib.Path('src/tether/autoprobes.py'); orig=p.read_text(); inj=orig.replace('probes:'+chr(10),'probes:'+chr(10)+'  - command: <single-line command>'+chr(10),1); assert inj!=orig, 'anchor not found'; p.write_text(inj)\n  r=subprocess.run([sys.executable,'-m','pytest','tests/test_autoprobes.py','-q','-p','no:cacheprovider'],capture_output=True,text=True)\nfinally:\n  p.write_text(orig)\nassert p.read_text()==orig, 'autoprobes.py was not restored'\nassert r is not None and r.returncode!=0, 'the autoprobes suite still PASSES with a bare metavariable command injected, so the metavariable check is tautological'\nprint('teeth OK: the suite fails when the template regresses to a bare metavariable')\""
     # Only the template may have changed among production files.
     - "python3 -c \"import subprocess; d=subprocess.run(['git','diff','--name-only'],capture_output=True,text=True).stdout.split(); prod=[f for f in d if f.startswith('src/')]; assert prod in ([],['src/tether/autoprobes.py']), 'unexpected production edits: '+str(prod); print('production diff is limited to autoprobes.py')\""
   timeout_seconds: 3600
