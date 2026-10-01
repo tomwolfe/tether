@@ -940,12 +940,16 @@ real run:
 | formal gate | `all 9 lemmas verified by QED (no sorry)` |
 
 The kill rate is **0.9167, not 1.0**, and is reported as measured. The two
-survivors are `export_pbpk_to_qed.py:1494` (arithmetic) and `:1600`
-(flip_bool). Both sit in the **legacy export path** — the branch that runs only
+survivors were `export_pbpk_to_qed.py:1494` (arithmetic) and `:1600`
+(flip_bool). Both sat in the **legacy export path** — the branch that ran only
 for models *without* `make_pbpk_ode`, which the live model takes an early
-return past. So they are unreachable coverage, not undetected defects; that
-was confirmed by inspection rather than assumed, but it is a coverage gap and
-is named as one rather than suppressed.
+return past. So they were unreachable coverage, not undetected defects; that
+was confirmed by inspection rather than assumed, but it was a coverage gap and
+was named as one rather than suppressed. **This paragraph is now the historical
+measurement of the pre-deletion revision, not the live claim:** that legacy
+branch has since been deleted outright, so neither survivor is reachable any
+more and neither is carried as a suppression today. See the bullet list under
+"STEP 2" for the deletion record.
 
 This is a genuine drop from the 1.0000 the previous revision recorded. The
 cause is visible in the run log: `mutation targets fall back to baseline_targets
@@ -1097,22 +1101,29 @@ column-sum and dissipation identities are the actual certificate.
 sandbox violations `[]`, and the export/gate pair passed `--fin-n 6 --strict`
 inside the room.
 
-The two tri-repo survivors were **not** suppressed to buy the 1.0. Both sit in
-the legacy branch of `emit_lean_export`, which the function forks past at
-`if "def make_pbpk_ode(" in source:` and returns from, so lines 1487-1601 are
-unreachable for every model the gate exports:
+The two tri-repo survivors were **not** suppressed to buy the 1.0, and they are
+no longer carried at all. Both sat in the legacy branch of `emit_lean_export`,
+which the function forks past at `if "def make_pbpk_ode(" in source:` and
+returns from, making lines 1487-1601 unreachable for every model the gate
+exports. That branch has since been **DELETED** — all 115 lines, from the
+`if not check_mass_conservation(model_path):` guard after the live `return` at
+1486 through the late-path `lean_out.parent.mkdir(...)` /
+`lean_out.write_text(...)` pair at 1600-1601 — together with both of its
+suppressions:
 
-- `export_pbpk_to_qed.py:1494:25` — the message string of a fail-closed
-  `SystemExit` in that branch.
-- `export_pbpk_to_qed.py:1600:34` — the late-path
-  `lean_out.parent.mkdir(parents=True, …)`. Worth being precise: there is a
-  *second* `mkdir` at 1484, but it is on the mutually exclusive early branch, so
-  it does **not** cover for 1600. That site is unobservable because the branch
-  never runs, not because a sibling mkdir compensates.
+- `export_pbpk_to_qed.py:1494:25` — **DELETED with the branch** (was: the
+  message string of a fail-closed `SystemExit` inside it).
+- `export_pbpk_to_qed.py:1600:34` — **DELETED with the branch** (was: the
+  late-path `lean_out.parent.mkdir(parents=True, …)`). Worth preserving the
+  distinction even now the site is gone: there is a *second* `mkdir` at 1484, on
+  the surviving early branch, and it was never a cover for 1600 — the late path
+  was unobservable because the branch never ran, not because a sibling mkdir
+  compensated. The deletion stops at 1601 for that reason; 1484 is the live
+  path's only mkdir and is untouched.
 
-The suppression entries are `line:column` keyed, so they fail closed on drift,
-and the mission comment states that if the legacy branch is ever brought back
-under test both entries must be removed. Meanwhile the adjacent *real* gap was
+Nothing is suppressed at those sites any more, so the gate carries 17
+`equivalent:` entries, all pointing above the deleted span and all therefore
+still valid. The adjacent *real* gap was
 closed rather than suppressed: `emit_lean_export` now has a test that emits to a
 nested path whose intermediate directory is missing and then re-emits over the
 existing file, pinning both `parents=True` and the overwrite — every pre-existing

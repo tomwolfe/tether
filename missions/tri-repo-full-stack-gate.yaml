@@ -25,7 +25,7 @@ context:
   - "QED lakefile.lean declares mathlib4 from leanprover-community/mathlib4"
   - "QED agentic_pipeline.py invokes the pinned toolchain's lean directly with an explicit LEAN_PATH (lake env is bypassed: it SIGTRAPs under this Lake/Lean combination)"
   - "QED Compartmental.lean: domain-agnostic compartmental engine over arbitrary [Fintype n] (Metzler, mass dissipation/conservation, orthant invariance, SDIRK2 M-matrix stage); zero domain leakage"
-  - "VeriTrial export_pbpk_to_qed.py --lean-out emits the N-generic AST<->Lean isomorphism file instantiating CompartmentalMatrix over Fin N. The N-generic machinery is real, but for a model defining make_pbpk_ode the live path takes N = n_states or len(DEFAULT_ORGAN_NETWORK) = 6 (DEFAULT_ORGAN_NETWORK is the 6-organ gut/liver/central/peripheral/effect/elim set), NOT the Jacobian-derived N further down. The Jacobian-derived N is dead for that model shape, and command 1 passes no --fin-n, so THIS GATE CERTIFIES Fin 6 ONLY. _network_for_fin accepts just 6 or 14, so a --fin-n 14 run is a separate unproven path."
+  - "VeriTrial export_pbpk_to_qed.py --lean-out emits the N-generic AST<->Lean isomorphism file instantiating CompartmentalMatrix over Fin N. The N-generic machinery is real, but for a model defining make_pbpk_ode the live path takes N = n_states or len(DEFAULT_ORGAN_NETWORK) = 6 (DEFAULT_ORGAN_NETWORK is the 6-organ gut/liver/central/peripheral/effect/elim set), NOT the Jacobian-derived N further down. The Jacobian-derived N is dead for that model shape, and command 1 passes no --fin-n, so the Lean artifact this gate rebuilds and asserts axioms over is Fin 6. _network_for_fin accepts just 6 or 14; Fin 14 is no longer an unproven path -- the gate now certifies it too, via a dedicated export+verify pair whose lemma set (11 Metzler + 11 boundary inflow + column sum + parametric sum + dissipation = 25 lemmas) measured green: no sorry, axioms exactly [propext, Classical.choice, Quot.sound]. That pair deliberately passes no --lean-out, so it certifies the Fin 14 lemma SET only and leaves ../QED/VeriTrialExport.lean at Fin 6 for rebuild_qed_oleans.py and the axiom assertions."
   - "VeriTrial formal_verification.py computes lean_code_sha256 at the PRODUCER (the attempt dict carries result[\"lean_code\"]'s digest, since check_qed_proofs strips the raw source before the attempt is built) and _write_trail consumes it into the per-lemma hash map. An earlier revision claimed this was structurally always {} because the digest was computed over a key the attempt never carried; that was fixed in VeriTrial 94f4848 and the bullet no longer holds. The Lean FILE digests that feed the Merkle chain are a separate mechanism: validation/__init__.py hashes QED/Compartmental.lean and QED/VeriTrialExport.lean directly."
   - "VeriTrial fixed_step.calculate_max_stable_dt derives the dt bound from matrix invariants"
   - "Cross-repo QED is located as sibling of VeriTrial (co-located monorepo layout)"
@@ -58,7 +58,7 @@ verification:
     max_mutants: 6
     # Regression net for verify-only runs: when the agent changes nothing,
     # mutate the gate-critical bridge scripts instead of passing vacuously.
-    # Each mutant re-runs the full 9-command suite, and the Lean
+    # Each mutant re-runs the full 11-command suite, and the Lean
     # export/rebuild/formal-gate trio dominates its wall time, hence the cap.
     # 4 targets x max_mutants 6 = 24 sampled, 21 of them scored after the pd
     # controls below stopped being suppressed.
@@ -127,27 +127,6 @@ verification:
       - "../VeriTrial/scripts/verify_formal_gate.py:509:4"
       - "../VeriTrial/scripts/verify_formal_gate.py:813:45"
       - "../tether/src/tether/cleanroom.py:254:56"
-      # Two survivors in export_pbpk_to_qed.py, both inside the LEGACY branch
-      # of emit_lean_export. The function forks at
-      #   1375:  if "def make_pbpk_ode(" in source:
-      # and the make_pbpk_ode branch returns at 1486; lines 1487-1601 are the
-      # fallback for a model file that does NOT define make_pbpk_ode. Every
-      # model this gate exports (src/insilico_trial/pbpk/model.py, which the
-      # battery mutates and re-exports) does define it, so that whole branch is
-      # unreachable here and neither mutation is observable:
-      #   1494:25  arithmetic  the message string of a fail-closed SystemExit in
-      #                          that same unreachable branch
-      #   1600:34  flip_bool   `lean_out.parent.mkdir(parents=True, ...)` on
-      #                          the late path. Note the OTHER mkdir, at 1484,
-      #                          is a different, mutually exclusive branch, so
-      #                          1600 is the only mkdir on this path and the
-      #                          mutation is only unreachable because the branch
-      #                          itself never runs -- not because a sibling
-      #                          mkdir covers for it.
-      # If the legacy branch is ever brought back under test, drop both
-      # entries: they are recorded as unobservable, not as harmless.
-      - "../VeriTrial/scripts/export_pbpk_to_qed.py:1494:25"
-      - "../VeriTrial/scripts/export_pbpk_to_qed.py:1600:34"
   commands:
     - "python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --lean-out ../QED/VeriTrialExport.lean --out /tmp/pbpk_lemmas.txt"
     - "python3 ../VeriTrial/scripts/rebuild_qed_oleans.py"
@@ -156,6 +135,17 @@ verification:
     # tissue), so the gate refuses to certify a file against an assumed network.
     # The export above uses the default six-organ network, hence 6.
     - "python3 ../VeriTrial/scripts/verify_formal_gate.py /tmp/pbpk_lemmas.txt --fin-n 6 --strict"
+    # Fin 14 lemma SET, certified in its own right (11 Metzler + 11 boundary
+    # inflow + column sum + parametric sum + dissipation = 25 lemmas, no sorry,
+    # axioms exactly [propext, Classical.choice, Quot.sound]).
+    #
+    # --lean-out is deliberately ABSENT on this pair. The Lean artifact
+    # ../QED/VeriTrialExport.lean must stay Fin 6: rebuild_qed_oleans.py and the
+    # #print axioms assertions above are pinned to it. These two commands prove
+    # only that the Fin 14 lemma set verifies -- they do not re-certify, or
+    # re-export, the Lean file at the other N.
+    - "python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --out /tmp/pbpk_lemmas_14.txt --fin-n 14 --parametric --saturable"
+    - "python3 ../VeriTrial/scripts/verify_formal_gate.py /tmp/pbpk_lemmas_14.txt --fin-n 14 --strict --saturable"
     - "python3 -c \"import sys, os; os.chdir(os.path.join(os.getcwd(), '../VeriTrial')); sys.path.insert(0, 'src'); from insilico_trial.validation import run_all_validations, build_regulatory_provenance; run_all_validations(); print('PROVENANCE_MERKLE=' + build_regulatory_provenance()['merkle_root'])\""
     # Tether-side regression net: the mission mutates changed tether files, so
     # the clean-room suite must exercise them (sibling .git preservation,
