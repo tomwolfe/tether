@@ -2,7 +2,7 @@
   "repos": [
     {
       "repo": "tether",
-      "head": "dceb0b3b5b067200ab72f853aa3c691dbba3653f",
+      "head": "2f2da05a65d6f45d510a21f20c5187c731244569",
       "dirty": false,
       "sorry_free": "n/a"
     },
@@ -14,10 +14,10 @@
     },
     {
       "repo": "VeriTrial",
-      "head": "d8ce6523731dcf1970584c25c4029c7cd24038a7",
+      "head": "b38aec0c0a19b2637a26a237fa43783f6fcf9328",
       "dirty": false,
       "sorry_free": true
     }
   ],
-  "merkle_root": "ab5c17c4cfbacf22ba0619422cfb2f4ca7f74e564afd77e7fbde74157a78be4c"
+  "merkle_root": "df866cb7a0020dd4bc05dd5ad5ab16647f7b7322fc071eba897943c900406cce"
 }
