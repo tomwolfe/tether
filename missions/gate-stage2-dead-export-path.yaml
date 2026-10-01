@@ -121,7 +121,18 @@ verification:
     # The dead span is gone and no new suppression crept in.
     - "python3 -c \"import sys; sys.path.insert(0,'../VeriTrial/scripts'); import export_pbpk_to_qed; print('import ok')\""
     - "python3 -c \"from pathlib import Path; t=Path('../VeriTrial/scripts/export_pbpk_to_qed.py').read_text(); assert 'lean_out.parent.mkdir(parents=True, exist_ok=True)' in t; assert t.count('lean_out.parent.mkdir')==1, t.count('lean_out.parent.mkdir'); assert 'liver perfusion sign violated' not in t; print('dead branch removed, live mkdir intact')\""
-    - "env PYTHONPATH=../VeriTrial/src python3 -m ruff check ../VeriTrial/scripts/export_pbpk_to_qed.py"
+    # Lint REGRESSION gate, not a cleanliness gate. This file has never been
+    # ruff-clean under VeriTrial's own config: it legitimately carries the
+    # double-struck R (and Fin/arrow glyphs) inside its Lean codegen strings,
+    # and `select` includes RUF, so a bare `ruff check` reports RUF001 on the
+    # pre-existing text (41 findings at this checkpoint) and would fail the
+    # mission for a condition no change could ever satisfy. The meaningful
+    # claim is that deleting the branch introduces NO NEW findings, so
+    # measure both sides under ONE pinned config -- ruff resolves config from
+    # the target's directory ancestry, so a /tmp copy of the checkpoint file
+    # would silently fall back to ruff's lenient defaults (5 findings) and
+    # make the comparison meaningless.
+    - "python3 -c \"import subprocess,tempfile; from pathlib import Path; cfg='../VeriTrial/pyproject.toml'; rel='../VeriTrial/scripts/export_pbpk_to_qed.py'; head=subprocess.run(['git','-C','../VeriTrial','show','HEAD:scripts/export_pbpk_to_qed.py'],capture_output=True,text=True).stdout; tmp=Path(tempfile.mkdtemp())/'e.py'; tmp.write_text(head); f=lambda p:int([l for l in subprocess.run(['python3','-m','ruff','check','--no-cache','--config',cfg,str(p)],capture_output=True,text=True).stdout.splitlines() if l.startswith('Found ')][0].split()[1]); b,a=f(tmp),f(rel); assert a<=b, f'lint regression {b} -> {a}'; print(f'no new lint findings: {b} -> {a}')\""
     # Suppressions: the two are gone, the rest are intact.
     - "python3 -c \"from pathlib import Path; t=Path('missions/tri-repo-full-stack-gate.yaml').read_text(); assert '1494:25' not in t and '1600:34' not in t, 'dead-branch suppressions still present'; [ (t.count(k),k) for k in ['export_pbpk_to_qed.py:132:62','export_pbpk_to_qed.py:186:69','export_pbpk_to_qed.py:379:61','export_pbpk_to_qed.py:692:8','export_pbpk_to_qed.py:767:61','verify_formal_gate.py:50:43','cleanroom.py:254:56'] ]; assert all(t.count(k)==1 for k in ['export_pbpk_to_qed.py:132:62','export_pbpk_to_qed.py:186:69','export_pbpk_to_qed.py:379:61','export_pbpk_to_qed.py:692:8','export_pbpk_to_qed.py:767:61','verify_formal_gate.py:50:43','cleanroom.py:254:56']), 'a surviving suppression was disturbed'; assert 'pbpk_lemmas_14.txt' in t and '--fin-n 14 --strict --saturable' in t, 'Fin 14 not wired into the gate'; print('suppressions correct, Fin 14 wired')\""
     # Behaviour: both networks still export and both still verify. ~2-4 min each.
