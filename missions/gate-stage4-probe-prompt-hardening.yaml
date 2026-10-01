@@ -1,0 +1,133 @@
+# Stage 4: harden the autonomous probe prompt.
+#
+# SCOPE NOTE. The original brief listed two tasks for this stage.
+#
+#   Task 2 ("ensure placeholder commands containing < or > are rejected during
+#   validation before execution") is ALREADY IMPLEMENTED and already tested.
+#   autoprobes.py:123 defines _PLACEHOLDER_RE; :144 rejects a placeholder
+#   executable; :149 rejects a placeholder `contains`; and
+#   tests/test_autoprobes.py has test_placeholder_executable_is_rejected_but_real_ones_survive
+#   and test_placeholder_probe_is_dropped_but_real_siblings_survive. So Task 2
+#   is not re-implemented here -- it is pinned harder, because the new
+#   template examples in Task 1 must not become a way to smuggle a bracketed
+#   metavariable past the validator.
+#
+#   Task 1 is the real gap and is the substance of this mission.
+mission:
+  name: gate-stage4-probe-prompt-hardening
+  goal: |
+    Make the probe-synthesis prompt teach the quoting rule it needs, by
+    example, instead of only describing the schema.
+
+    WHY THIS MATTERS (the concrete failure being prevented).
+
+    The current _PROMPT_TEMPLATE (src/tether/autoprobes.py:48-78) shows the
+    schema with BARE metavariables and no example:
+
+      probes:
+        - command: <single-line command, run with cwd = project root>
+          contains: <literal substring required in combined stdout+stderr>
+
+    A generator imitating that shape produces a shell one-liner containing
+    double quotes UNQUOTED in YAML:
+
+        - command: python -c "import mymodule; assert mymodule.test()"
+
+    which is not a string at all -- YAML reads `command: python -c` and then
+    hits a mapping/scalar error, or silently truncates at the first quote.
+    The probe is then dropped and the mission silently verifies less than it
+    looks like it does. The validator cannot save it: the entry never parses
+    into the dict the validator expects.
+
+    TASK 1 - ADD WORKED FEW-SHOT EXAMPLES TO _PROMPT_TEMPLATE.
+
+    Extend the template in src/tether/autoprobes.py so it demonstrates the
+    correct DOUBLE-QUOTED form for a shell one-liner, with the inner quotes
+    backslash-escaped, at minimum:
+
+      probes:
+        - command: "python -c \"import mymodule; assert mymodule.test()\""
+          contains: "expected_output"
+
+    Requirements:
+      * Keep the existing rules section (no success marker may be spellable
+        inside its own command, exit code never decides, at least one of
+        contains/matches, etc.) -- ADD to the template, do not delete rules.
+      * State the rule in prose too, not only by example: any command
+        containing a double quote, colon, or leading special character must
+        be emitted as a double-quoted YAML scalar with inner double quotes
+        escaped as \".
+      * Prefer single-quoted YAML scalars (command: 'python -m pytest -q')
+        when the command itself contains no single quote, and say why that
+        is safer.
+      * Show a `matches` example too, so both keys are demonstrated.
+      * Do NOT let the template grow so long that it crowds out the mission
+        goal, the captured change, or the rules.
+
+    TASK 2 - PIN IT, AND PIN THAT THE EXAMPLES STAY VALID.
+
+    Add tests to tests/test_autoprobes.py that:
+      * assert build_synthesis_prompt output CONTAINS the double-quoted
+        one-liner example, with its escaped inner quotes;
+      * assert every example the template advertises actually survives
+        validation: feed the template's own example entries through the real
+        parse+validate path (the one a generated response goes through) and
+        assert each yields a valid ProbeSpec with the intended argv. This is
+        what stops a future template edit from teaching a form the validator
+        rejects.
+      * assert the template still does not teach any form whose command is a
+        bare bracketed metavariable.
+
+    TASK 3 - CONFIRM EXISTING PLACEHOLDER REJECTION IS INTACT.
+
+    _PLACEHOLDER_RE and the checks at autoprobes.py:144 and :149 must keep
+    working and keep being covered. Do not relax, reorder or bypass them, and
+    do not make the validator accept anything it rejected before. The
+    existing tests at tests/test_autoprobes.py:392 and :413 are the
+    regression net; they must still pass UNCHANGED.
+
+    Do not modify the validator's accept/reject behaviour, the
+    ProbeSynthesisError messages, the runner, or any other module. The only
+    production change is the _PROMPT_TEMPLATE text.
+context:
+  - "autoprobes.py:48-78 is _PROMPT_TEMPLATE; :123 _PLACEHOLDER_RE; :144 placeholder-executable rejection; :149 placeholder-contains rejection"
+  - "tests/test_autoprobes.py:392 and :413 already cover placeholder rejection and must pass unchanged"
+  - "The bare-metavariable schema currently in the template is what induces unquoted YAML one-liners"
+constraints:
+  - "Only src/tether/autoprobes.py may change among production files, and only its _PROMPT_TEMPLATE text"
+  - "Do NOT relax or bypass any existing validation; every currently-rejected input must stay rejected"
+  - "Do NOT edit existing test assertions; add tests only"
+  - "No new third-party dependencies (stdlib only)"
+  - "All work remains uncommitted in the working tree until tether reports success"
+verification:
+  clean_room: false
+  commands:
+    - "env PYTHONPATH=src python3 -m ruff check src/tether/autoprobes.py tests/test_autoprobes.py"
+    - "env PYTHONPATH=src python3 -m mypy src/tether/autoprobes.py"
+    - "env PYTHONPATH=src python3 -m pytest tests/test_autoprobes.py tests/test_autoprobes_mission.py -q -p no:cacheprovider"
+    # The rest of the tether suite must stay green: the template is on the
+    # auto-probe path that real missions use.
+    - "env PYTHONPATH=src python3 -m pytest -q -p no:cacheprovider --ignore=tests/test_cleanroom.py"
+    # The template must actually teach the escaped double-quoted one-liner.
+    # Built from chr() so no backslash/quote escaping is needed in the YAML.
+    - "env PYTHONPATH=src python3 -c \"from tether.autoprobes import build_synthesis_prompt as b; p=b('g','a.patch','x'); q=chr(34); e=chr(92)+q; assert 'python -c' in p, 'no shell one-liner example'; assert 'command: '+q+'python -c' in p, 'one-liner is not shown double-quoted'; assert e in p, 'no escaped inner quotes taught'; assert 'matches:' in p, 'no matches example'; print('template teaches escaped double-quoted one-liners and a matches example')\""
+    # Only the template may have changed among production files.
+    - "python3 -c \"import subprocess; d=subprocess.run(['git','diff','--name-only'],capture_output=True,text=True).stdout.split(); prod=[f for f in d if f.startswith('src/')]; assert prod in ([],['src/tether/autoprobes.py']), 'unexpected production edits: '+str(prod); print('production diff is limited to autoprobes.py')\""
+  timeout_seconds: 3600
+mutation:
+  enabled: false
+review:
+  enabled: true
+  required: true
+  adapter: opencode
+  retry_on_rejection: true
+recovery:
+  max_attempts: 1
+git_state_guard: true
+budget:
+  max_wall_seconds: 10800
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "--auto", "-m", "opencode/space-bunny-free", "{prompt}"]
+    timeout_seconds: 3600
