@@ -40,27 +40,49 @@ mission:
     report the resulting mutation kill rate honestly.
 
     ########################################################################
-    # READ THIS FIRST. A previous attempt at this mission produced good tests
-    # AND ALSO REWROTE src/insilico_trial/pbpk/fixed_step.py -- 371 changed
-    # lines: single-quoted every string, collapsed the import block, deleted
-    # blank lines, and DELETED the long comment justifying why saturable
-    # hepatic clearance keeps the Metzler diagonal valid (the saturableFlux_
-    # nonneg argument). The mission was failed by the last verification
-    # command for exactly that.
+    # READ THIS FIRST. TWO THINGS WENT WRONG IN EARLIER ATTEMPTS.
     #
-    # THE TESTS ARE THE DELIVERABLE. THE SOLVER SOURCE IS READ-ONLY.
-    #   * DO NOT modify fixed_step.py or solvers.py in any way -- not to make
-    #     a local variable observable, not to export it, not to rename it,
-    #     not to reformat, re-quote, reorder imports or delete comments.
-    #   * Do NOT add a public accessor for n_steps "for testability".
-    #   * If n_steps appears unobservable from outside, THAT IS A CONSTRAINT
-    #     OF THE TASK, NOT AN OBSTACLE TO REFACTOR AROUND: count the steps
-    #     from outside instead -- monkeypatch/spy on the RK4 step helper or
-    #     on jax.lax.scan to record its `length`, or compare the trajectory
-    #     against an independently stepped reference.
-    #   * Deleting the saturable-clearance / Metzler comment is a REGRESSION:
-    #     it is the written justification for constraint 4 (non-negativity
-    #     derives from the Metzler bound, with no jnp.maximum clamping).
+    # (A) A previous attempt REWROTE src/insilico_trial/pbpk/fixed_step.py --
+    #     371 changed lines: single-quoted every string, collapsed the import
+    #     block, and DELETED the long comment justifying why saturable hepatic
+    #     clearance keeps the Metzler diagonal valid (the saturableFlux_nonneg
+    #     argument). Deleting that comment is a REGRESSION: it is the written
+    #     justification for constraint 4 (non-negativity from the Metzler
+    #     bound, no jnp.maximum clamping). The mission was failed for that.
+    #
+    #     THE TESTS ARE THE DELIVERABLE. THE SOLVER SOURCE IS READ-ONLY.
+    #     Do not modify fixed_step.py or solvers.py in any way -- not to make
+    #     a local observable, not to export it, not to reformat, re-quote,
+    #     reorder imports, or delete comments. If n_steps looks unobservable
+    #     from outside, that is a CONSTRAINT of the task, not an obstacle:
+    #     monkeypatch the module attribute from the test instead.
+    #
+    # (B) A later attempt added `import jax` / `import jax.numpy as jnp` at
+    #     MODULE level in test_fixed_step.py, which SILENTLY broke a
+    #     pre-existing, unrelated test.
+    #
+    #     Root cause, proven: insilico_trial/__init__.py:28 does
+    #         os.environ.setdefault("JAX_ENABLE_X64", "1")
+    #     and jax reads that env var ONCE, at its own first import, then
+    #     caches it. Measured:
+    #         import jax first      -> x64 enabled = False
+    #         import insilico_trial -> x64 enabled = True
+    #     So importing jax at module level in the test file makes the WHOLE
+    #     suite run in float32, and this pre-existing test then fails:
+    #         test_solve_pbpk_batch_step_matches_a_finer_reference
+    #         AssertionError: default step diverges from a 10x finer step:
+    #                         1.01e+03   (it passes, < 1e-4, without the import)
+    #
+    #     You CANNOT fix this by ordering the module-level imports: ruff's
+    #     isort rule (I001) always sorts `import jax` ABOVE `from
+    #     insilico_trial... import`, so the fragile import order would be
+    #     reintroduced by the linter. Therefore:
+    #         DO NOT import jax or jax.numpy at module level in either test
+    #         file. Import them INSIDE the test functions (or inside a local
+    #         helper) so insilico_trial is always imported first.
+    #     Do not "fix" the red test by loosening its tolerance -- that is a
+    #     pre-existing, correct expectation and the whole point is that the
+    #     package is meant to run in float64.
     ########################################################################
 
     TASK 1 - n_steps ACROSS NON-INTEGER TIME SPANS (test_fixed_step.py).
@@ -143,6 +165,16 @@ verification:
     # Both suites green. cwd matters: these tests load configs/drug_warfarin.yaml
     # relative to the cwd, and several load configs by relative path.
     - "env PYTHONPATH=../VeriTrial/src python3 -c \"import os, sys, pytest; os.chdir(os.path.join(os.getcwd(), '../VeriTrial')); sys.exit(pytest.main(['-q', '-p', 'no:cacheprovider', 'src/insilico_trial/tests/test_fixed_step.py', 'src/insilico_trial/tests/test_solvers.py']))\""
+    # x64 GUARD. insilico_trial/__init__.py:28 sets JAX_ENABLE_X64 via
+    # setdefault, and jax caches that at ITS first import, so the suite's
+    # precision depends on import order. A module-level `import jax` in a
+    # test file silently drops the whole suite to float32 and turns the
+    # pre-existing test_solve_pbpk_batch_step_matches_a_finer_reference from
+    # a pass (<1e-4) into a failure (1.01e+03). Importing the test module and
+    # THEN reading the cached flag detects exactly that and keeps detecting
+    # it, because ruff's isort would otherwise silently reintroduce the bad
+    # order on any future edit.
+    - "env PYTHONPATH=../VeriTrial/src python3 -c \"import os,sys; os.chdir('../VeriTrial'); sys.path.insert(0,'src/insilico_trial/tests'); import test_fixed_step, jax; assert jax.config.jax_enable_x64, 'x64 DISABLED: something imported jax before insilico_trial'; print('x64 enabled during the suite')\""
     # The harness must be REAL: prove the suite collects and passes from the
     # exact cwd/PYTHONPATH/interpreter the mutation sweep below will use.
     - "env PYTHONPATH=../VeriTrial/src python3 -c \"import os,sys,subprocess; os.chdir('../VeriTrial'); e=dict(os.environ); e['PYTHONPATH']='src'; r=subprocess.run([sys.executable,'-m','pytest','-q','-p','no:cacheprovider','src/insilico_trial/tests/test_fixed_step.py'],capture_output=True,text=True,env=e); print(r.stdout[-800:]); sys.exit(r.returncode)\""
@@ -155,7 +187,7 @@ verification:
     #       what the brief's 0.85 number was standing in for.
     - "env PYTHONPATH=../VeriTrial/src python3 -c \"import os,sys,subprocess,re; os.chdir('../VeriTrial'); e=dict(os.environ); e['PYTHONPATH']='src'; r=subprocess.run([sys.executable,'../tether/tools/mutation_killrate.py','--repo-root','.','--target','src/insilico_trial/pbpk/fixed_step.py','--suite','src/insilico_trial/tests/test_fixed_step.py'],capture_output=True,text=True,env=e); out=r.stdout+r.stderr; open('/tmp/kr3.log','w').write(out); print(out[:3000]); m=re.search(r'\\(([0-9.]+) of ([0-9.]+)\\)', out) or re.search(r'([0-9.]+)\\s+\\(killed', out); rate=float(m.group(1)); surv=out.split('surviving mutants:')[-1]; bad=[t for t in ('348:','391:','423:','463:') if t in surv]; assert not bad, 'n_steps mutants STILL SURVIVE at '+str(bad); assert rate>=0.45, 'kill rate %.4f below honest floor 0.45 (baseline was 0.3893)'%rate; print('STAGE3 OK: n_steps mutants killed, kill rate %.4f'%rate)\""
     # Nothing was suppressed to get there.
-    - "python3 -c \"from pathlib import Path; import subprocess; t=Path('missions/tri-repo-full-stack-gate.yaml').read_text(); assert 'fixed_step.py' not in t.split('baseline_targets:')[1].split('equivalent:')[0], 'fixed_step.py was added to baseline_targets without meeting the bar'; d=subprocess.run(['git','-C','../VeriTrial','diff','--name-only'],capture_output=True,text=True).stdout.split(); bad=[f for f in d if f.endswith(('fixed_step.py','solvers.py'))]; assert not bad, 'solver sources modified: '+str(bad); print('no solver source edits, no new suppressions')\""
+    - "python3 -c \"from pathlib import Path; import subprocess; t=Path('missions/tri-repo-full-stack-gate.yaml').read_text(); assert 'fixed_step.py' not in t.split('baseline_targets:')[1].split('equivalent:')[0], 'fixed_step.py was added to baseline_targets without meeting the bar'; d=subprocess.run(['git','-C','../VeriTrial','diff','--name-only'],capture_output=True,text=True).stdout.split(); bad=[f for f in d if f in {'src/insilico_trial/pbpk/fixed_step.py','src/insilico_trial/pbpk/solvers.py'}]; assert not bad, 'solver sources modified: '+str(bad); print('no solver source edits, no new suppressions')\""
   timeout_seconds: 3600
 mutation:
   enabled: false
