@@ -168,7 +168,15 @@ recovery:
   max_attempts: 1
 git_state_guard: true
 budget:
-  max_wall_seconds: 3600
+  # The previous run reached "Execution step status: completed" at 4382 s and
+  # was killed by this threshold BEFORE verification ever ran -- so the
+  # 0.5267 kill rate and the clean suites were never scored. Planning plus
+  # execution alone is ~73 min here, the full 131-mutant sweep is ~17 min, and
+  # the adversarial review adds more; 3600 s cannot fit any of it. This is a
+  # harness budget, not a correctness signal (same failure mode and same fix as
+  # documented in tri-repo-full-stack-gate.yaml:236-240). Verification keeps
+  # its own timeout_seconds: 3600.
+  max_wall_seconds: 14400
 adapter: opencode
 adapters:
   opencode:
