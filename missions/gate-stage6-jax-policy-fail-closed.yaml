@@ -152,7 +152,13 @@ verification:
     - "env PYTHONPATH=../VeriTrial/src python3 -m ruff check ../VeriTrial/src/insilico_trial/__init__.py"
     # (a) the natural consumer order must now self-heal to float64. This is
     # the defect; it is the headline gate and it fails on today's tree.
-    - "env PYTHONPATH=../VeriTrial/src python3 -c \"import subprocess,sys; r=subprocess.run([sys.executable,'-c','import jax, jax.numpy as jnp\\nfrom insilico_trial.pbpk.fixed_step import solve_pbpk_fixed_step\\nimport jax as j\\nassert j.config.jax_enable_x64, \\'x64 still disabled for a natural consumer import order\\'\\nprint(\\'x64=\\', j.config.jax_enable_x64)'],capture_output=True,text=True); print(r.stdout, r.stderr[-500:]); sys.exit(r.returncode)\""
+    # The PRECISION half, isolated. It must be run with VERITRIAL_ALLOW_METAL=1
+    # so the backend refusal cannot preempt it: on darwin a natural consumer
+    # import satisfies BOTH conditions, and the (correct) fail-closed raise
+    # would abort the import before the x64 recovery ever runs, leaving this
+    # assertion unreachable. Opting out of the backend policy is the only way
+    # to observe the precision path on its own.
+    - "env PYTHONPATH=../VeriTrial/src VERITRIAL_ALLOW_METAL=1 python3 -c \"import subprocess,sys,os; r=subprocess.run([sys.executable,'-c','import jax, jax.numpy as jnp, jax as j' + chr(10) + 'from insilico_trial.pbpk.fixed_step import solve_pbpk_fixed_step' + chr(10) + 'assert j.config.jax_enable_x64, \\'x64 still disabled for a natural consumer import order\\'' + chr(10) + 'print(\\'x64=\\', j.config.jax_enable_x64)'],capture_output=True,text=True,env=dict(os.environ)); print(r.stdout, r.stderr[-500:]); sys.exit(r.returncode)\""
     # (b) the normal order is unchanged: no exception, x64 on, CPU backend.
     - "env PYTHONPATH=../VeriTrial/src python3 -c \"import subprocess,sys; r=subprocess.run([sys.executable,'-c','import insilico_trial, jax as j\\nassert j.config.jax_enable_x64, \\'normal order lost x64\\'\\nprint(\\'backend=\\', j.default_backend(), \\'x64=\\', j.config.jax_enable_x64)'],capture_output=True,text=True); print(r.stdout, r.stderr[-500:]); sys.exit(r.returncode)\""
     # (d) the escape hatch still works and does not trip the refusal.
@@ -165,7 +171,11 @@ verification:
     # deliberately quote-free so this nests cleanly in the YAML.
     - "env PYTHONPATH=../VeriTrial/src python3 -c \"import subprocess,sys; r=subprocess.run([sys.executable,'-c','import jax, insilico_trial, jax as j; print(j.default_backend())'],capture_output=True,text=True); out=(r.stdout or '')+(r.stderr or ''); print(out[-400:]); refused=r.returncode!=0; assert refused or 'cpu' in r.stdout, 'silently proceeded on a non-CPU backend: '+out[-200:]; assert (not refused) or ('insilico_trial' in out or 'before' in out), 'refusal does not name the ordering fix: '+out[-200:]; print('backend fail-closed ok')\""
     - "env PYTHONPATH=../VeriTrial/src VERITRIAL_ALLOW_METAL=1 python3 -c \"import subprocess,sys,os; r=subprocess.run([sys.executable,'-c','import insilico_trial, jax as j\\nprint(\\'ALLOW_METAL ok, x64=\\', j.config.jax_enable_x64)'],capture_output=True,text=True,env=dict(os.environ)); print(r.stdout, r.stderr[-400:]); sys.exit(r.returncode)\""
-    - "env PYTHONPATH=../VeriTrial/src python3 -m pytest -q -p no:cacheprovider ../VeriTrial/src/insilico_trial/tests/"
+    # cwd is load-bearing: several tests load configs/drug_warfarin.yaml
+    # relative to the cwd, so running the suite from the tether project dir
+    # dies with FileNotFoundError. Same trap, same remedy as the gate
+    # mission's fixed_step command.
+    - "env PYTHONPATH=../VeriTrial/src python3 -c \"import os, sys, pytest; os.chdir(os.path.join(os.getcwd(), '../VeriTrial')); sys.exit(pytest.main(['-q', '-p', 'no:cacheprovider', 'src/insilico_trial/tests/']))\""
     # Formal gates for both networks must be untouched by the change.
     - "env PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --out /tmp/s6_lem6.txt --fin-n 6 --parametric"
     - "env PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/verify_formal_gate.py /tmp/s6_lem6.txt --fin-n 6 --strict"
