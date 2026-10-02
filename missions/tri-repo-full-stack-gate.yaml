@@ -60,8 +60,14 @@ verification:
     # mutate the gate-critical bridge scripts instead of passing vacuously.
     # Each mutant re-runs the full 11-command suite, and the Lean
     # export/rebuild/formal-gate trio dominates its wall time, hence the cap.
-    # 4 targets x max_mutants 6 = 24 sampled, 21 of them scored after the pd
-    # controls below stopped being suppressed.
+    # 4 targets x max_mutants 6 = 24 sampled. The "21 of them scored" figure
+    # below is STALE and is kept only as history: it described a run whose
+    # equivalent: entries still matched their sites. As of VeriTrial db6d1ad
+    # (2026-10-02) 16 of the 19 entries have DRIFTED off their constructs, so
+    # none of them suppress anything and the honest count is skipped: 0 --
+    # all 24 mutants are scored. See the equivalent: block below. Nothing is
+    # being suppressed, and that is why kill_rate 1.0 over 24/24 is not
+    # bought with equivalences.
     baseline_targets:
       - "../VeriTrial/scripts/export_pbpk_to_qed.py"
       - "../VeriTrial/scripts/verify_formal_gate.py"
@@ -136,6 +142,29 @@ verification:
       #   behavior-preserving.
       - "../VeriTrial/src/insilico_trial/pbpk/fixed_step.py:188:4"
       - "../VeriTrial/src/insilico_trial/pbpk/fixed_step.py:220:4"
+      # MEASURED 2026-10-02 at VeriTrial db6d1ad: this block is currently
+      # ENTIRELY INERT. Replaying tether's own deterministic sampler over the
+      # four baseline_targets below (same per-path seed derivation, same
+      # operator set, same max_mutants=6, hence the same 24 mutants) suppresses
+      # NONE of the 19 entries, so the gate reports skipped: 0 again. Two
+      # causes, which must be told apart before anyone "fixes" the wrong one:
+      #   * 16 of the 19 have DRIFTED. Their line:col no longer lands on the
+      #     construct their note above describes -- e.g.
+      #     export_pbpk_to_qed.py:132:62 now reads
+      #     `source = model_path.read_text(encoding="utf-8")` rather than an
+      #     include_ode default. Exactly three remain correctly anchored:
+      #     fixed_step.py:188:4 and 220:4 (both the trailing `return None`) and
+      #     cleanroom.py:254:56 (on `exist_ok=True`).
+      #   * Those three anchored entries name cleanroom.py and fixed_step.py,
+      #     neither of which is a baseline_target, so they cannot be sampled at
+      #     all. The pair added at 2791b2c is inert for this reason alone -- not
+      #     because the drift rule rejected it.
+      # This is the fail-closed direction, not a live hazard: an unmatched entry
+      # simply RUNS its mutant, so the kill rate is measured over more mutants,
+      # never fewer. Do not re-anchor an entry to make it fire again -- each
+      # equivalence was proven by hand for one specific site, and re-anchoring
+      # re-suppresses an unproven claim at the price of a mutant the suite was
+      # meant to score. Re-prove at the current site or leave the entry inert.
   commands:
     - "python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --lean-out ../QED/VeriTrialExport.lean --out /tmp/pbpk_lemmas.txt"
     - "python3 ../VeriTrial/scripts/rebuild_qed_oleans.py"
@@ -143,6 +172,20 @@ verification:
     # of the organ network (one Metzler and one inflow invariant per perfused
     # tissue), so the gate refuses to certify a file against an assumed network.
     # The export above uses the default six-organ network, hence 6.
+    #
+    # The Fin 6 artifact exists ONLY inside the clean room. The host checkout's
+    # QED/VeriTrialExport.lean is Fin 14 -- committed at QED 8207365, "Regenerate
+    # the Fin 14 export with the saturable transport theorems" -- precisely
+    # because the Fin 14 pair below deliberately passes no --lean-out. Harmless
+    # here: clean_room is true, so this command rewrites the ROOM's copy at Fin 6
+    # (measured 2026-10-02: 78 `Fin 6`, zero `Fin 14`, `CompartmentalMatrix
+    # (Fin 6)` + veritrial_mass_dissipation + veritrial_dili_block, no sorry)
+    # before rebuild_qed_oleans.py and the axiom assertions read it -- and
+    # command 6's PROVENANCE_MERKLE hashes that same room copy. Recorded because
+    # the host ledger does NOT agree: scripts/audit_system_state.py hashes the
+    # host's Fin 14 file into SYSTEM_STATE.json, so that ledger's merkle_root
+    # and this gate's PROVENANCE_MERKLE cover different Lean bytes by
+    # construction. Neither is wrong; they are two different ledgers.
     - "python3 ../VeriTrial/scripts/verify_formal_gate.py /tmp/pbpk_lemmas.txt --fin-n 6 --strict"
     # Fin 14 lemma SET, certified in its own right (11 Metzler + 11 boundary
     # inflow + column sum + parametric sum + dissipation = 25 lemmas, no sorry,
