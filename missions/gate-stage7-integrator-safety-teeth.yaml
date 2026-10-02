@@ -41,6 +41,22 @@ mission:
     Give the safety-critical survivors of fixed_step.py real tests, and
     record the two that are provably equivalent.
 
+    ########################################################################
+    # FOR THE REVIEWER: THE DELIVERABLE IS IN A SIBLING REPO.
+    #
+    # Tether's captured patch for this session lists only files in the tether
+    # project dir. The tests -- the actual deliverable -- are UNCOMMITTED in
+    # the SIBLING repo ../VeriTrial and may therefore be ABSENT from the diff
+    # you are shown. That is a capture limitation, not an absence of work.
+    # Before judging, run these yourself:
+    #     git -C ../VeriTrial status --porcelain
+    #     git -C ../VeriTrial diff --stat
+    #     git -C ../VeriTrial diff -- src/insilico_trial/tests/test_fixed_step.py
+    # A previous run of this mission was REJECTED for "the tests are absent
+    # from the patch" when they were present in the tree and had already
+    # passed all six verification gates. Do not repeat that.
+    ########################################################################
+
     THE TESTS ARE THE DELIVERABLE. fixed_step.py IS READ-ONLY.
     Do not modify fixed_step.py, not to make anything observable, not to
     reformat, not to re-quote, not to touch comments. The comment at
