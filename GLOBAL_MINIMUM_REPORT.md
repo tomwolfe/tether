@@ -1243,3 +1243,140 @@ skipped.
   test coverage, and the mission's own note records that target at 21/30 = 0.70
   against the 0.8 floor. Adding it today would fail the gate for the right
   reason and read as a flaky regression. The tests come first.
+
+## 2026-10-02 re-verification: the multi-dose solvers were dead code
+
+Model for every Tether run: **`opencode/space-bunny-free`**. No mock adapter.
+
+Tri-repo session **`b1346fe9921e`**
+(`.tether/sessions/20261002-004226-tri-repo-full-stack-gate-b1346fe9`),
+`status: success`, review **approve**, `sandbox_violations: []`,
+`recovery_attempts: []`, mutation **24/24 killed, kill_rate 1.0, skipped 0**.
+
+### What the brief assumed had already happened
+
+Three of the four phases were specified against an older tree. Checked before
+re-running anything:
+
+- **Dogfood 43–46 were already landed.** Commits `3c634d5`, `160e5a0`,
+  `7edcf81`, `47f521d`, `e4a8fff`, `f12d376` are all in history, and the
+  deliverables (`src/tether/describe.py`, `tests/test_adapters_describe.py`)
+  are tracked at HEAD.
+- **The autoprobes single-quote nesting bug was already fixed.**
+  `_relax_single_quoted_scalars` handles the `command: 'python -c 'print(1)''`
+  case correctly — it doubles the inner quotes and, where the count is odd,
+  closes the shell argument first. Spot-checked three shapes; all round-trip.
+- **The `veritrial-formal-gate.yaml` context was already narrowed.** It now
+  states that `--fin-n` is required rather than defaulted, and that Fin 6 covers
+  `make_pbpk_ode`'s network. Neither the N-generic Jacobian-derived dimension
+  claim nor the embedded SHA remains.
+
+So no mission was re-run for a fix already in the tree. What remained was real.
+
+### The actual gap: two crashes in the multi-dose solvers
+
+`src/insilico_trial/pbpk/fixed_step.py` multi-dose dosing was **entirely
+non-functional**, and no test covered it.
+
+1. **`solve_pbpk_multi_dose_fixed_step` raised on every call.** It converted the
+   `jax.lax.scan` tracer with `float(t_cur)` before handing it to `_rk4_step`,
+   which is a `ConcretizationTypeError`. The PBPK ODE is autonomous, so the
+   stepper never reads `t` numerically, and the batch sibling at line 669
+   already passed the tracer straight through. The conversion is now gone.
+2. **`solve_pbpk_batch_multi_dose_fixed_step` raised on an empty schedule.** It
+   read `dose_amounts[:, 0]` out of bounds on a zero-width dose array. The
+   single-patient solver already guards `n_doses == 0`; the batch path now
+   mirrors it.
+
+Fixed in `9841dac`, along with the tests that should have caught both.
+
+### The tests
+
+`test_fixed_step.py` had **no** multi-dose coverage at all, and the kill rate
+said so: **0.6336 (83/131)**, against a 0.70 bar. Every surviving mutant sat in
+the two boundary scanners — the `at_dose` window, the
+`min(dose_idx, n_doses - 1)` clamp, the `dose_idx` advance, the scan length.
+
+Two design choices make those mutants killable:
+
+- An **identity stepper** isolates the bolus from one RK4 step of elimination,
+  which makes `y_gut(t_k+) == y_gut(t_k-) + Dose_k` *exact* rather than buried
+  in integration error. It probes the boundary arithmetic without replacing the
+  integrator: the non-negativity and mass tests drive the real `_rk4_step`.
+- **Repointing the module-level `_CENTRAL_IDX` at the gut** reads the
+  trajectory back off the *public* return value. No second copy of the boundary
+  rule in the test, so there is nothing to drift.
+
+A single t=0 bolus through the multi-dose path is pinned against
+`solve_pbpk_fixed_step`, which cross-checks the boundary list, the
+`n_steps_full - 1` scan length, the prepended initial row and the interpolation.
+
+Non-negativity is asserted on the real RK4 path and **comes from the Metzler dt
+bound, not clamping** — `grep -rn "jnp.maximum\|jnp.clip" src/insilico_trial/pbpk/`
+returns nothing. Mass conservation is asserted as total mass stepping up by
+exactly the bolus amounts and flat everywhere else, holding to **1e-6**.
+
+`fixed_step.py` kill rate **0.6336 (83/131) → 0.8507 (114/134)**.
+
+### Measured this pass
+
+| check | result |
+|---|---|
+| VeriTrial suite | **263 passed** |
+| VeriTrial `ruff` | clean |
+| VeriTrial `mypy` | 1 pre-existing `unused-ignore` at `fixed_step.py:92`, identical with this change stashed |
+| tether suite | **822 passed** |
+| `cleanroom.py` kill rate | **0.9518 (79/83)** |
+| `fixed_step.py` kill rate | **0.8507 (114/134)**, was 0.6336 |
+| QED `pytest test_pipeline.py` | **256 passed** |
+| QED `run_tests.py` | **18/18** |
+| QED parser leakage (`pbpk`/`liver`/`dili` in `parser.py`/`agentic_pipeline.py`) | **0** |
+| formal gate Fin 6 | **9/9 verified**, FORMAL GATE PASSED |
+| formal gate Fin 14 + saturable | **25/25 verified**, FORMAL GATE PASSED |
+| QED trace SHAs | 25/25 well-formed 64-hex, all `verified: true` |
+| `#print axioms` | exactly `[propext, Classical.choice, Quot.sound]` |
+
+A 14-organ file verified against `--fin-n 6` still fails closed, so the two
+gates are genuinely distinct.
+
+### Ledger
+
+| repo | HEAD | dirty | sorry_free |
+|---|---|---|---|
+| tether | `4229704` (this section's own commit is its child) | false | `n/a` |
+| QED | `8207365` | false | **true** |
+| VeriTrial | `9841dac` | false | **true** |
+
+`SYSTEM_STATE.json` merkle root: `5307bdccdd152ad752c18f32760e32c6d1ead22ec390c5fde033872c89f6cba2`
+Report / `regulatory_provenance.json` merkle root: `c150bd3b0ff08bf7aff35d4a914991f56027b26089a87416514f69f665168d58`
+
+Both re-measured 2026-10-02. Recomputed `SYSTEM_STATE.json`'s root
+independently as `sha256(json.dumps(repos, sort_keys=True))`: **matches**. The
+report's root **matches** `regulatory_provenance.json` exactly, and
+`git merge-base --is-ancestor` confirms all three of its `git_shas` are
+ancestors of live HEAD.
+
+The two roots are **different quantities and are not expected to match**: the
+report chains six validation leaves, the ledger hashes the three repo audit
+records. The ledger necessarily **trails the report by its own commit** — the
+tether row records the head that writing the ledger invalidates — so exact SHA
+equality is unsatisfiable by construction and is not asserted. This pass
+committed twice to settle all three rows at `dirty: false`; the value recorded
+is the head before this section's commit, by that same design.
+
+### The 4 equivalent mutants remain, and remain provable
+
+`cleanroom.py` still carries exactly four `equivalent` suppressions, at
+`73:8`, `75:8`, `254:41` and `56` (unreachable `mkdir` flags). Each returns
+`None` when the expression is already `None`, or is a branch the caller's
+value cannot reach — real equivalences, not gaps. Every other `cleanroom.py`
+mutant is killed by behavioral tests. No new suppression was added this pass.
+
+### A note on the dirty-tree red herring
+
+Running `audit_system_state.py` rewrites `SYSTEM_STATE.json`, so the tether
+tree is dirty for the rest of the session until that is committed. With the
+tree dirty, `tests/test_multirepo_capture.py` fails 27 tests — the
+git-state-guard tests correctly refuse to certify an unpinned tree. After the
+ledger was committed: **822 passed**. The failures were the guard working, not
+a regression, and were never worth "fixing" by relaxing the guard.
