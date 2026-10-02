@@ -149,6 +149,7 @@ constraints:
   - "DO NOT import jax at module level in any test file"
   - "DO NOT weaken or delete any existing test expectation"
   - "No sorry axioms in any QED output; no jnp.maximum clamping"
+  - "DO NOT edit this mission file, or any other file under missions/, to change or relax what you are being graded on. If a verification command looks wrong, say so in your final message and leave it alone -- a gate you rewrote is not a gate"
   - "All work remains uncommitted in the working tree until tether reports success"
 verification:
   clean_room: false
@@ -161,7 +162,13 @@ verification:
     # The mutation sweep with a WORKING harness. Real teeth, not a vanity
     # number: the specific safety-critical lines must leave the survivor list,
     # and the multi-dose lines must still be IN it (i.e. do not fake closure).
-    - "env PYTHONPATH=../VeriTrial/src python3 -c \"import os,sys,subprocess,re; os.chdir('../VeriTrial'); e=dict(os.environ); e['PYTHONPATH']='src'; r=subprocess.run([sys.executable,'../tether/tools/mutation_killrate.py','--repo-root','.','--target','src/insilico_trial/pbpk/fixed_step.py','--suite','src/insilico_trial/tests/test_fixed_step.py'],capture_output=True,text=True,env=e); out=r.stdout+r.stderr; open('/tmp/kr7.log','w').write(out); m=re.search(r'([0-9.]+)\\s+\\(killed', out); rate=float(m.group(1)); print(out.splitlines()[0]); surv=out.split('surviving mutants:')[-1]; gone=[l for l in ('241:','242:','243:','158:','160:','176:','55:','165:','166:') if l not in surv]; still=[l for l in gone if l not in surv]; assert len(gone)==9, 'expected the 9 safety-critical lines to be absent from the survivor list; still surviving: '+str([l for l in gone if l in surv]); assert rate>=0.62, 'kill rate %.4f below the honest floor 0.62 (baseline 0.5496)'%rate; assert '555:' in surv or '560:' in surv or '661:' in surv, 'the multi-dose cluster vanished from the survivor list, which cannot be right: this mission did not touch it'; print('STAGE7 OK: rate %.4f, safety-critical lines cleared, multi-dose still open'%rate)\""
+    # The line check matches the FULL site (`fixed_step.py:55:`), not a bare
+    # `55:`. A bare `55:` is a substring of the multi-dose line `555:12`, so
+    # the loose form could never see line 55 as dead, `len(gone)` could never
+    # reach 9, and the assertion was self-contradictory -- it failed on its own
+    # count rather than on the mutant it was written to catch. The exact form
+    # is the stricter of the two.
+    - "env PYTHONPATH=../VeriTrial/src python3 -c \"import os,sys,subprocess,re; os.chdir('../VeriTrial'); e=dict(os.environ); e['PYTHONPATH']='src'; r=subprocess.run([sys.executable,'../tether/tools/mutation_killrate.py','--repo-root','.','--target','src/insilico_trial/pbpk/fixed_step.py','--suite','src/insilico_trial/tests/test_fixed_step.py'],capture_output=True,text=True,env=e); out=r.stdout+r.stderr; open('/tmp/kr7.log','w').write(out); m=re.search(r'([0-9.]+)\\s+\\(killed', out); rate=float(m.group(1)); print(out.splitlines()[0]); surv=out.split('surviving mutants:')[-1]; left=[n for n in ('241','242','243','158','160','176','55','165','166') if 'fixed_step.py:'+n+':' in surv]; assert not left, 'these safety-critical lines are still in the survivor list: '+str(left); assert rate>=0.62, 'kill rate %.4f below the honest floor 0.62 (baseline 0.5496)'%rate; assert 'fixed_step.py:555:' in surv or 'fixed_step.py:560:' in surv or 'fixed_step.py:661:' in surv, 'the multi-dose cluster vanished from the survivor list, which cannot be right: this mission did not touch it'; print('STAGE7 OK: rate %.4f, safety-critical lines cleared, multi-dose still open'%rate)\""
     # The solver sources must be untouched.
     - "python3 -c \"import subprocess; d=subprocess.run(['git','-C','../VeriTrial','diff','--name-only'],capture_output=True,text=True).stdout.split(); src={'src/insilico_trial/pbpk/fixed_step.py','src/insilico_trial/pbpk/solvers.py'}; bad=[f for f in d if f in src]; assert not bad, 'solver sources modified: '+str(bad); print('fixed_step.py and solvers.py untouched')\""
     # Only the two justified suppressions may have been added.
