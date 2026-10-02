@@ -1,0 +1,186 @@
+# Stage 7: harden the safety-critical survivors in fixed_step.py.
+#
+# SCOPE, and why it is bounded rather than "all 59 survivors".
+#
+# Honest current state, measured with a WORKING harness (cwd=VeriTrial,
+# PYTHONPATH=src, system python3 -- NOT the tether-cwd invocation, which errors
+# at collection and reports a vacuous 1.0):
+#     0.5496 -- killed 72/131, 59 survivors
+#
+# The 59 survivors are not one undifferentiated mass. They concentrate as:
+#     ~32  the multi-dose solvers (solve_pbpk_multi_dose_fixed_step,
+#          solve_pbpk_batch_multi_dose_fixed_step, and their _scan_step /
+#          _full_scan_step closures) -- a large, real, and largely orthogonal
+#          coverage gap
+#       8  _single closures inside the batch solvers
+#       5  _rk4_step -- the RK4 stage timesteps and weights
+#       3  calculate_max_stable_dt early returns
+#       2  the organ_network-is-None fallback spec
+#       2  trailing `return None` in `-> None` functions  [PROVABLY EQUIVALENT]
+#       1  _get's except branch
+#       ...
+#
+# This mission takes the SAFETY-CRITICAL slice only: the RK4 integrator, the
+# Metzler dt bound, the network fallback, and the _get helper -- plus the two
+# provably-equivalent suppressions. Those are the ones where a surviving
+# mutant weakens an argument the package actually makes: the RK4 stages feed
+# every trajectory, and `calculate_max_stable_dt` IS the dt bound that
+# constraint 4 (non-negativity from the Metzler bound, never from clamping)
+# rests on. The multi-dose cluster is real work and is deliberately left for a
+# separate mission rather than smuggled in here.
+#
+# TWO PROVABLY-EQUIVALENT SUPPRESSIONS ARE JUSTIFIED BELOW. The project's rule
+# is not "never suppress" but "do not suppress as equivalent unless provably
+# behavior-preserving", and these qualify, by the same argument the tri-repo
+# gate already records for another file: a trailing `return None` in a
+# function annotated `-> None`, whose every other path either returns or
+# raises.
+mission:
+  name: gate-stage7-integrator-safety-teeth
+  goal: |
+    Give the safety-critical survivors of fixed_step.py real tests, and
+    record the two that are provably equivalent.
+
+    THE TESTS ARE THE DELIVERABLE. fixed_step.py IS READ-ONLY.
+    Do not modify fixed_step.py, not to make anything observable, not to
+    reformat, not to re-quote, not to touch comments. The comment at
+    fixed_step.py:40-47 is the written justification for how the Metzler
+    generator is built; deleting it is a regression, not a cleanup.
+
+    DO NOT import jax or jax.numpy at module level in any test file. jax
+    caches JAX_ENABLE_X64 at its own first import, and
+    insilico_trial/__init__.py sets it; importing jax first drops the whole
+    suite to float32, which turns the pre-existing
+    test_solve_pbpk_batch_step_matches_a_finer_reference from a pass (<1e-4)
+    into a failure (1.01e+03). ruff's isort will happily hoist `import jax`
+    above `from insilico_trial...`, so the only safe form is a lazy import
+    INSIDE the test function or a local helper.
+
+    TASK 1 - PIN THE RK4 STAGES (kills five survivors: 241, 242, 243).
+
+    The surviving mutants are the RK4 stage timesteps and step sizes in
+    _rk4_step (fixed_step.py:240-244):
+
+        k1 = _ode_fn(t, y, args)
+        k2 = _ode_fn(t + dt/2, y + dt/2*k1, args)
+        k3 = _ode_fn(t + dt/2, y + dt/2*k2, args)
+        k4 = _ode_fn(t + dt,   y + dt*k3,   args)
+        y_next = y + dt/6 * (k1 + 2*k2 + 2*k3 + k4)
+
+    The existing tests only compare a coarse step against a finer one, which
+    still converges when a stage weight or half-step is perturbed, so it
+    cannot see these. Pin them DIRECTLY: implement classical RK4
+    independently inside the test (do not call _rk4_step in the reference --
+    that would be circular) and assert _rk4_step reproduces it to tight
+    tolerance for a single step, on a real PBPK state. Use a smooth ODE so
+    the comparison is exact to roundoff. A perturbation of dt/2 or of the
+    2*k2 weighting must make this fail.
+
+    TASK 2 - PIN THE METZLER DT-BOUND FALLBACKS (kills three: 158, 160, 176).
+
+    calculate_max_stable_dt returns a FLOAT that its callers compare against
+    dt. Its three early returns are all untested, and they are the dangerous
+    ones: a `break_return` mutant there makes the function return None
+    instead of 0.01, so `dt <= bound` would raise TypeError or, worse, be
+    bypassed. The three paths are:
+      158  the `except TypeError` fallback when CL/ka cannot be float()ed
+      160  the fallback when Q, V or Kp is missing
+      176  the fallback when no positive candidate survives filtering
+    Drive each one and assert the result is the FLOAT 0.01, not None --
+    assert the type as well as the value, since returning None is precisely
+    the mutant. Also assert callers still behave: assert_dt_stable must
+    accept dt=0.01 under those same degenerate params and still reject a dt
+    that exceeds the bound.
+
+    TASK 3 - PIN THE organ_network FALLBACK SPEC (kills two: 165, 166).
+
+    When `organ_network` is absent from params, calculate_max_stable_dt
+    synthesises a spec inline ({"gut": 0, "central": 2, "elim": n-1,
+    "perfused": ...}). That path is untested. Call the bound with params
+    that omit `organ_network` and assert the resulting bound equals the bound
+    the EXPLICIT equivalent network produces -- i.e. the inline fallback must
+    agree with organ_indices for the same layout. If it disagrees, the
+    fallback is wrong and the test should say so.
+
+    TASK 4 - PIN _get's except BRANCH (kills one: 55).
+
+    `_jacobian_diagonal` defines a nested `_get(arr, idx)` whose `except`
+    branch does `return float(arr)`. It is reached when
+    `_np.asarray(arr).ravel()[idx]` raises but `float(arr)` succeeds -- e.g. a
+    scalar (0-d) where an index > 0 is requested. Drive _jacobian_diagonal
+    with such a params dict and assert the diagonal entry is the scalar's
+    float value, so the fallback is observed rather than bypassed.
+
+    TASK 5 - RECORD THE TWO PROVABLY-EQUIVALENT MUTANTS.
+
+    188:4 and 220:4 are `break_return` on the trailing `return None` of
+    `assert_dt_stable` and `_assert_batch_dt_stable`. Both are annotated
+    `-> None`, and every other path in each either returns or raises, so the
+    bare `return` the mutant produces is indistinguishable from
+    `return None`. Add them to the `equivalent:` list in
+    missions/tri-repo-full-stack-gate.yaml WITH a comment carrying that
+    argument, matching the style of the existing entries.
+
+    Add NO other suppression. In particular do NOT suppress anything in
+    calculate_max_stable_dt, _rk4_step, _get, or the multi-dose solvers: those
+    are real gaps that tests must close, and suppressing them would trade a
+    known weakness for an unenforced claim. Do not weaken or edit any
+    existing test assertion.
+
+    TASK 6 - REPORT HONESTLY.
+
+    In your final message give the before/after kill rate for fixed_step.py
+    against test_fixed_step.py, measured with the WORKING harness, and list
+    which specific previously-surviving mutants are now killed. State plainly
+    that the multi-dose cluster is still open.
+context:
+  - "Honest baseline: fixed_step.py vs test_fixed_step.py = 0.5496, killed 72/131, 59 survivors"
+  - "The tether-cwd invocation of tools/mutation_killrate.py errors at collection (no numpy in that venv) and reports a vacuous 1.0000; cwd=VeriTrial with PYTHONPATH=src and the system python3 is the only working invocation"
+  - "fixed_step.py:40-47 documents why the Metzler generator is assembled per-index from the network; it is load-bearing prose, not cleanup"
+  - "jax must be imported lazily in tests: insilico_trial/__init__.py sets JAX_ENABLE_X64 and jax caches it at its own first import, and isort hoists `import jax` above `from insilico_trial...`"
+  - "The multi-dose solvers account for roughly 32 of the 59 survivors and are explicitly out of scope here"
+workspace_repos:
+  - "../VeriTrial"
+  - "../QED"
+constraints:
+  - "DO NOT modify fixed_step.py or solvers.py - tests and the mission YAML only"
+  - "Only 188:4 and 220:4 may be added to the `equivalent:` list, and only with the documented proof"
+  - "DO NOT suppress any mutant in calculate_max_stable_dt, _rk4_step, _get, or the multi-dose solvers"
+  - "DO NOT import jax at module level in any test file"
+  - "DO NOT weaken or delete any existing test expectation"
+  - "No sorry axioms in any QED output; no jnp.maximum clamping"
+  - "All work remains uncommitted in the working tree until tether reports success"
+verification:
+  clean_room: false
+  commands:
+    - "env PYTHONPATH=../VeriTrial/src python3 -m ruff check ../VeriTrial/src/insilico_trial/tests/test_fixed_step.py"
+    - "env PYTHONPATH=../VeriTrial/src python3 -c \"import os, sys, pytest; os.chdir(os.path.join(os.getcwd(), '../VeriTrial')); sys.exit(pytest.main(['-q', '-p', 'no:cacheprovider', 'src/insilico_trial/tests/test_fixed_step.py']))\""
+    # x64 guard: a module-level `import jax` would silently drop the suite to
+    # float32 and turn a pre-existing passing test into a 1.01e+03 failure.
+    - "env PYTHONPATH=../VeriTrial/src python3 -c \"import os,sys; os.chdir('../VeriTrial'); sys.path.insert(0,'src/insilico_trial/tests'); import test_fixed_step, jax; assert jax.config.jax_enable_x64, 'x64 DISABLED: something imported jax before insilico_trial'; print('x64 enabled during the suite')\""
+    # The mutation sweep with a WORKING harness. Real teeth, not a vanity
+    # number: the specific safety-critical lines must leave the survivor list,
+    # and the multi-dose lines must still be IN it (i.e. do not fake closure).
+    - "env PYTHONPATH=../VeriTrial/src python3 -c \"import os,sys,subprocess,re; os.chdir('../VeriTrial'); e=dict(os.environ); e['PYTHONPATH']='src'; r=subprocess.run([sys.executable,'../tether/tools/mutation_killrate.py','--repo-root','.','--target','src/insilico_trial/pbpk/fixed_step.py','--suite','src/insilico_trial/tests/test_fixed_step.py'],capture_output=True,text=True,env=e); out=r.stdout+r.stderr; open('/tmp/kr7.log','w').write(out); m=re.search(r'([0-9.]+)\\s+\\(killed', out); rate=float(m.group(1)); print(out.splitlines()[0]); surv=out.split('surviving mutants:')[-1]; gone=[l for l in ('241:','242:','243:','158:','160:','176:','55:','165:','166:') if l not in surv]; still=[l for l in gone if l not in surv]; assert len(gone)==9, 'expected the 9 safety-critical lines to be absent from the survivor list; still surviving: '+str([l for l in gone if l in surv]); assert rate>=0.62, 'kill rate %.4f below the honest floor 0.62 (baseline 0.5496)'%rate; assert '555:' in surv or '560:' in surv or '661:' in surv, 'the multi-dose cluster vanished from the survivor list, which cannot be right: this mission did not touch it'; print('STAGE7 OK: rate %.4f, safety-critical lines cleared, multi-dose still open'%rate)\""
+    # The solver sources must be untouched.
+    - "python3 -c \"import subprocess; d=subprocess.run(['git','-C','../VeriTrial','diff','--name-only'],capture_output=True,text=True).stdout.split(); src={'src/insilico_trial/pbpk/fixed_step.py','src/insilico_trial/pbpk/solvers.py'}; bad=[f for f in d if f in src]; assert not bad, 'solver sources modified: '+str(bad); print('fixed_step.py and solvers.py untouched')\""
+    # Only the two justified suppressions may have been added.
+    - "python3 -c \"import re; from pathlib import Path; t=Path('missions/tri-repo-full-stack-gate.yaml').read_text(); eq=t.split('equivalent:')[1].split('commands:')[0]; fs=[e for e in re.findall(r'export_pbpk_to_qed|fixed_step', eq)]; new=[l.strip() for l in eq.splitlines() if 'fixed_step.py:' in l and not l.strip().startswith('#')]; assert len(new)==2, 'expected exactly 2 new fixed_step.py suppressions, found: '+str(new); assert all(any(k in n for k in ('188:','220:')) for n in new), 'a suppression other than 188/220 was added: '+str(new); assert 'provably' in eq or 'indistinguishable' in eq, 'no proof recorded in the equivalent: block'; print('exactly 188/220 suppressed, with justification')\""
+  timeout_seconds: 3600
+mutation:
+  enabled: false
+review:
+  enabled: true
+  required: true
+  adapter: opencode
+  retry_on_rejection: true
+recovery:
+  max_attempts: 1
+git_state_guard: true
+budget:
+  max_wall_seconds: 14400
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "--auto", "-m", "opencode/space-bunny-free", "{prompt}"]
+    timeout_seconds: 3600
