@@ -127,6 +127,15 @@ verification:
       - "../VeriTrial/scripts/verify_formal_gate.py:509:4"
       - "../VeriTrial/scripts/verify_formal_gate.py:813:45"
       - "../tether/src/tether/cleanroom.py:254:56"
+      # VeriTrial PBPK integrator (src/insilico_trial/pbpk/fixed_step.py):
+      # - 188:4, 220:4 break_return on the trailing `return None` of
+      #   assert_dt_stable / _assert_batch_dt_stable: both are annotated
+      #   `-> None` and every other path in each either returns or raises, so
+      #   the bare `return` the mutant produces is indistinguishable from the
+      #   `return None` it replaces -- same object, same contract, provably
+      #   behavior-preserving.
+      - "../VeriTrial/src/insilico_trial/pbpk/fixed_step.py:188:4"
+      - "../VeriTrial/src/insilico_trial/pbpk/fixed_step.py:220:4"
   commands:
     - "python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --lean-out ../QED/VeriTrialExport.lean --out /tmp/pbpk_lemmas.txt"
     - "python3 ../VeriTrial/scripts/rebuild_qed_oleans.py"
