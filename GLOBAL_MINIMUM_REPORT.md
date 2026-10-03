@@ -1380,3 +1380,56 @@ tree dirty, `tests/test_multirepo_capture.py` fails 27 tests — the
 git-state-guard tests correctly refuse to certify an unpinned tree. After the
 ledger was committed: **822 passed**. The failures were the guard working, not
 a regression, and were never worth "fixing" by relaxing the guard.
+
+## 2026-10-02, third pass: `make typecheck` is green
+
+`make typecheck` runs `mypy src/insilico_trial`, which checks the tests and the
+scripts as well as the package. It had been **red since before this work
+started** — 12 errors, none of them mine, all of them left in place. Fixed in
+`be5ba0d`. Package total **12 → 0**.
+
+| file | error | fix |
+|---|---|---|
+| `verify_formal_gate.py` | `no-untyped-def` | `_sub`'s defaulted `arr`/`prefix` args were unannotated |
+| `verify_formal_gate.py` | `attr-defined` | `ast.comprehension.target` is an `expr`, not a `Name`; bound and narrowed with `isinstance`, which also makes a tuple-target comprehension **skip** rather than raise `AttributeError` |
+| `export_pbpk_to_qed.py` | `misc` | `re.sub`'s callable overload leaves a bare `lambda` uninferrable; the array-flattening repl is now a named function taking the prefix as a defaulted arg |
+| `export_pbpk_to_qed.py` | `assignment` + `unreachable` | `expr` was rebound from `str` to `str \| None`; a separate `body` variable fixes both, since the `None` guard reading as unreachable was a symptom of the same shadowing |
+| `export_pbpk_to_qed.py` | `no-any-return` | `bool(simplify(total) == 0)` — sympy is untyped and `Any` was leaking past the declared `bool` |
+| `export_pbpk_to_qed.py` | `unused-ignore` ×1, `test_bridge_mutation_fast.py` ×1 | two stale `# type: ignore[import-untyped]` on sympy imports, suppressing nothing |
+| `test_fixed_step.py` ×3 | `attr-defined`/`arg-type`/`call-overload` | a heterogeneous `spec` literal inferred as `dict[str, object]`; annotated `dict[str, Any]` |
+
+### Verified behavior-preserving, not assumed
+
+These edits touch the formal gate, so the gate was re-run rather than trusted:
+
+- Fin 6 **9/9**, Fin 14 + saturable **25/25**, both FORMAL GATE PASSED
+- A Fin 14 file verified against `--fin-n 6` still **fails closed**
+- An injected `sorry` still **fails closed, rc=1**
+- Exported Lean: **0 `sorry`, 0 `sorryAx`**; axioms exactly
+  `[propext, Classical.choice, Quot.sound]`
+- 25/25 trace SHAs well-formed 64-hex
+- **Lemma text and Lean export are BYTE-IDENTICAL** to the pre-change scripts
+  at both Fin 6 and Fin 14
+
+263 passed, `ruff` clean on `src`. (`scripts/` carries 59 `ruff` findings, but
+`make lint` is scoped to `ruff check src/insilico_trial`; that count is
+identical at `db6d1ad` and is out of the declared lint scope.)
+
+### Ledger
+
+| repo | HEAD | dirty | sorry_free |
+|---|---|---|---|
+| tether | `e65f4a0` (this section's commit is its child) | false | `n/a` |
+| QED | `8207365` | false | **true** |
+| VeriTrial | `be5ba0d` | false | **true** |
+
+`SYSTEM_STATE.json` merkle root: `53eeb825fbe6e246358ff5de2fe3b0377e8bb0003037dbd44ce5ec1c996f595a`
+Report / `regulatory_provenance.json` merkle root: `841c3e0915ee1cda42e1ab487fd8a1b776624db6373fb953b6bf12d947077e11`
+
+Worth recording: `make report` does **not** refresh the provenance chain.
+`build_regulatory_provenance` is called from `cmd_validate`, after the
+fail-closed formal gate has passed, so the root only ever attests to a
+validated run. Running `make report` alone leaves the old `git_shas` in place —
+which is exactly the staleness recorded two sections up, and a second way to
+attribute results to the wrong commit. Refreshed here with a full
+`make validate`, so the attestation now names `be5ba0d` for VeriTrial.
