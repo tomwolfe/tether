@@ -280,4 +280,17 @@ adapters:
     # is what actually SIGTERM'd the agent mid-run on 2026-09-29 (usage.exit_code
     # -15 at elapsed 1800.055 s) even though all 9 verification commands had
     # already exited 0. It is a harness budget, not a correctness signal.
-    timeout_seconds: 3600
+    #
+    # Raised 3600 -> 5400 on 2026-10-02 for the SAME failure a second time:
+    # session fd39f002423f was SIGTERM'd at usage.elapsed_seconds 3600.04 with
+    # all 11 verification commands already exited 0, and the retry finished its
+    # agent phase in 576.7 s. So the ceiling was not "nearly enough" -- the
+    # agent phase is simply variable, and pinning it to a round number that the
+    # verification ladder also uses guarantees a coin flip.
+    #
+    # Only the adapter's own value moves. command_timeout_seconds stays 3600 in
+    # tether.yaml because the adapter reads THIS setting first
+    # (adapters/command.py: `timeout_seconds` else `default_timeout`), so the
+    # global is untouched and no gate is loosened: this bounds how long the
+    # MODEL may think, not what verification is allowed to accept.
+    timeout_seconds: 5400
