@@ -40,11 +40,18 @@ constraints:
   - "If the QED suite fails, the whole mission fails (VeriTrial must not be certified on a broken multiplier)"
   - "Every exported lemma MUST verify; a single failure fails the whole mission"
   - "Keep all changes backward compatible with existing VeriTrial simulations"
-# QED is a sibling repo reached through ../QED, so declare it rather than
-# letting one command's relative path reach it by accident: the workspace
-# checkpoint (and its dirty-state gate) then covers QED as well as VeriTrial.
+# Both sibling repos are reached through relative paths, so declare them rather
+# than letting one command's relative path reach them by accident: the workspace
+# checkpoint (and its dirty-state gate) then covers QED AND VeriTrial -- which is
+# what the two halves of this gate actually certify.
 workspace_repos:
   - "../QED"
+  # VeriTrial is declared for the same reason QED is, and it is the repo whose
+  # LIVE model.py decides the lemma set: without this, an uncertified edit to
+  # src/insilico_trial/pbpk/model.py is invisible to the dirty-state gate and a
+  # mid-session HEAD move there is invisible to git_state_guard, while commands
+  # 3/4 and every export probe below go on certifying whatever is on disk.
+  - "../VeriTrial"
 verification:
   # Orchestration across two sibling repos: commands run in the real tree and
   # reference ../QED, so a copied clean-room would be incomplete. The mission
@@ -78,10 +85,19 @@ verification:
     #     enforced formal gate, which re-derives the live lemmas, refuses any
     #     drift, and proves every lemma with QED (no sorry).
     #
-    #     PYTHONPATH=src keeps the bridge and the gate reading THIS checkout's
-    #     src/ rather than the host's editable install of insilico_trial, which
-    #     points at whatever VeriTrial tree the host happens to carry.
-    - "env PYTHONPATH=src python3 scripts/export_pbpk_to_qed.py --out /tmp/pbpk_lemmas.txt"
+    #     PYTHONPATH=../VeriTrial/src keeps the bridge and the gate reading the
+    #     SIBLING VeriTrial checkout's src/ rather than the host's editable
+    #     install of insilico_trial, which points at whatever VeriTrial tree the
+    #     host happens to carry. Both script paths are ../VeriTrial/... because
+    #     this mission runs with project_dir = the tether checkout that owns
+    #     missions/, so cwd is the tether root; the VeriTrial scripts resolve
+    #     their own model/lemma/QED paths from __file__, never from cwd. A bare
+    #     `scripts/export_pbpk_to_qed.py` therefore died with
+    #     "can't open file /.../tether/scripts/export_pbpk_to_qed.py" (rc=2)
+    #     and the whole application layer was never certified -- the same
+    #     ../VeriTrial prefix tri-repo-full-stack-gate.yaml uses for the same
+    #     reason.
+    - "env PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --out /tmp/pbpk_lemmas.txt"
     #     --fin-n is REQUIRED, not defaulted (verify_formal_gate.py declares it
     #     required=True): the emitted lemma set is a function of the organ
     #     network -- one Metzler and one boundary-inflow invariant per perfused
@@ -92,46 +108,59 @@ verification:
     #     --strict is the fail-closed mode: it makes a skipped Mathlib-dependent
     #     symbolic lemma a failure rather than a quiet degradation. (It is also
     #     the default, but stating it keeps the guarantee readable here.)
-    - "env PYTHONPATH=src python3 scripts/verify_formal_gate.py /tmp/pbpk_lemmas.txt --fin-n 6 --strict"
+    - "env PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/verify_formal_gate.py /tmp/pbpk_lemmas.txt --fin-n 6 --strict"
     #     No --lean-out here, unlike the clean-room formal-gate mission: this
     #     mission runs against the LIVE tree, so emitting would overwrite
     #     QED's committed VeriTrialExport.lean (currently the Fin 14 artifact)
     #     and dirty a repo the mission must leave alone. The gate still
     #     rebuilds QED's oleans from source and axiom-checks whatever export
     #     file QED ships, so nothing is certified against a stale .olean.
-  assertions:
+  probes:
+    # The two formal-spec checks that used to be `assertions:` are now the
+    # first two probes, one per original assertion. check_assertions walks
+    # project_dir with os.walk and glob-matches paths RELATIVE to it
+    # (verification.py:143-155), so it structurally cannot reach a sibling
+    # repo: `formal_specs/pbpk_mass_conservation.tex` under the tether root
+    # matches no file at all ("no files match ..."), which is a false negative
+    # about a VeriTrial file, not a real finding. A probe asserts on a
+    # command's OUTPUT and runs with cwd=project_dir, so the same content
+    # check is expressible against ../VeriTrial. Missing file => non-zero rc
+    # and no marker printed => the probe fails, still fail-closed.
     # The formal spec must document the parametric mass-conservation identity
     # (what the bridge actually emits -- the numeric witnesses it used to
     # assert are gone, superseded by this lemma).
-    - path: "formal_specs/pbpk_mass_conservation.tex"
-      contains: "Lemma 3c"
+    - command: "python3 -c \"import pathlib; t = pathlib.Path('../VeriTrial/formal_specs/pbpk_mass_conservation.tex').read_text(); print('SPEC_HAS_LEMMA_3c' if 'Lemma 3c' in t else 'SPEC_MISSING_LEMMA_3c')\""
+      contains: "SPEC_HAS_LEMMA_3c"
     # The formal spec must also document the boundary inflow invariant.
-    - path: "formal_specs/pbpk_mass_conservation.tex"
-      contains: "Lemma 4"
-  probes:
+    - command: "python3 -c \"import pathlib; t = pathlib.Path('../VeriTrial/formal_specs/pbpk_mass_conservation.tex').read_text(); print('SPEC_HAS_LEMMA_4' if 'Lemma 4' in t else 'SPEC_MISSING_LEMMA_4')\""
+      contains: "SPEC_HAS_LEMMA_4"
+    # Every export probe below addresses the bridge as ../VeriTrial/scripts/
+    # for the same reason commands 3/4 do (project_dir is the tether root),
+    # and carries the same PYTHONPATH so the bridge reads the sibling
+    # checkout's src/ rather than the host's editable install.
     # One Metzler positivity certificate per perfused compartment -- the count
     # alone is not the invariant, so assert the certificates themselves.
-    - command: "python3 scripts/export_pbpk_to_qed.py"
+    - command: "env PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/export_pbpk_to_qed.py"
       contains: "Q_liver / (V_liver * Kp_liver) > 0"
-    - command: "python3 scripts/export_pbpk_to_qed.py"
+    - command: "env PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/export_pbpk_to_qed.py"
       contains: "Q_periph / (V_periph * Kp_periph) > 0"
-    - command: "python3 scripts/export_pbpk_to_qed.py"
+    - command: "env PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/export_pbpk_to_qed.py"
       contains: "Q_effect / (V_effect * Kp_effect) > 0"
     # Boundary inflow invariants (non-negative orthant), parametric in the
     # central compartment rather than closed numeric witnesses.
-    - command: "python3 scripts/export_pbpk_to_qed.py"
+    - command: "env PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/export_pbpk_to_qed.py"
       contains: "(Q_liver / (V_central * Kp_liver)) * A_central >= 0"
-    - command: "python3 scripts/export_pbpk_to_qed.py"
+    - command: "env PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/export_pbpk_to_qed.py"
       contains: "(Q_effect / (V_central * Kp_effect)) * A_central >= 0"
     # The column-sum certificate: the parametric mass-conservation sum.
-    - command: "python3 scripts/export_pbpk_to_qed.py"
+    - command: "env PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/export_pbpk_to_qed.py"
       contains: "(-(CL + Ql + Qp + Qe)/Vc)"
     # The parametric mass-dissipation sum uses compartment-specific symbolic
     # rates (ka_rate), not the reflexive gut-absorption identity.
-    - command: "python3 scripts/export_pbpk_to_qed.py"
+    - command: "env PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/export_pbpk_to_qed.py"
       contains: "ka_rate * A_gut"
     # The elimination/mass-dissipation inequality.
-    - command: "python3 scripts/export_pbpk_to_qed.py"
+    - command: "env PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/export_pbpk_to_qed.py"
       contains: "CL * C_p > 0"
     # The export bridge must emit exactly 9 parametric lemmas. This is a
     # python3 -c command rather than a pipeline because Tether runs commands
@@ -139,7 +168,10 @@ verification:
     # literal arguments (rc=2, empty stdout). `equals` is not a ProbeSpec
     # field either -- an unknown key is silently dropped, so that probe
     # asserted nothing at all. `matches: ^9$` is the field that exists.
-    - command: "python3 -c \"import pathlib, subprocess; p = '/tmp/tether_qed_veritrial_lemmas_probe.txt'; subprocess.run(['python3', 'scripts/export_pbpk_to_qed.py', '--out', p], check=True); print(len(pathlib.Path(p).read_text().splitlines()))\""
+    # The subprocess inherits this probe's env (PYTHONPATH=../VeriTrial/src,
+    # resolved against the tether-root cwd) and cwd, so the bridge resolves
+    # the sibling path below exactly as commands 3/4 do.
+    - command: "env PYTHONPATH=../VeriTrial/src python3 -c \"import pathlib, subprocess; p = '/tmp/tether_qed_veritrial_lemmas_probe.txt'; subprocess.run(['python3', '../VeriTrial/scripts/export_pbpk_to_qed.py', '--out', p], check=True); print(len(pathlib.Path(p).read_text().splitlines()))\""
       matches: "^9$"
     # The no-sorry claim, asserted on the gate's OWN OUTPUT rather than left
     # to the exit code alone: "all 9 lemmas verified by QED (no sorry)" is the
@@ -149,7 +181,7 @@ verification:
     # This re-runs the full gate, hence the ~3 min: it is the one place the
     # mission proves the application layer actually certified, not merely that
     # a script returned 0.
-    - command: "env PYTHONPATH=src python3 -c \"import subprocess, sys; subprocess.run([sys.executable, 'scripts/export_pbpk_to_qed.py', '--out', '/tmp/tether_qed_veritrial_nosorry.txt'], check=True, stdout=subprocess.DEVNULL); g = subprocess.run([sys.executable, 'scripts/verify_formal_gate.py', '/tmp/tether_qed_veritrial_nosorry.txt', '--fin-n', '6', '--strict'], capture_output=True, text=True); sys.stdout.write(g.stdout + g.stderr); print('gate_rc=%d' % g.returncode)\""
+    - command: "env PYTHONPATH=../VeriTrial/src python3 -c \"import subprocess, sys; subprocess.run([sys.executable, '../VeriTrial/scripts/export_pbpk_to_qed.py', '--out', '/tmp/tether_qed_veritrial_nosorry.txt'], check=True, stdout=subprocess.DEVNULL); g = subprocess.run([sys.executable, '../VeriTrial/scripts/verify_formal_gate.py', '/tmp/tether_qed_veritrial_nosorry.txt', '--fin-n', '6', '--strict'], capture_output=True, text=True); sys.stdout.write(g.stdout + g.stderr); print('gate_rc=%d' % g.returncode)\""
       contains: "all 9 lemmas verified by QED (no sorry)"
     # Fail-closed negative control: injecting a `sorry` lemma must make the
     # gate REFUSE the file, never certify around it. Without this the mission
@@ -157,7 +189,7 @@ verification:
     # rejecting sorry would still satisfy the probe above. Asserted on the
     # fail-closed message plus a non-zero rc, so a gate that printed the
     # message and exited 0 does not pass.
-    - command: "env PYTHONPATH=src python3 -c \"import pathlib, subprocess, sys; p = '/tmp/tether_qed_veritrial_sorry_lemmas.txt'; subprocess.run([sys.executable, 'scripts/export_pbpk_to_qed.py', '--out', p], check=True, stdout=subprocess.DEVNULL); f = pathlib.Path(p); f.write_text(f.read_text() + 'sorry\\n'); g = subprocess.run([sys.executable, 'scripts/verify_formal_gate.py', p, '--fin-n', '6', '--strict'], capture_output=True, text=True); sys.stdout.write(g.stdout + g.stderr); print('gate_rc=%d' % g.returncode)\""
+    - command: "env PYTHONPATH=../VeriTrial/src python3 -c \"import pathlib, subprocess, sys; p = '/tmp/tether_qed_veritrial_sorry_lemmas.txt'; subprocess.run([sys.executable, '../VeriTrial/scripts/export_pbpk_to_qed.py', '--out', p], check=True, stdout=subprocess.DEVNULL); f = pathlib.Path(p); f.write_text(f.read_text() + 'sorry\\n'); g = subprocess.run([sys.executable, '../VeriTrial/scripts/verify_formal_gate.py', p, '--fin-n', '6', '--strict'], capture_output=True, text=True); sys.stdout.write(g.stdout + g.stderr); print('gate_rc=%d' % g.returncode)\""
       contains: "FORMAL GATE FAILED (fail-closed)"
       matches: "gate_rc=[1-9]"
 # No code changes are produced by this orchestration mission; mutation testing
@@ -187,11 +219,11 @@ adapter: mock
 # cleanly and then ran with the guard OFF.
 #
 # ON for a certifying gate. The P0 dirty-tree abort already refuses to start
-# when VeriTrial or QED (workspace_repos: ../QED, folded into
-# checkpoint.dirty via workspace_is_dirty) is dirty, so uncertified local edits
-# cannot be certified; this key adds the second half the P0 gate cannot see --
+# when tether, VeriTrial or QED (workspace_repos, folded into checkpoint.dirty
+# via workspace_is_dirty) is dirty, so uncertified local edits cannot be
+# certified; this key adds the second half the P0 gate cannot see --
 # a HEAD that moves mid-session (history rewritten, the sibling QED HEAD
-# advanced to a different tactic policy) is a violation after every send,
-# because commands 1a/1b and the gate would then have certified a different
-# tree than the one that started the run.
+# advanced to a different tactic policy, VeriTrial's live model.py rewritten)
+# is a violation after every send, because commands 1a/1b and the gate would
+# then have certified a different tree than the one that started the run.
 git_state_guard: true
