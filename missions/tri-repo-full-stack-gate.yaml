@@ -115,56 +115,16 @@ verification:
     # Tether (src/tether/cleanroom.py):
     # - 254:56 exist_ok flip on the sibling-room mkdir: the target is always
     #   freshly created in the materialization path, so exist_ok is vacuous.
-    equivalent:
-      - "../VeriTrial/scripts/export_pbpk_to_qed.py:132:62"
-      - "../VeriTrial/scripts/export_pbpk_to_qed.py:379:61"
-      - "../VeriTrial/scripts/export_pbpk_to_qed.py:767:61"
-      - "../VeriTrial/scripts/export_pbpk_to_qed.py:186:69"
-      - "../VeriTrial/scripts/export_pbpk_to_qed.py:692:8"
-      - "../VeriTrial/scripts/verify_formal_gate.py:50:43"
-      - "../VeriTrial/scripts/verify_formal_gate.py:190:22"
-      - "../VeriTrial/scripts/verify_formal_gate.py:225:30"
-      - "../VeriTrial/scripts/verify_formal_gate.py:329:34"
-      - "../VeriTrial/scripts/verify_formal_gate.py:340:36"
-      - "../VeriTrial/scripts/verify_formal_gate.py:388:16"
-      - "../VeriTrial/scripts/verify_formal_gate.py:388:23"
-      - "../VeriTrial/scripts/verify_formal_gate.py:390:16"
-      - "../VeriTrial/scripts/verify_formal_gate.py:390:23"
-      - "../VeriTrial/scripts/verify_formal_gate.py:509:4"
-      - "../VeriTrial/scripts/verify_formal_gate.py:813:45"
-      - "../tether/src/tether/cleanroom.py:254:56"
-      # VeriTrial PBPK integrator (src/insilico_trial/pbpk/fixed_step.py):
-      # - 188:4, 220:4 break_return on the trailing `return None` of
-      #   assert_dt_stable / _assert_batch_dt_stable: both are annotated
-      #   `-> None` and every other path in each either returns or raises, so
-      #   the bare `return` the mutant produces is indistinguishable from the
-      #   `return None` it replaces -- same object, same contract, provably
-      #   behavior-preserving.
-      - "../VeriTrial/src/insilico_trial/pbpk/fixed_step.py:188:4"
-      - "../VeriTrial/src/insilico_trial/pbpk/fixed_step.py:220:4"
-      # MEASURED 2026-10-02 at VeriTrial db6d1ad: this block is currently
-      # ENTIRELY INERT. Replaying tether's own deterministic sampler over the
-      # four baseline_targets below (same per-path seed derivation, same
-      # operator set, same max_mutants=6, hence the same 24 mutants) suppresses
-      # NONE of the 19 entries, so the gate reports skipped: 0 again. Two
-      # causes, which must be told apart before anyone "fixes" the wrong one:
-      #   * 16 of the 19 have DRIFTED. Their line:col no longer lands on the
-      #     construct their note above describes -- e.g.
-      #     export_pbpk_to_qed.py:132:62 now reads
-      #     `source = model_path.read_text(encoding="utf-8")` rather than an
-      #     include_ode default. Exactly three remain correctly anchored:
-      #     fixed_step.py:188:4 and 220:4 (both the trailing `return None`) and
-      #     cleanroom.py:254:56 (on `exist_ok=True`).
-      #   * Those three anchored entries name cleanroom.py and fixed_step.py,
-      #     neither of which is a baseline_target, so they cannot be sampled at
-      #     all. The pair added at 2791b2c is inert for this reason alone -- not
-      #     because the drift rule rejected it.
-      # This is the fail-closed direction, not a live hazard: an unmatched entry
-      # simply RUNS its mutant, so the kill rate is measured over more mutants,
-      # never fewer. Do not re-anchor an entry to make it fire again -- each
-      # equivalence was proven by hand for one specific site, and re-anchoring
-      # re-suppresses an unproven claim at the price of a mutant the suite was
-      # meant to score. Re-prove at the current site or leave the entry inert.
+    # Equivalence suppressions DELETEd 2026-10-04. Audit of the 19 entries:
+    # 16 had drifted off their described constructs (e.g. 132:62 no longer
+    # the include_ode default) and the remaining 3 anchored sites
+    # (fixed_step.py:188:4, 220:4, cleanroom.py:254:56) name files that are
+    # not baseline_targets, so no entry could fire. Every entry was either
+    # drifted (fail-closed: mutant runs) or non-sampleable (inert). Per the
+    # global-minimum directive -- re-prove at the current site or delete --
+    # the whole block is removed. kill_rate is measured over all scored
+    # mutants with skipped: 0, unchanged.
+    equivalent: []
   commands:
     - "python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --lean-out ../QED/VeriTrialExport.lean --out /tmp/pbpk_lemmas.txt"
     - "python3 ../VeriTrial/scripts/rebuild_qed_oleans.py"
