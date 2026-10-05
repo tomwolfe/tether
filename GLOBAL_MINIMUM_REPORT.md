@@ -1766,6 +1766,69 @@ The exemption is deliberately narrow: only the host's `head`. Its `dirty`,
 would exempt the one row able to hide real drift. QED's and VeriTrial's heads
 are inside the root and still move it, pinned by tests on both sides.
 
+### Gate run `4f90c3fc7b5b` — failed, and it found a real flaw in the above
+
+Run 2026-10-05 from `bd72297`. **status failed**, 13/14 verification commands
+passed, `recovery_attempts: []`, adapter hit its 5400 s budget (exit 130) and
+was killed mid-work. The single failure was `--check` itself, reporting
+`tether.dirty: committed=False live=True` — because I launched the gate with
+`missions/tri-repo-full-stack-gate.yaml` modified but uncommitted. That was my
+operational error; the check was right.
+
+The valuable part is what the run's agent found about the section above.
+
+**Placing `--check` first fixes the green pass and breaks the mutation tier.**
+Measured on a staged room:
+
+| condition | `--check` |
+|---|---|
+| fresh room | exit 0 |
+| after the Fin 6 export rewrite | exit 1 |
+| …with **no mutation applied at all** | exit 1 |
+
+`run_mutation_testing` re-runs the ladder once per mutant in the *same*
+already-rewritten room — it restores only the mutated file's own bytes, and the
+orchestrator re-materializes per **attempt**, not per mutant. So from mutant 1
+onward command 1 is red before any mutation exists, and `summarize()` blames the
+first failing command. Every mutant would be scored killed by a check that never
+examined it: `kill_rate 1.0` over the `0.8` floor, **measuring nothing**.
+
+That is the inverse of the twice-documented trap ("the gate mutated X but only
+ran Y"). Here the suite kills all mutants for a reason unrelated to any of them.
+The hand-run 12/12 above was therefore *not* sufficient evidence for putting that
+command in this ladder, because the battery it was scored against excluded
+command 1 entirely.
+
+**The proposed wrapper trades a red gate for a wrong one.** It does fix
+idempotence — three consecutive passes all green. But it issues
+`git checkout -- VeriTrialExport.lean` against `../QED` and never restores it, so
+commands 3–5 afterwards rebuild and certify **Fin 14** while the gate believes
+it certified Fin 6. Both suites exit 0. The agent described this as a blind spot
+in `--check`; it is not. It means the check **destroys the input to later
+commands**, and the gate goes green on the wrong artifact. That is strictly
+worse than a red gate.
+
+**What replaced it.** `--check` now fingerprints every tracked and untracked file
+in all three repos before and after its comparison, and fails loud if anything
+moved. Drift detection cannot see this class of fault — after the revert the tree
+merely looks clean. This asks the separate question "did the tree move under
+me?", and it is what converts a confidently-wrong verdict into a loud failure.
+
+Getting the tests to genuinely pin that took four attempts, each of which passed
+while measuring nothing: a `sleep(0.02)` (one fingerprint takes ~73 ms, so the
+write landed *inside* the before-snapshot — all four guard mutants survived); a
+gitignored file (invisible to the fingerprint); a merely *modified* tracked file
+(flipped `dirty`, so the drift branch answered alone); and asserting only the
+exit code (with the guard disabled the exit was still 1, via drift). The tests
+now assert **which** fault is reported. Battery: **5/7** killed; the two
+survivors are provably equivalent and are recorded rather than pinned by tests
+that cannot fail.
+
+Still true after all of it: the certification remains `dbd2ba88269e`, and
+everything above is outside it. `--check` is **not** in the gate ladder as it
+stands — the command was reverted rather than shipped in a form that made the
+mutation tier meaningless.
+
 ### Merkle roots quoted in this report
 
 `65084342…` (VeriTrial dirty at `e0d5a8e`), `8a573400…` (VeriTrial committed
