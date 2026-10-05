@@ -96,6 +96,30 @@ verification:
       - "../VeriTrial/scripts/verify_formal_gate.py"
       - "../VeriTrial/src/insilico_trial/pbpk/model.py"
       - "../VeriTrial/src/insilico_trial/pd/__init__.py"
+      # ADDED 2026-10-05, and the reason is a coverage hole rather than a
+      # preference. --check (scripts/audit_system_state.py) was removed from the
+      # verification ladder in b8b906a because it cannot work inside a clean
+      # room. That left the ledger code reachable ONLY through its own test
+      # suite, and never through the mutation tier: a verify-only run falls back
+      # to this list, and this list did not include it. So the gate would keep
+      # reporting a mutation kill_rate that says nothing about the code that
+      # actually decides whether the ledger is trustworthy.
+      #
+      # Its mutants ARE killed here: the battery below runs
+      # tests/test_audit_system_state.py both in the wide command and as its own
+      # command, so a mutant that changes --check's verdict fails the suite
+      # rather than being credited to something that cannot see it. Scored
+      # offline through this harness's own sampler (same per-path sha256 seed,
+      # same MUTATION_OPERATORS, same max_mutants: 6) against that suite:
+      # 12/12 killed, 0 survived, 0 equivalent-suppressed.
+      #
+      # COST, stated rather than discovered: 5 targets x 6 = 30 sampled instead
+      # of 24, and each mutant re-runs the full ladder (~402 s measured), so
+      # roughly +40 min of verification. verification.timeout_seconds is a
+      # PER-COMMAND bound and no budget.max_wall_seconds is declared, so this
+      # cannot fail the gate on time -- it is written down because the two
+      # SIGTERMs this file records were both budget events.
+      - "scripts/audit_system_state.py"
     # Documented equivalent mutants (each proven behavior-preserving; line
     # drift fails closed by missing the match and running the mutant).
     # Export (scripts/export_pbpk_to_qed.py):
