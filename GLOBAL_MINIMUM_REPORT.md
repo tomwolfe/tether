@@ -1825,9 +1825,21 @@ survivors are provably equivalent and are recorded rather than pinned by tests
 that cannot fail.
 
 Still true after all of it: the certification remains `dbd2ba88269e`, and
-everything above is outside it. `--check` is **not** in the gate ladder as it
-stands — the command was reverted rather than shipped in a form that made the
-mutation tier meaningless.
+everything above is outside it.
+
+**`--check` is not in the gate ladder.** It was added last (`9b74ca6`), moved to
+first (`b9a8859`), and is now removed — three attempts, each reasoned and each
+broken by measurement. It cannot live in that ladder at all: the check compares
+the *committed* ledger against live state, and a clean room is dirty by
+construction (`materialize_clean_room` applies `session_dir/patch.diff` on top of
+the archive) while the mutation tier writes mutants into it. No position in the
+ladder, and no wrapping, makes "committed == live" a meaningful question inside
+the room. Run it against the **host** tree before a run instead:
+
+    python3 scripts/audit_system_state.py --check
+
+It is read-only, exits non-zero on drift, and — not being a ladder command —
+cannot be credited with a kill.
 
 ### Merkle roots quoted in this report
 

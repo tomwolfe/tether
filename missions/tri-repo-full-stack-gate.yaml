@@ -150,21 +150,50 @@ verification:
     # mutants with skipped: 0, unchanged.
     equivalent: []
   commands:
-    # FIRST, and the position is load-bearing rather than stylistic.
+    # THE LEDGER CHECK IS DELIBERATELY NOT IN THIS LADDER.
     #
-    # The committed ledger describes the COMMITTED tree. Command 1 below rewrites
-    # the host's QED/VeriTrialExport.lean to Fin 6 in the working tree -- which is
-    # this mission's documented LEDGER DUALITY, not a defect -- so by the time a
-    # late command runs, the live Lean digest legitimately differs from the
-    # committed one and --check MUST fail. Placed last (its first home, in
-    # 9b74ca6), it therefore failed on a fully green run: 13/13 commands green,
-    # then command 14 red on drift the run had caused itself.
+    # It was added in 9b74ca6 (last), moved to first in b9a8859, and is now
+    # removed. Three attempts, each fixed by reasoning and broken by measurement:
     #
-    # That is the check working, not the check being wrong -- but a check that is
-    # red on every clean run trains people to ignore it, so it runs first, where
-    # "does the committed ledger still describe this tree?" is the question
-    # actually being asked. Verified: 14/14 exit 0 with this order.
-    - "python3 scripts/audit_system_state.py --check"
+    # 1. LAST -- red on a fully green run. Command 1 rewrites the ROOM's
+    #    QED/VeriTrialExport.lean to Fin 6 (this mission's documented LEDGER
+    #    DUALITY), so by a late command the live Lean digest legitimately
+    #    differs from the committed one. 13/13 green, then command 14 red.
+    # 2. FIRST -- fixes the green pass, breaks the mutation tier, and that is
+    #    the one that matters. run_mutation_testing re-runs this whole ladder
+    #    once per mutant in the SAME already-rewritten room: it restores only
+    #    the mutated file's own bytes, and the orchestrator re-materializes per
+    #    ATTEMPT, not per mutant. Measured on a staged room -- fresh room exit
+    #    0; after the export rewrite exit 1; and with NO mutation applied at
+    #    all, still exit 1. So from mutant 1 onward this check is red before
+    #    any mutation exists, and summarize() attributes the kill to the first
+    #    failing command. Every mutant scores killed by a check that never
+    #    examined it: kill_rate 1.0 over the 0.8 floor, MEASURING NOTHING.
+    #    That is the inverse of the trap this file records twice ("mutated X
+    #    but only ran Y") -- here the suite kills all mutants for a reason
+    #    unrelated to any of them.
+    #
+    # The fix proposed by run 4f90c3fc7b5b's agent -- shelve the room's edits
+    # around the check via `git stash create` -- does restore idempotence (three
+    # consecutive passes green, measured) but reverts VeriTrialExport.lean and
+    # never puts it back, so commands 2-4 below rebuild and certify Fin 14 while
+    # the gate believes it certified Fin 6. Both exit 0. A green gate on the
+    # wrong artifact is worse than a red one, so that was not shipped either.
+    #
+    # WHY IT CANNOT LIVE HERE AT ALL. The check compares the COMMITTED ledger
+    # against live state, and a clean room is dirty by construction --
+    # materialize_clean_room extracts `git archive <checkpoint>` and then applies
+    # session_dir/patch.diff on top -- while the mutation tier writes mutants
+    # into it. There is no position in this ladder and no wrapping that makes
+    # "committed == live" a meaningful question inside the room.
+    #
+    # RUN IT OUTSIDE THE LADDER instead, against the HOST tree, before a run:
+    #
+    #     python3 scripts/audit_system_state.py --check
+    #
+    # It is read-only, exits non-zero on drift, and since it is not a ladder
+    # command it cannot be credited with a kill. Re-verify after any run that
+    # changes a repo head, a .lean file, or a sorry-freedom verdict.
     - "python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --lean-out ../QED/VeriTrialExport.lean --out /tmp/pbpk_lemmas.txt"
     - "python3 ../VeriTrial/scripts/rebuild_qed_oleans.py"
     # --fin-n is REQUIRED, not defaulted: the emitted lemma set is a function
