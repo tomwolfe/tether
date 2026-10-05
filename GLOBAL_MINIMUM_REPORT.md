@@ -1648,7 +1648,7 @@ Re-run carrying all of the above. The offline prediction matched exactly.
 | review | **approve** |
 | `sandbox_violations` | `[]` |
 | `git_state_violations` | none |
-| verification | **13/13 commands, 0 non-zero exits** |
+| verification | **13/13 commands, 0 non-zero exits** (that session's ladder; the mission file now carries 14, with the ledger check added — see the end of this report) |
 | mutation | **kill_rate 1.0 — 30/30 killed, 0 survived, 0 skipped** |
 | clean-room Fin 6 | **9/9 verified**, no `sorry` |
 | clean-room Fin 14 + saturable | **25/25 verified**, no `sorry` |
