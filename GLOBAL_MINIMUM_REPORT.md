@@ -1671,21 +1671,24 @@ asserts on content, and the content is byte-identical — only its address moved
 
 | repo | HEAD | dirty | sorry_free |
 |---|---|---|---|
-| tether | `65aacef` (this report's commit is its child) | false | `n/a` (ships no Lean) |
+| tether | `de2141e` (the ledger refresh `3bd0537` is its child) | false | `n/a` (ships no Lean) |
 | QED | `8beb690` — untouched all session, `patch_QED.diff` 0 bytes | false | **true** |
 | VeriTrial | `3d28470` — docs truth correction only | false | **true** |
 
-`SYSTEM_STATE.json` merkle root: `8a57340036cf28a1656f85bbe97704ef9b65441a5ea3c2f6003a2967ff416589`
+All three repos are clean. `SYSTEM_STATE.json` merkle root:
+`52f21c3c71620a7ce787ae7932f190ce9a0d689b628efcb13dece47fb095b943`
 
-The tether row records `65aacef` because a commit cannot contain its own sha;
-this is the same convention the earlier sections of this report use, and it is
-why the ledger is regenerated *before* the tether commit and not after. The
-VeriTrial row is exact — it was committed first precisely so the ledger could
-record a real head rather than a dirty marker.
+VeriTrial was committed *first*, deliberately, so the ledger could record a
+real head rather than a dirty marker. The tether ledger was then regenerated
+*after* its own commit, which is this report's long-standing convention: a
+committed ledger cannot contain its own sha, so it names its parent — but
+`de2141e` is a real commit and `dirty` is a fact rather than a snapshot of
+mid-work state. QED was never touched, so its row is exact.
 
-Two merkle roots appear in this report and both are correct, because they were
-measured at different times against different trees: `65084342…` (VeriTrial
-still dirty at `e0d5a8e`) and `8a573400…` (VeriTrial committed at `3d28470`).
-The Lean digests are identical in both — QED and VeriTrial ship no changed
-`.lean` bytes — so the difference is entirely the `head` and `dirty` fields
-changing, which is the ledger doing its job.
+Three merkle roots appear in this report and all three were measured at
+different times against different trees: `65084342…` (VeriTrial dirty at
+`e0d5a8e`), `8a573400…` (VeriTrial committed at `3d28470`, tether still
+dirty), and `52f21c3c…` (all three committed). The Lean digests are identical
+across all three — no `.lean` byte changed this session — so every difference
+is entirely the `head` and `dirty` fields moving, which is the ledger doing
+its job rather than a regression.
