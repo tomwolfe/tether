@@ -739,6 +739,172 @@ def test_valid_ledger_still_passes_after_the_hardening(tmp_path, monkeypatch):
     assert mod.verify() == 0
 
 
+def test_check_detects_a_caller_that_perturbs_the_tree_mid_check(
+        tmp_path, monkeypatch):
+    """Non-interference, and the regression that proves it is load-bearing.
+
+    A caller once wrapped --check in a `git checkout --` / stash dance to
+    normalise the room's tree. That produced a green check AND reverted
+    QED/VeriTrialExport.lean on the way out, so the commands after it in the
+    same ladder certified Fin 14 while the gate believed it certified Fin 6.
+    Both suites exit 0: a green gate, a wrong answer.
+
+    Drift detection cannot see this -- after the revert the tree just looks
+    clean. So the check asks a second, separate question: did the tree move
+    while I was running?
+    """
+
+    mod = _load()
+    ws = tmp_path / "ws"
+    for r in ("tether", "QED", "VeriTrial"):
+        _init_repo(ws / r)
+    monkeypatch.setattr(mod, "ROOT", ws)
+    _write_ledger(mod, ws)
+
+    target = ws / "tether" / "NOTES.md"
+    target.write_bytes(b"original\n")
+    original = target.read_bytes()
+    _git(ws / "tether", "add", "NOTES.md")
+    _git(ws / "tether", "commit", "-m", "notes")
+    _write_ledger(mod, ws)
+    # Also stage a tracked file in EACH repo. Perturbing only tether left three
+    # mutants alive: a fingerprint that ignored file CONTENT, one that walked
+    # only REPOS[:1], and one that compared before/after backwards. All three
+    # are invisible when only the first repo is disturbed.
+    siblings = {}
+    for repo_name in ("QED", "VeriTrial"):
+        p = ws / repo_name / "NOTES.md"
+        p.write_bytes(b"original\n")
+        siblings[repo_name] = (p, p.read_bytes())
+        _git(ws / repo_name, "add", "NOTES.md")
+        _git(ws / repo_name, "commit", "-m", "notes")
+    _write_ledger(mod, ws)
+
+    # Perturb a TRACKED file that the LEDGER never compares. The ledger looks
+    # only at head/dirty/sorry_free/lean_files, so editing a Markdown file
+    # moves the fingerprint without moving any ledger field.
+    #
+    # Two earlier attempts failed here and both are worth recording. A
+    # gitignored file is invisible to the fingerprint (it uses
+    # --exclude-standard), so nothing fired at all. A tracked file that was
+    # merely MODIFIED flipped `tether.dirty`, so the drift branch returned 1 on
+    # its own and the test passed with the guard disabled -- all four guard
+    # mutants survived. This one is committed first, so editing its content
+    # leaves `dirty` false: only the non-interference guard can see it.
+    real_fp = mod._tree_fingerprint
+    calls = {"n": 0}
+
+    def counting_fp():
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            target.write_bytes(original + b"<!-- touched -->\n")
+            for name, (p, orig) in siblings.items():
+                p.write_bytes(orig + b"<!-- touched -->\n")
+        return real_fp()
+
+    monkeypatch.setattr(mod, "_tree_fingerprint", counting_fp)
+    # Precondition BEFORE perturbing: the ledger must be clean, so that drift
+    # cannot be what makes verify() fail. Checked after the perturbation it
+    # would always be dirty and the assertion would be meaningless.
+    committed = json.loads((ws / "tether" / "SYSTEM_STATE.json").read_text())
+    assert not mod._diff(mod._compute(), committed), \
+        "precondition: the ledger must already be fresh"
+    try:
+        rc = mod.verify()
+        assert rc == 1, "a check whose tree moved cannot report OK"
+        # The report must name the SIBLING repos too, not just the host.
+        found = mod._tree_perturbations()
+        for name in ("QED", "VeriTrial"):
+            assert any(name in f for f in found), \
+                f"{name} must appear in the perturbation report: {found}"
+    finally:
+        target.write_bytes(original)
+        for p, orig in siblings.values():
+            p.write_bytes(orig)
+
+
+def test_perturbation_is_reported_even_when_the_ledger_is_also_stale(
+        tmp_path, monkeypatch):
+    """The guard must fire on the DRIFT path too.
+
+    This is the bug this test was written after. The non-interference check was
+    originally nested inside `if not diffs`, on the reasoning that it only
+    mattered for a clean verdict. That is backwards: a perturbed tree almost
+    always also shows drift, so the guard was skipped in exactly the case it
+    exists for. Measured -- verify() returned 0 while a file was being rewritten
+    underneath it, because the drift branch returned before the guard ran.
+
+    Perturbation and staleness are independent faults and both must be named.
+    """
+    mod = _load()
+    ws = tmp_path / "ws"
+    for r in ("tether", "QED", "VeriTrial"):
+        _init_repo(ws / r)
+    monkeypatch.setattr(mod, "ROOT", ws)
+    _write_ledger(mod, ws)
+    # Make the ledger genuinely stale at the same time: QED's head moves.
+    qed = ws / "QED"
+    (qed / "f.txt").write_text("v2\n")
+    _git(qed, "add", ".")
+    _git(qed, "commit", "-m", "advance QED")
+
+    committed = json.loads((ws / "tether" / "SYSTEM_STATE.json").read_text())
+    assert mod._diff(mod._compute(), committed), \
+        "precondition: the ledger must be stale for this test to mean anything"
+
+    # Perturb on the second fingerprint, exactly as the test above does, so the
+    # tree changes WHILE verify() runs. Calling _tree_perturbations() directly
+    # -- as the first version of this test did -- cannot catch the ordering bug,
+    # because the bug lives in verify()'s control flow, not in the helper.
+    target = ws / "tether" / "NOTES.md"
+    target.write_bytes(b"original\n")
+    _git(qed.parent / "tether", "add", "NOTES.md")
+    _git(ws / "tether", "commit", "-m", "notes")
+
+    real_fp = mod._tree_fingerprint
+    calls = {"n": 0}
+
+    def counting_fp():
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            target.write_bytes(target.read_bytes() + b"<!-- touched -->\n")
+        return real_fp()
+
+    monkeypatch.setattr(mod, "_tree_fingerprint", counting_fp)
+    # Assert WHICH fault was reported, not just the exit code. With the guard
+    # moved back inside `if not diffs`, this test still exited 1 -- via the
+    # DRIFT branch -- so the mutant survived while the suite stayed green.
+    # Drift is expected here, so exit 1 proves nothing on its own; the
+    # perturbation message must be the one that appears.
+    import io
+    import contextlib
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        rc = mod.verify()
+    assert rc == 1
+    assert "PERTURBED" in err.getvalue(), (
+        "the guard must report the perturbation, not merely the pre-existing "
+        f"drift; stderr was: {err.getvalue()[:300]}")
+    assert "STALE" not in err.getvalue(), \
+        "the perturbation must be reported BEFORE the drift report, so the " \
+        "untrustworthy verdict is the one the reader sees first"
+
+
+def test_clean_run_reports_no_perturbation(tmp_path, monkeypatch):
+    """The guard must not fire on an untouched tree.
+
+    Without this, a guard that always trips is indistinguishable from one that
+    works, and the obvious 'fix' is to delete it.
+    """
+    mod = _load()
+    ws = tmp_path / "ws"
+    for r in ("tether", "QED", "VeriTrial"):
+        _init_repo(ws / r)
+    monkeypatch.setattr(mod, "ROOT", ws)
+    _write_ledger(mod, ws)
+    assert mod.verify() == 0
+
+
 def test_write_then_check_agrees_with_the_committed_file(tmp_path, monkeypatch):
     """Round-trip: what --write produces, --check must accept.
 

@@ -142,6 +142,72 @@ def _comparable_keys(exp: dict, act: dict) -> list[str]:
     return sorted(set(exp) | set(act))
 
 
+def _tree_fingerprint() -> dict[str, str]:
+    """Digest of every tracked+untracked file in each repo, plus status.
+
+    Cheap enough to take twice: these repos are small and only tracked files
+    plus non-ignored untracked files are read.
+    """
+    fp: dict[str, str] = {}
+    for name in REPOS:
+        repo = ROOT / name
+        if not repo.is_dir():
+            fp[f"{name}:absent"] = "-"
+            continue
+        for entry in _status_entries(repo) or ["<status unavailable>"]:
+            fp[f"{name}:status:{entry}"] = ""
+        try:
+            names = _run(repo, "ls-files", "--cached", "--others",
+                         "--exclude-standard").splitlines()
+        except Exception:  # noqa: BLE001 - fingerprint is best effort
+            names = []
+        for rel in names:
+            p = repo / rel
+            try:
+                fp[f"{name}:{rel}"] = hashlib.sha256(p.read_bytes()).hexdigest()
+            except OSError as exc:
+                fp[f"{name}:{rel}"] = f"<unreadable: {exc.errno}>"
+    return fp
+
+
+#: Fingerprint taken at the start of :func:`verify`, compared on the way out.
+#: Module-level rather than a function attribute so mypy can see the type, and
+#: so the value cannot be shadowed by a rebind of the function object.
+_TREE_BEFORE: dict[str, str] | None = None
+
+
+def _tree_perturbations() -> list[str]:
+    """Changes to the workspace made *while* the check was running.
+
+    WHY THIS EXISTS. --check is documented as read-only, and a caller once
+    wrapped it in a ``git checkout --`` / stash dance to normalise the room's
+    tree before asking the question. That made the check green -- and reverted
+    QED/VeriTrialExport.lean on the way out, so the commands AFTER it in the
+    same ladder rebuilt and certified Fin 14 while the gate believed it was
+    certifying Fin 6. Both suites exit 0. A green gate, a wrong answer.
+
+    The check cannot detect that from its own comparison: by the time it looks,
+    the tree has been changed and the change looks like ordinary clean state.
+    Drift detection asks "does the ledger match the tree?"; this asks "did the
+    tree move under me?", which is a different question and the only one that
+    catches a caller that edits first and asks second.
+
+    Stored as a function attribute so the window straddles all of ``_diff()``,
+    which is where the caller gets its chance to interfere.
+    """
+    after = _tree_fingerprint()
+    before = _TREE_BEFORE
+    if before is None:
+        return []
+    out = []
+    for key in sorted(set(before) | set(after)):
+        b, a = before.get(key), after.get(key)
+        if b != a:
+            state = "added/removed" if (b is None or a is None) else "modified"
+            out.append(f"{key}: {state}")
+    return out
+
+
 def _rows(payload: object) -> list[dict] | None:
     """The ledger's repo rows, or None if the file is not shaped like a ledger.
 
@@ -163,6 +229,11 @@ def _rows(payload: object) -> list[dict] | None:
 
 def verify() -> int:
     """Read-only drift check. Returns 0 if the ledger matches live state."""
+    # Taken before anything else so _tree_perturbations() can prove the check
+    # did not move the tree. See _tree_perturbations' docstring for why that is
+    # asserted rather than promised.
+    global _TREE_BEFORE
+    _TREE_BEFORE = _tree_fingerprint()
     path = ledger_path()
     if not path.is_file():
         print(f"ledger missing: {path}", file=sys.stderr)
@@ -177,6 +248,21 @@ def verify() -> int:
               "(expected an object with a list of repo rows)", file=sys.stderr)
         return 1
     diffs = _diff(_compute(), actual)
+    # Non-interference is evaluated on BOTH paths, not only the clean one.
+    #
+    # It was originally inside `if not diffs`, which is backwards: a perturbed
+    # tree usually also shows drift, so the guard was skipped in precisely the
+    # case it exists for, and the run below proved it -- verify() returned 0
+    # while a file was being rewritten underneath it. Perturbation and staleness
+    # are independent faults and both must be reported.
+    perturbed = _tree_perturbations()
+    if perturbed:
+        print("ledger check was PERTURBED by its caller: the tree changed "
+              "while the check ran, so this result cannot be trusted",
+              file=sys.stderr)
+        for line in perturbed:
+            print(f"  {line}", file=sys.stderr)
+        return 1
     if not diffs:
         print(f"ledger OK: merkle {actual.get('merkle_root')}")
         return 0
