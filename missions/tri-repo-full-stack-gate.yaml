@@ -336,6 +336,24 @@ verification:
     # from the room root, so it still selects the room's insilico_trial even
     # though the process later moves into ../VeriTrial. ~5 s.
     - "env PYTHONPATH=../VeriTrial/src python3 -c \"import os, sys, pytest; os.chdir(os.path.join(os.getcwd(), '../VeriTrial')); sys.exit(pytest.main(['-q', '-p', 'no:cacheprovider', 'src/insilico_trial/tests/test_fixed_step.py', 'src/insilico_trial/tests/test_solvers.py']))\""
+    # The committed ledger must describe the tree the gate just ran against.
+    #
+    # Added 2026-10-05, and it is here because of a real miss rather than for
+    # tidiness. GLOBAL_MINIMUM_REPORT.md carried three merkle roots and carefully
+    # explained that each was measured against a different tree state -- and the
+    # committed ledger still went stale behind that explanation, holding 52f21c3c
+    # for several commits after both its recorded head and the live head had
+    # moved. Regenerating gave a0338737: a different root, no error, no failed
+    # assertion, because the write path silently overwrote the file and NOTHING
+    # COMPARED it. Accounting for roots in prose is not the same as asserting
+    # them.
+    #
+    # `--check` is read-only, so it can live in a verification ladder without
+    # dirtying the tree it inspects -- which is exactly why this could not be
+    # bolted on before. It exits non-zero on drift, and tolerates only the one
+    # structural self-reference (the ledger host's own head, which cannot be
+    # contained in the file that records it).
+    - "python3 scripts/audit_system_state.py --check"
   timeout_seconds: 3600
 review:
   enabled: true

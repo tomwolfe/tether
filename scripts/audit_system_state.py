@@ -1,10 +1,137 @@
 #!/usr/bin/env python3
-"""Unified ledger: audit tether/QED/VeriTrial repos into SYSTEM_STATE.json."""
+"""Unified ledger: audit tether/QED/VeriTrial repos into SYSTEM_STATE.json.
+
+Two modes:
+
+* ``--write`` (default) recompute the ledger and overwrite it.
+* ``--check`` recompute and compare against the committed file WITHOUT writing,
+  exiting non-zero on any drift.
+
+WHY ``--check`` EXISTS. Writing the ledger is self-invalidating for the tether
+row: the file being written lives inside the tether repo, so committing it moves
+the tether ``head`` that the file records. The row therefore always trails live
+HEAD by (at least) the ledger's own commit, and that is a *structural* fact
+rather than staleness -- see ``_is_ledger_host`` and ``verify``.
+
+The practical consequence was that drift was undetectable. Running the script
+silently rewrote the file, so a committed ledger that no longer described any
+live tree looked exactly as healthy as a current one: ``52f21c3c`` sat in the
+committed file for several commits after both its own repo head and its recorded
+tether head had moved on. Nothing failed, because nothing compared.
+
+``--check`` closes that. It is read-only, so it can run in CI or a pre-commit
+hook without the write-dirty-the-tree problem that made this awkward before.
+"""
 from __future__ import annotations
-import hashlib, json, subprocess, sys
+import argparse
+import hashlib
+import json
+import subprocess
+import sys
 from pathlib import Path
 
 REPOS = ["tether", "QED", "VeriTrial"]
+
+#: The repo whose checkout contains this script and therefore SYSTEM_STATE.json.
+LEDGER_HOST = "tether"
+
+
+def _is_ledger_host(name: str) -> bool:
+    """True for the repo that physically stores the ledger.
+
+    That row's ``head`` can never equal live HEAD: writing the ledger changes
+    the tree, and committing it creates a new commit. Rather than leave that as
+    a convention a reader has to know about, the row is marked ``ledger_host``
+    so the schema itself declares the exemption.
+    """
+    return name == LEDGER_HOST
+
+
+def ledger_path() -> Path:
+    """Absolute path of the committed ledger file."""
+    return ROOT / LEDGER_HOST / "SYSTEM_STATE.json"
+
+
+def _comparable(rows: list[dict]) -> list[dict]:
+    """*rows* with the self-referential field removed.
+
+    This projection is what the merkle root is computed over. It has to be,
+    because the ledger host's ``head`` is inside the ledger and therefore
+    changes every time the ledger is committed: hashing it would guarantee the
+    root differs from its own freshly-written value on every single run, so a
+    byte-comparing verifier could never report green.
+
+    ``merkle_root`` consequently means "the state of everything that *can* be
+    named" -- every head, dirty flag, sorry_free verdict and Lean digest of all
+    three repos, minus the one field that is structurally unnameable. It still
+    moves on any real change to any repo; it just stops being self-invalidating.
+    """
+    out = []
+    for row in rows:
+        r = {k: v for k, v in row.items()
+             if not (k == "head" and row.get("ledger_host"))}
+        out.append(r)
+    return out
+
+
+def _compute() -> dict:
+    """The ledger as live state actually describes it right now."""
+    repos = [audit_repo(r) for r in REPOS]
+    blob = json.dumps(_comparable(repos), sort_keys=True).encode()
+    return {"repos": repos,
+            "merkle_root": hashlib.sha256(blob).hexdigest()}
+
+
+def _diff(expected: dict, actual: dict) -> list[str]:
+    """Human-readable field-level differences, ledger_host rows excluded.
+
+    The ledger_host row is skipped because it is *expected* to differ -- that is
+    the self-reference, not drift. Reporting it would train a reader to ignore
+    the one line that matters.
+    """
+    out: list[str] = []
+    actual_rows = {r["repo"]: r for r in actual.get("repos", [])}
+    for exp in expected["repos"]:
+        name = exp["repo"]
+        act = actual_rows.get(name)
+        if act is None:
+            out.append(f"{name}: absent from committed ledger")
+            continue
+        for key, want in exp.items():
+            if key == "head" and _is_ledger_host(name):
+                continue
+            got = act.get(key)
+            if got != want:
+                out.append(f"{name}.{key}: committed={got!r} live={want!r}")
+    if expected["merkle_root"] != actual.get("merkle_root"):
+        out.append(
+            f"merkle_root: committed={actual.get('merkle_root')!r} "
+            f"live={expected['merkle_root']!r}")
+    return out
+
+
+def verify() -> int:
+    """Read-only drift check. Returns 0 if the ledger matches live state."""
+    path = ledger_path()
+    if not path.is_file():
+        print(f"ledger missing: {path}", file=sys.stderr)
+        return 1
+    try:
+        actual = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"ledger unreadable: {exc}", file=sys.stderr)
+        return 1
+    diffs = _diff(_compute(), actual)
+    if not diffs:
+        print(f"ledger OK: merkle {actual.get('merkle_root')}")
+        return 0
+    print(f"ledger STALE: {len(diffs)} field(s) disagree with live state:",
+          file=sys.stderr)
+    for line in diffs:
+        print(f"  {line}", file=sys.stderr)
+    print("  re-run: python3 scripts/audit_system_state.py --write",
+          file=sys.stderr)
+    return 1
 
 class WorkspaceNotFoundError(RuntimeError):
     """No ancestor directory contains all three workspace repos."""
@@ -31,13 +158,42 @@ def _run(repo: Path, *args: str) -> str:
     except OSError:
         return ""
 
+def _is_dirty(name: str) -> bool:
+    """Is *name* dirty, ignoring the ledger's own file?
+
+    The ledger file lives in the tether checkout, so writing it makes the tether
+    repo dirty by definition. Counting that as drift is wrong twice over: it is
+    true of every freshly-written ledger, and it is the ledger judging itself.
+
+    ``dirty`` therefore means "this repo has uncommitted changes *other than the
+    ledger itself*". Any other uncommitted work is still reported, which is the
+    property that matters.
+    """
+    repo = ROOT / name
+    if not _is_ledger_host(name):
+        return bool(_run(repo, "status", "--porcelain"))
+    ledger_name = ledger_path().name
+    for line in _run(repo, "status", "--porcelain").splitlines():
+        entry = line[3:].strip().strip('"')
+        if entry == ledger_name:
+            continue
+        return True
+    return False
+
+
 def audit_repo(name: str) -> dict:
     repo = ROOT / name
     head = _run(repo, "rev-parse", "HEAD")
-    dirty = bool(_run(repo, "status", "--porcelain"))
-    return {"repo": name, "head": head, "dirty": dirty,
-            "sorry_free": _check_sorry(repo),
-            "lean_files": _lean_digests(repo)}
+    dirty = _is_dirty(name)
+    rec = {"repo": name, "head": head, "dirty": dirty,
+           "sorry_free": _check_sorry(repo),
+           "lean_files": _lean_digests(repo)}
+    if _is_ledger_host(name):
+        # This row's head is exempt from the "must equal live HEAD" check; see
+        # _is_ledger_host. Recorded in the schema so the exemption is data a
+        # verifier can read rather than prose it has to trust.
+        rec["ledger_host"] = True
+    return rec
 
 
 def _lean_digests(repo: Path) -> dict[str, str]:
@@ -135,21 +291,34 @@ def _check_sorry(repo: Path):
                 continue
             t = p.read_text(encoding="utf-8", errors="replace")
             t = _re.sub(r"/-.*?-/", "", t, flags=_re.DOTALL)
-            lines = [l for l in t.splitlines() if not l.strip().startswith("--")]
+            lines = [ln for ln in t.splitlines() if not ln.strip().startswith("--")]
             if _re.search(r"\bsorry\b", "\n".join(lines)):
                 hits.append(p.name)
         return not hits
     except OSError:
         return False
 
-def main() -> int:
-    repos = [audit_repo(r) for r in REPOS]
-    blob = json.dumps(repos, sort_keys=True).encode()
-    merkle = hashlib.sha256(blob).hexdigest()
-    state = {"repos": repos, "merkle_root": merkle}
-    (ROOT / "tether" / "SYSTEM_STATE.json").write_text(json.dumps(state, indent=2))
+def main(argv: list[str] | None = None) -> int:
+    # argv defaults to [] rather than None. argparse would otherwise fall back to
+    # sys.argv, so importing this module and calling main() from a test runner
+    # would try to parse pytest's own command line and exit 2.
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--write", action="store_true",
+                      help="recompute and overwrite the ledger (default)")
+    mode.add_argument("--check", action="store_true",
+                      help="verify the committed ledger against live state; "
+                           "read-only, exits non-zero on drift")
+    args = ap.parse_args([] if argv is None else argv)
+
+    if args.check:
+        return verify()
+
+    state = _compute()
+    ledger_path().write_text(json.dumps(state, indent=2))
     print(json.dumps(state, indent=2))
     return 0
 
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

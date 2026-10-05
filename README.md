@@ -308,6 +308,22 @@ Right after every agent send — the initial execution and each recovery attempt
 
 `tether diff <session-id> --patch` prints the saved artifact; plain `tether diff <session-id>` keeps listing changed files.
 
+## Tri-repo ledger (`scripts/audit_system_state.py`)
+
+Audits the `tether` / `QED` / `VeriTrial` checkouts into `SYSTEM_STATE.json`: per repo the commit head, dirty flag, sorry-freedom, and a SHA-256 per verified `.lean` file, plus a `merkle_root` over those records.
+
+```bash
+python3 scripts/audit_system_state.py --write   # recompute and overwrite (default)
+python3 scripts/audit_system_state.py --check   # verify committed ledger vs live state
+```
+
+`--check` is read-only and exits non-zero on any drift, so it suits CI or a pre-commit hook.
+
+Two structural facts it handles explicitly, rather than leaving to convention:
+
+- **The ledger host's `head` cannot equal its own repo's HEAD.** The ledger lives inside the tether checkout, so committing it creates the very commit that would have to be recorded. That row is marked `ledger_host: true` and its head is excluded from `merkle_root`; `dirty` also ignores the ledger's own file, so a freshly written ledger doesn't report itself dirty. The exemption is deliberately narrow — the host's `dirty`, `sorry_free` and `lean_files` are still checked, as are the other two repos' heads.
+- **Narrating the roots is not the same as asserting them.** Merkle roots quoted in prose go stale silently, so `--check` compares the committed file against live state instead. Run it after changing any repo head, Lean file, or sorry-freedom verdict.
+
 ## Automatic rollback (opt-in)
 
 With `--auto-rollback` (or `auto_rollback: true` in config), a mission that ends `failed` or `cancelled` is rolled back automatically right after the initial report is written: git projects get the scoped clean rollback (reset to checkpoint + removal of session-attributable untracked files), non-git projects are restored from their tar backup. The outcome is recorded in `report.json` under `auto_rollback` (`attempted`, `ok`, `message`). Successful runs and dry-runs are never rolled back, pre-existing untracked files that are not attributable to the session are never removed, and if the automatic rollback fails the original status and manual rollback guidance are preserved.

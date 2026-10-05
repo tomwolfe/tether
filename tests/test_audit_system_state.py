@@ -121,8 +121,12 @@ def test_main_end_to_end_writes_sorted_merkle(tmp_path, monkeypatch, capsys):
     payload = json.loads((ws / "tether" / "SYSTEM_STATE.json").read_text())
     assert set(payload) == {"repos", "merkle_root"}
     import hashlib
+    # The root is taken over the comparable projection, which drops the ledger
+    # host's own head -- that field changes whenever the ledger is committed, so
+    # including it would make a fresh write disagree with itself forever.
     expected = hashlib.sha256(
-        json.dumps(payload["repos"], sort_keys=True).encode()).hexdigest()
+        json.dumps(mod._comparable(payload["repos"]), sort_keys=True).encode()
+    ).hexdigest()
     assert payload["merkle_root"] == expected
     out = capsys.readouterr().out
     assert expected in out
@@ -256,3 +260,286 @@ def test_unreadable_lean_file_is_recorded_not_silently_dropped(tmp_path, monkeyp
     assert digests["Bad.lean"].startswith("<unreadable:")
     # The ledger must not have degraded to an empty coverage claim.
     assert len(digests) == 2
+
+
+# ------------------- --check: making ledger drift detectable
+#
+# WHY THIS EXISTS. Writing SYSTEM_STATE.json lives inside the tether checkout,
+# so the tether row's `head` can never equal live HEAD -- committing the ledger
+# creates the very commit that would have to be recorded. That much is structural
+# and the report states it as such.
+#
+# The defect was what happened NEXT. The write path silently overwrote the file,
+# so there was no way to ask "does the committed ledger still describe a live
+# tree?" A stale ledger was indistinguishable from a current one: merkle
+# 52f21c3c sat in the committed file for several commits after the recorded
+# heads had moved on, and nothing failed, because nothing compared.
+# `--check` is the missing comparison.
+
+
+def _write_ledger(mod, ws) -> None:
+    (ws / "tether" / "SYSTEM_STATE.json").write_text(
+        json.dumps(mod._compute(), indent=2))
+
+
+def test_check_passes_on_a_freshly_written_ledger(tmp_path, monkeypatch):
+    mod = _load()
+    ws = tmp_path / "ws"
+    for r in ("tether", "QED", "VeriTrial"):
+        _init_repo(ws / r)
+    monkeypatch.setattr(mod, "ROOT", ws)
+    _write_ledger(mod, ws)
+    assert mod.verify() == 0
+
+
+def test_check_is_read_only(tmp_path, monkeypatch):
+    """A verification must never rewrite the ledger it is verifying.
+
+    Otherwise running the check would itself dirty the tree and change the very
+    state being checked, which is how the write-dirty-the-tree problem that
+    made this awkward in the first place would come straight back.
+    """
+    mod = _load()
+    ws = tmp_path / "ws"
+    for r in ("tether", "QED", "VeriTrial"):
+        _init_repo(ws / r)
+    monkeypatch.setattr(mod, "ROOT", ws)
+    _write_ledger(mod, ws)
+    before = (ws / "tether" / "SYSTEM_STATE.json").read_bytes()
+    mod.verify()
+    assert (ws / "tether" / "SYSTEM_STATE.json").read_bytes() == before
+
+
+def test_check_fails_when_a_sibling_head_moves(tmp_path, monkeypatch):
+    """The regression this closes: a moved head used to be undetectable."""
+    mod = _load()
+    ws = tmp_path / "ws"
+    for r in ("tether", "QED", "VeriTrial"):
+        _init_repo(ws / r)
+    monkeypatch.setattr(mod, "ROOT", ws)
+    _write_ledger(mod, ws)
+    assert mod.verify() == 0
+
+    qed = ws / "QED"
+    (qed / "f.txt").write_text("v2\n")
+    _git(qed, "add", ".")
+    _git(qed, "commit", "-m", "move QED head")
+
+    assert mod.verify() == 1
+
+
+def test_check_fails_when_lean_content_changes_without_a_commit(tmp_path, monkeypatch):
+    """An uncommitted .lean edit must still move the verdict.
+
+    This is the specific hole the ledger's own history documents: merkle_root
+    once hashed only commit shas and booleans, so it could not move when a byte
+    of Lean changed. If --check inherited that blindness it would be worse than
+    no check at all, because it would report "OK" with authority.
+    """
+    mod = _load()
+    ws = tmp_path / "ws"
+    for r in ("tether", "QED", "VeriTrial"):
+        _init_repo(ws / r)
+    (ws / "QED" / "T.lean").write_text("theorem t : True := trivial\n")
+    monkeypatch.setattr(mod, "ROOT", ws)
+    _write_ledger(mod, ws)
+    assert mod.verify() == 0
+
+    (ws / "QED" / "T.lean").write_text(
+        "theorem t : True := by sorry\n")  # sorry, and a different digest
+    assert mod.verify() == 1
+
+
+def test_check_fails_on_a_tampered_merkle_root(tmp_path, monkeypatch):
+    """A hand-edited root must not be able to pass as a real measurement."""
+    mod = _load()
+    ws = tmp_path / "ws"
+    for r in ("tether", "QED", "VeriTrial"):
+        _init_repo(ws / r)
+    monkeypatch.setattr(mod, "ROOT", ws)
+    _write_ledger(mod, ws)
+    path = ws / "tether" / "SYSTEM_STATE.json"
+    payload = json.loads(path.read_text())
+    payload["merkle_root"] = "0" * 64
+    path.write_text(json.dumps(payload, indent=2))
+    assert mod.verify() == 1
+
+
+def test_missing_ledger_fails_loudly(tmp_path, monkeypatch):
+    mod = _load()
+    ws = tmp_path / "ws"
+    for r in ("tether", "QED", "VeriTrial"):
+        _init_repo(ws / r)
+    monkeypatch.setattr(mod, "ROOT", ws)
+    assert mod.verify() == 1
+
+
+def test_malformed_ledger_fails_loudly(tmp_path, monkeypatch):
+    mod = _load()
+    ws = tmp_path / "ws"
+    for r in ("tether", "QED", "VeriTrial"):
+        _init_repo(ws / r)
+    monkeypatch.setattr(mod, "ROOT", ws)
+    (ws / "tether" / "SYSTEM_STATE.json").write_text("{not json")
+    assert mod.verify() == 1
+
+
+def test_ledger_host_row_is_exempt_from_head_comparison(tmp_path, monkeypatch):
+    """The self-reference is exempt -- but ONLY the head, never the rest.
+
+    The tether row's head can never equal live HEAD, so a verifier that
+    demanded it would be permanently red and therefore permanently ignored.
+    But that exemption must not extend to dirty, sorry_free or lean_files: if
+    it did, the one row able to hide real drift would be the one row not
+    checked.
+    """
+    mod = _load()
+    ws = tmp_path / "ws"
+    for r in ("tether", "QED", "VeriTrial"):
+        _init_repo(ws / r)
+    monkeypatch.setattr(mod, "ROOT", ws)
+    _write_ledger(mod, ws)
+
+    # Advance tether's head past what the ledger recorded.
+    tether = ws / "tether"
+    (tether / "f.txt").write_text("v2\n")
+    _git(tether, "add", ".")
+    _git(tether, "commit", "-m", "move tether head")
+    assert mod.verify() == 0, "head self-reference must be exempt"
+
+    # But dirty state on that same row is NOT exempt.
+    (tether / "f.txt").write_text("v3-uncommitted\n")
+    assert mod.verify() == 1, "tether dirty must still be caught"
+
+
+def test_ledger_host_marker_is_recorded_for_the_host_only(tmp_path, monkeypatch):
+    """The exemption is data in the schema, not prose a reader must trust."""
+    mod = _load()
+    ws = tmp_path / "ws"
+    for r in ("tether", "QED", "VeriTrial"):
+        _init_repo(ws / r)
+    monkeypatch.setattr(mod, "ROOT", ws)
+    rows = {r["repo"]: r for r in mod._compute()["repos"]}
+    assert rows["tether"].get("ledger_host") is True
+    assert "ledger_host" not in rows["QED"]
+    assert "ledger_host" not in rows["VeriTrial"]
+
+
+def test_merkle_root_excludes_the_self_referential_head_only(tmp_path, monkeypatch):
+    """The projection drops exactly one field -- and only from the host row.
+
+    Too narrow and the root stays self-invalidating; too wide and it stops
+    detecting real drift. This pins both halves: the ledger host's head is
+    excluded, while every other head, flag and digest is still inside the hash.
+    """
+    mod = _load()
+    ws = tmp_path / "ws"
+    for r in ("tether", "QED", "VeriTrial"):
+        _init_repo(ws / r)
+    (ws / "QED" / "T.lean").write_text("theorem t : True := trivial\n")
+    monkeypatch.setattr(mod, "ROOT", ws)
+    rows = mod._compute()["repos"]
+    projected = mod._comparable(rows)
+    assert "head" not in projected[0], "host head must be excluded"
+    assert "head" in projected[1], "QED head must remain"
+    assert "head" in projected[2], "VeriTrial head must remain"
+    # Everything except the one field survives the projection.
+    assert set(projected[0]) == set(rows[0]) - {"head"}
+
+
+def test_merkle_root_still_moves_when_a_sibling_head_moves(tmp_path, monkeypatch):
+    """Excluding the host head must not blunt the root's sensitivity."""
+    mod = _load()
+    ws = tmp_path / "ws"
+    for r in ("tether", "QED", "VeriTrial"):
+        _init_repo(ws / r)
+    monkeypatch.setattr(mod, "ROOT", ws)
+    before = mod._compute()["merkle_root"]
+
+    qed = ws / "QED"
+    (qed / "f.txt").write_text("v2\n")
+    _git(qed, "add", ".")
+    _git(qed, "commit", "--allow-empty", "-m", "advance QED")
+
+    assert mod._compute()["merkle_root"] != before
+
+
+def test_diff_reports_tether_dirty_even_though_its_head_is_exempt(tmp_path, monkeypatch):
+    """Pin the field-level exemption, not just the exit code.
+
+    WHY THIS TEST IS NEEDED. A narrower mutant -- one where _diff skips the
+    host row's `dirty` as well as its `head` -- SURVIVED the first version of
+    this suite. verify() still exited 1, so the mutant looked dead, but only
+    because merkle_root independently moved. The check failed for the wrong
+    reason and the narrowing went unnoticed: exactly the "the gate ran
+    something, so it reported covered" trap, one level down.
+
+    So this asserts on _diff's output directly. merkle_root is a redundant
+    signal here, and relying on it is what hid the defect.
+    """
+    mod = _load()
+    ws = tmp_path / "ws"
+    for r in ("tether", "QED", "VeriTrial"):
+        _init_repo(ws / r)
+    monkeypatch.setattr(mod, "ROOT", ws)
+    _write_ledger(mod, ws)
+    committed = json.loads((ws / "tether" / "SYSTEM_STATE.json").read_text())
+
+    (ws / "tether" / "f.txt").write_text("uncommitted\n")
+    diffs = mod._diff(mod._compute(), committed)
+
+    assert any("tether.dirty" in d for d in diffs), diffs
+    assert not any("tether.head" in d for d in diffs), diffs
+
+
+def test_check_catches_an_uncommitted_edit_in_a_sibling_repo(tmp_path, monkeypatch):
+    """A dirty sibling is drift, and nothing else would catch it.
+
+    The host's `dirty` is exempted from nothing, but the sibling rows' dirty
+    flags had no direct coverage at all: the surviving mutant that made
+    `_is_dirty` always return False for the host passed every other test in
+    this file. Sibling dirty state is now pinned from both directions -- clean
+    is accepted, uncommitted is rejected.
+    """
+    mod = _load()
+    ws = tmp_path / "ws"
+    for r in ("tether", "QED", "VeriTrial"):
+        _init_repo(ws / r)
+    monkeypatch.setattr(mod, "ROOT", ws)
+    _write_ledger(mod, ws)
+    assert mod.verify() == 0, "all clean is the passing baseline"
+
+    (ws / "VeriTrial" / "f.txt").write_text("uncommitted\n")
+    assert mod.verify() == 1, "uncommitted sibling work must be drift"
+
+
+def test_diff_reports_sibling_dirty_by_name(tmp_path, monkeypatch):
+    """Same pin as the host case, for a sibling row."""
+    mod = _load()
+    ws = tmp_path / "ws"
+    for r in ("tether", "QED", "VeriTrial"):
+        _init_repo(ws / r)
+    monkeypatch.setattr(mod, "ROOT", ws)
+    _write_ledger(mod, ws)
+    committed = json.loads((ws / "tether" / "SYSTEM_STATE.json").read_text())
+
+    (ws / "QED" / "f.txt").write_text("uncommitted\n")
+    diffs = mod._diff(mod._compute(), committed)
+    assert any("QED.dirty" in d for d in diffs), diffs
+
+
+def test_write_then_check_agrees_with_the_committed_file(tmp_path, monkeypatch):
+    """Round-trip: what --write produces, --check must accept.
+
+    Guards against the two paths computing the ledger differently -- the exact
+    class of bug where the writer and the verifier each trust their own
+    serialisation and quietly disagree about what the ledger means.
+    """
+    mod = _load()
+    ws = tmp_path / "ws"
+    for r in ("tether", "QED", "VeriTrial"):
+        _init_repo(ws / r)
+    (ws / "QED" / "T.lean").write_text("theorem t : True := trivial\n")
+    monkeypatch.setattr(mod, "ROOT", ws)
+    assert mod.main(["--write"]) == 0
+    assert mod.verify() == 0
