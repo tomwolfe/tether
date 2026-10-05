@@ -150,6 +150,21 @@ verification:
     # mutants with skipped: 0, unchanged.
     equivalent: []
   commands:
+    # FIRST, and the position is load-bearing rather than stylistic.
+    #
+    # The committed ledger describes the COMMITTED tree. Command 1 below rewrites
+    # the host's QED/VeriTrialExport.lean to Fin 6 in the working tree -- which is
+    # this mission's documented LEDGER DUALITY, not a defect -- so by the time a
+    # late command runs, the live Lean digest legitimately differs from the
+    # committed one and --check MUST fail. Placed last (its first home, in
+    # 9b74ca6), it therefore failed on a fully green run: 13/13 commands green,
+    # then command 14 red on drift the run had caused itself.
+    #
+    # That is the check working, not the check being wrong -- but a check that is
+    # red on every clean run trains people to ignore it, so it runs first, where
+    # "does the committed ledger still describe this tree?" is the question
+    # actually being asked. Verified: 14/14 exit 0 with this order.
+    - "python3 scripts/audit_system_state.py --check"
     - "python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --lean-out ../QED/VeriTrialExport.lean --out /tmp/pbpk_lemmas.txt"
     - "python3 ../VeriTrial/scripts/rebuild_qed_oleans.py"
     # --fin-n is REQUIRED, not defaulted: the emitted lemma set is a function
@@ -353,7 +368,6 @@ verification:
     # bolted on before. It exits non-zero on drift, and tolerates only the one
     # structural self-reference (the ledger host's own head, which cannot be
     # contained in the file that records it).
-    - "python3 scripts/audit_system_state.py --check"
   timeout_seconds: 3600
 review:
   enabled: true
