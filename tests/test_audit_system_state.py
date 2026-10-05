@@ -143,3 +143,116 @@ def test_audit_repo_records_head_and_merkle_determinism(tmp_path, monkeypatch):
     import hashlib
     assert hashlib.sha256(blob).hexdigest() == hashlib.sha256(
         json.dumps(second, sort_keys=True).encode()).hexdigest()
+
+
+def test_lean_files_are_hashed_into_the_merkle(tmp_path, monkeypatch):
+    """The ledger must cover the Lean bytes, not just three commits.
+
+    Regression test for a real ledger bug: ``_lean_files`` existed but was
+    consumed ONLY by the ``sorry`` scan, so ``merkle_root`` hashed just
+    head/dirty/sorry_free and could not move when a theorem file changed --
+    while the gate's mission file claimed this ledger "hashes the host's Fin
+    14 file into SYSTEM_STATE.json".
+    """
+    import hashlib
+
+    mod = _load()
+    ws = tmp_path / "ws"
+    for r in ("tether", "QED", "VeriTrial"):
+        _init_repo(ws / r)
+    lean = ws / "QED" / "VeriTrialExport.lean"
+    lean.write_text("theorem t : True := trivial\n")
+    monkeypatch.setattr(mod, "ROOT", ws)
+
+    rec = mod.audit_repo("QED")
+    assert rec["lean_files"]["VeriTrialExport.lean"] == hashlib.sha256(
+        lean.read_bytes()).hexdigest()
+
+    before = mod.audit_repo("QED")["lean_files"]["VeriTrialExport.lean"]
+    lean.write_text("theorem t : True := trivial\n-- changed\n")
+    after = mod.audit_repo("QED")["lean_files"]["VeriTrialExport.lean"]
+    assert before != after, "merkle input must be sensitive to Lean content"
+
+
+def test_veritrial_sibling_lean_export_is_keyed_as_borrowed(tmp_path, monkeypatch):
+    """VeriTrial ships no Lean of its own but borrows QED's export.
+
+    The sibling artifact must appear, keyed so a reader can tell it is not
+    VeriTrial's own file -- this is the file the host/clean-room duality is
+    about.
+    """
+    mod = _load()
+    ws = tmp_path / "ws"
+    for r in ("tether", "QED", "VeriTrial"):
+        _init_repo(ws / r)
+    (ws / "QED" / "VeriTrialExport.lean").write_text("theorem t : True := trivial\n")
+    monkeypatch.setattr(mod, "ROOT", ws)
+    rec = mod.audit_repo("VeriTrial")
+    assert "QED/VeriTrialExport.lean" in rec["lean_files"]
+
+
+def test_lean_free_repo_records_empty_digests_not_a_missing_key(tmp_path, monkeypatch):
+    """A repo shipping no Lean gets ``{}``, so the key is always present."""
+    mod = _load()
+    ws = tmp_path / "ws"
+    for r in ("tether", "QED", "VeriTrial"):
+        _init_repo(ws / r)
+    monkeypatch.setattr(mod, "ROOT", ws)
+    rec = mod.audit_repo("tether")
+    assert rec["lean_files"] == {}
+    assert rec["sorry_free"] == "n/a"
+
+
+def test_lean_digests_skip_vendored_trees(tmp_path, monkeypatch):
+    """.lake / .venv / output Lean must not enter the verified surface."""
+    mod = _load()
+    ws = tmp_path / "ws"
+    for r in ("tether", "QED", "VeriTrial"):
+        _init_repo(ws / r)
+    for vendored in (".lake/packages/mathlib/X.lean", ".venv/Y.lean",
+                     "output/Z.lean"):
+        p = ws / "QED" / vendored
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("theorem v : True := trivial\n")
+    (ws / "QED" / "Real.lean").write_text("theorem r : True := trivial\n")
+    monkeypatch.setattr(mod, "ROOT", ws)
+    digests = mod.audit_repo("QED")["lean_files"]
+    assert list(digests) == ["Real.lean"]
+
+
+def test_unreadable_lean_file_is_recorded_not_silently_dropped(tmp_path, monkeypatch):
+    """A found-but-unreadable Lean file must not vanish from the ledger.
+
+    Regression test for the soft pass the 2026-10-04 gate reviewer flagged:
+    the digest loop used to be wrapped in ``except OSError: return {}``, which
+    is indistinguishable from "this repo ships no Lean". A permissions or I/O
+    fault would shrink coverage to nothing while the merkle_root still looked
+    healthy. It is now recorded as an explicit ``<unreadable: ...>`` marker.
+    """
+    import hashlib
+
+    mod = _load()
+    ws = tmp_path / "ws"
+    for r in ("tether", "QED", "VeriTrial"):
+        _init_repo(ws / r)
+    good = ws / "QED" / "Good.lean"
+    good.write_text("theorem g : True := trivial\n")
+    bad = ws / "QED" / "Bad.lean"
+    bad.write_text("theorem b : True := trivial\n")
+
+    real_read_bytes = Path.read_bytes
+
+    def flaky(self, *a, **kw):
+        if self.name == "Bad.lean":
+            raise OSError(13, "Permission denied")
+        return real_read_bytes(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_bytes", flaky)
+    monkeypatch.setattr(mod, "ROOT", ws)
+    digests = mod.audit_repo("QED")["lean_files"]
+
+    assert digests["Good.lean"] == hashlib.sha256(
+        real_read_bytes(good)).hexdigest()
+    assert digests["Bad.lean"].startswith("<unreadable:")
+    # The ledger must not have degraded to an empty coverage claim.
+    assert len(digests) == 2

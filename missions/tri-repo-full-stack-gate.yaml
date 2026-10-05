@@ -58,8 +58,31 @@ verification:
     max_mutants: 6
     # Regression net for verify-only runs: when the agent changes nothing,
     # mutate the gate-critical bridge scripts instead of passing vacuously.
-    # Each mutant re-runs the full 11-command suite, and the Lean
+    # Each mutant re-runs the full 13-command suite, and the Lean
     # export/rebuild/formal-gate trio dominates its wall time, hence the cap.
+    #
+    # That cost is now MEASURED, not guessed (clean-room run 2026-10-04, host
+    # checkpoint 65aacef, sibling VeriTrial e0d5a8e): one full pass of the
+    # battery is 402 s, itemised as export 0.9 s + olean rebuild 10.4 s (elan
+    # direct lean, no lake env) + Fin 6 formal gate 81.8 s + Fin 14 export
+    # 0.8 s + Fin 14 formal gate 190.9 s + merkle 84.2 s + the six pure-Python
+    # commands 33.4 s. verification.timeout_seconds is a PER-COMMAND bound
+    # (verification.py::_run_one), not a wall-clock budget for the tier, and
+    # this mission declares no budget.max_wall_seconds, so the mutation cost
+    # cannot fail the gate -- it is recorded here because the two SIGTERMs this
+    # file already documents were budget events and the next reader should
+    # start from a number rather than a fear.
+    #
+    # MUTANT COUNT IS target_source-DEPENDENT, and the two paths differ by 10x:
+    #   baseline_targets path: 4 VeriTrial scripts x 6 = 24 sampled
+    #   changed-file path:     EVERY changed .py file x 6, no global cap
+    #     (verification.py::run_mutation_testing loops all targets;
+    #      max_mutants applies per file)
+    # A non-empty tree selects the changed path, and this tree has 5 changed
+    # .py files -> 30 sampled -> 30 x ~412 s ~= 3.4 h of verification on top of
+    # the green pass. An earlier revision of this comment read "the 12 sampled
+    # mutants below re-run it 12 times: ~84 min"; that was measured against a
+    # 2-file tree and understated the real cost 2.5x. Shape, not budget ask.
     # 4 targets x max_mutants 6 = 24 sampled. The "21 of them scored" figure
     # below is STALE and is kept only as history: it described a run whose
     # equivalent: entries still matched their sites. As of VeriTrial db6d1ad
@@ -103,7 +126,8 @@ verification:
     # The two Add->Sub sites this file carried here as "documented
     # equivalent" are the opposite -- real controls that the suite already
     # kills -- so they are MEASURED now instead of suppressed. Hand-run
-    # 2026-09-28 against verification command 8, each exits 1:
+    # 2026-09-28 against the command that runs test_pd.py (command 11 in the
+    # current ladder; it was command 8 then), each exits 1:
     # - 13:43 `emax * C^h / (ec50^h + C^h)`: Add->Sub flips the denominator
     #   to ec50^h - C^h; killed by test_pd.py::test_emax_is_half_maximal_at_ec50
     # - 62:17 `baseline_inr + emax_effect(...)`: Add->Sub; killed by
@@ -145,7 +169,18 @@ verification:
     # the host ledger does NOT agree: scripts/audit_system_state.py hashes the
     # host's Fin 14 file into SYSTEM_STATE.json, so that ledger's merkle_root
     # and this gate's PROVENANCE_MERKLE cover different Lean bytes by
-    # construction. Neither is wrong; they are two different ledgers.
+    # construction. Neither is wrong; they are two different ledgers, and they
+    # are NOT expected to be equal -- asserting that they match would be the bug.
+    #
+    # That last clause is now ENFORCED, not aspirational. Until 2026-10-04 this
+    # ledger recorded only head/dirty/sorry_free, so its merkle_root could not
+    # move when a theorem file changed, and the sentence above was an
+    # unverifiable claim. audit_system_state.py now emits a per-file SHA-256 map
+    # (`lean_files`) over exactly the surface it already enumerated for the
+    # sorry scan -- including the sibling QED export, keyed
+    # `QED/VeriTrialExport.lean` so a reader can see it is a borrowed cross-repo
+    # artifact. Pinned by tests/test_audit_system_state.py::
+    # test_lean_files_are_hashed_into_the_merkle.
     - "python3 ../VeriTrial/scripts/verify_formal_gate.py /tmp/pbpk_lemmas.txt --fin-n 6 --strict"
     # Fin 14 lemma SET, certified in its own right (11 Metzler + 11 boundary
     # inflow + column sum + parametric sum + dissipation = 25 lemmas, no sorry,
@@ -159,6 +194,41 @@ verification:
     - "python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --out /tmp/pbpk_lemmas_14.txt --fin-n 14 --parametric --saturable"
     - "python3 ../VeriTrial/scripts/verify_formal_gate.py /tmp/pbpk_lemmas_14.txt --fin-n 14 --strict --saturable"
     - "python3 -c \"import sys, os; os.chdir(os.path.join(os.getcwd(), '../VeriTrial')); sys.path.insert(0, 'src'); from insilico_trial.validation import run_all_validations, build_regulatory_provenance; run_all_validations(); print('PROVENANCE_MERKLE=' + build_regulatory_provenance()['merkle_root'])\""
+    # Control-plane teeth battery. Added 2026-10-04 after this gate FAILED at
+    # kill_rate 0.43 (13/30, 17 survivors) -- and the failure was the gate
+    # working correctly, not a flake.
+    #
+    # `mutation.target_source` is `changed`, so editing ANY tether file makes
+    # it a mutation target. The battery below then scored mutants in
+    # src/tether/orchestrator.py and in two test files using a 12-command suite
+    # that runs neither: every one of those 17 survivors was a construct no
+    # command in this ladder executes. This is the same trap this file already
+    # records twice above ("the gate mutated X but only ran Y, so mutants that
+    # Y's own suite kills were reported as SURVIVING -- the gate was
+    # structurally understating its own kill rate"), and the same remedy:
+    # measure the teeth the battery claims, then run those suites.
+    #
+    # MEASURED, not asserted. Scored offline with the harness's own
+    # deterministic sampler (same per-path seed, same operator set, same
+    # max_mutants=6) against exactly this command, over the five changed
+    # .py files of that run:
+    #   src/tether/orchestrator.py            6/6 killed
+    #   scripts/audit_system_state.py         6/6 killed
+    #   tests/test_mutation.py                6/6 killed
+    #   tests/test_adapters_describe.py       6/6 killed
+    #   tests/test_audit_system_state.py      6/6 killed
+    #   ----------------------------------------------  30/30 = 1.0000
+    #
+    # Each suite is load-bearing, and dropping one shows it:
+    #   without test_git_state_guard.py  -> orchestrator 5/6, survivor
+    #     580:4 break_return in _snapshot_hook_integrity (returns None
+    #     instead of the (hooks, hooksPath, extra, submodules) tuple). One of
+    #     its callers wraps the sibling loop in `except Exception: pass`, so
+    #     the guard's own baseline silently degrades to nothing -- a fail-open
+    #     in the safety layer, which is precisely why it is worth a suite.
+    # Pure-Python, ~43 s, so the teeth are cheap relative to the 402 s the
+    # Lean trio already costs per mutant.
+    - "env PYTHONPATH=src python3 -m pytest tests/test_mutation.py tests/test_adapters_describe.py tests/test_core.py tests/test_safety.py tests/test_review_gate.py tests/test_git_state_guard.py tests/test_docs.py tests/test_audit_system_state.py -q -p no:cacheprovider"
     # Tether-side regression net: the mission mutates changed tether files, so
     # the clean-room suite must exercise them (sibling .git preservation,
     # .lake/symlink carries, gitlink pointers); otherwise those mutants are
@@ -171,6 +241,50 @@ verification:
     # construction: kill rate 0/6. PYTHONPATH=src still defeats the host
     # editable install, which would otherwise shadow the room's sources.
     - "env PYTHONPATH=src python3 -m pytest tests/test_cleanroom.py tests/test_multirepo_capture.py -q -p no:cacheprovider"
+    # ... and the same reasoning applied to the OTHER changed tether file. When
+    # the pending `lean_files` ledger work (scripts/audit_system_state.py) is
+    # in the tree, orchestrator._mutation_targets prefers changed-file targets
+    # and only falls back to baseline_targets when none survive -- so the
+    # mutation tier stops aiming at the VeriTrial bridge scripts and starts
+    # aiming at the audit script and its test instead. Nothing else in this
+    # battery imports either file: AST-walking the import graph from all three
+    # tether-side entry points yields zero references, and neither VeriTrial
+    # bridge command mentions SYSTEM_STATE. Every mutant of them therefore
+    # survives by construction.
+    #
+    # MEASURED 2026-10-04, not asserted. Scored through the gate's own sampler
+    # (same per-path seed, same operator set, max_mutants=6 => 6 per file, 12
+    # sampled) against the battery:
+    #   without this command -> killed  0/12, kill_rate 0.0   (fails fail_below)
+    #   with this command    -> killed 12/12, kill_rate 1.0
+    # A green command can only add ways to kill a mutant, never remove one, so
+    # this leaves the baseline_targets path (24/24 measured green at session
+    # 985fa1a6) untouched.
+    #
+    # THE "12 sampled" IN THAT PARAGRAPH IS A TWO-FILE SNAPSHOT AND NO LONGER
+    # DESCRIBES THIS TREE. It was true when the only changed .py files were
+    # scripts/audit_system_state.py and its test. _mutation_targets takes
+    # EVERY changed .py file with no global cap (verification.py::
+    # run_mutation_testing loops all targets, max_mutants applies per file), so
+    # the sample grew to 5 files x 6 = 30 as the tree did. Reading 12/12 as the
+    # current expectation is how the next run silently drops to 13/30 -- see
+    # the next command for the measurement against the real 30.
+    - "env PYTHONPATH=src python3 -m pytest tests/test_audit_system_state.py -q -p no:cacheprovider"
+    # SUPERSEDED 2026-10-04: an earlier revision of this file added a SEPARATE
+    # 3-suite battery here (test_mutation + test_adapters_describe +
+    # test_core) and recorded an "honest 0.900" on the theory that
+    # orchestrator.py:185:8 and :580:4 were unkillable -- pre-existing code
+    # "outside the changed region". That theory was an ASSERTION, not a
+    # measurement, and it is false. Scoring the same sampler over the same
+    # changed set with tests/test_git_state_guard.py added kills BOTH:
+    #   orchestrator.py 185:8  break_return in _run_credibility_probe's
+    #     `except: return False, repr(e)`
+    #   orchestrator.py 580:4  break_return in _snapshot_hook_integrity's
+    #     digest return
+    # The single measured battery at the top of this list replaces it, so the
+    # duplicate 3-suite command is gone rather than left to re-run ~12 s per
+    # mutant for teeth the wider battery already provides. equivalent: remains
+    # empty -- 30/30 is scored, not suppressed.
     - "env PYTHONPATH=../VeriTrial/src python3 -m pytest ../VeriTrial/src/insilico_trial/tests/test_mission_regressions.py -q -p no:cacheprovider"
     - "python3 tools/verify_veritrial_equations.py --source-root ../VeriTrial"
     # Mutation-teeth battery for the baseline_targets above. The gate mutated

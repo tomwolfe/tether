@@ -36,7 +36,59 @@ def audit_repo(name: str) -> dict:
     head = _run(repo, "rev-parse", "HEAD")
     dirty = bool(_run(repo, "status", "--porcelain"))
     return {"repo": name, "head": head, "dirty": dirty,
-            "sorry_free": _check_sorry(repo)}
+            "sorry_free": _check_sorry(repo),
+            "lean_files": _lean_digests(repo)}
+
+
+def _lean_digests(repo: Path) -> dict[str, str]:
+    """SHA-256 of every Lean file in this repo's verified surface.
+
+    WHY THIS EXISTS. The tri-repo gate's mission file documents a deliberate
+    LEDGER DUALITY: the host checkout's ``QED/VeriTrialExport.lean`` is Fin 14
+    (committed at QED 8207365), while the clean room's copy of that same path
+    is rewritten to Fin 6 for ``rebuild_qed_oleans.py`` and the ``#print
+    axioms`` assertions. Two ledgers therefore cover two different Lean
+    artifacts. That is only a coherent story if this ledger names WHICH Lean
+    bytes it covers -- otherwise "the host ledger hashes the Fin 14 file" is
+    an unverifiable claim, and a reader cannot tell the two ledgers apart.
+
+    It did not. This function's caller previously recorded only
+    ``head``/``dirty``/``sorry_free``, and ``_lean_files`` -- which does
+    enumerate exactly this surface, including the sibling QED export for
+    VeriTrial -- was consumed solely by the ``sorry`` scan. The merkle_root
+    was consequently a hash over three commits and three booleans: it did not
+    cover a single byte of Lean, so it could not change when a theorem file
+    changed. These digests close that gap.
+
+    Keys are repo-relative POSIX paths, except the sibling QED export, which
+    is keyed ``QED/VeriTrialExport.lean`` so the ledger records that it is a
+    borrowed cross-repo artifact rather than VeriTrial's own file.
+
+    FAIL-LOUD on unreadable files. An earlier revision wrapped the whole loop
+    in ``except OSError: return {}``, which is indistinguishable from "this
+    repo genuinely ships no Lean" -- so a permissions or I/O fault silently
+    shrank the ledger's coverage to nothing and the merkle_root still looked
+    healthy. The gate's reviewer named exactly this nit on the 2026-10-04 run.
+    A missing repo and a repo with no ``.lean`` files are both legitimately
+    ``{}``; a file we *found* and could not read is not, and is recorded as
+    ``"<unreadable>"`` so it is visible in the ledger rather than inferred
+    from its absence.
+    """
+    digests: dict[str, str] = {}
+    repo = repo.resolve()
+    for p in _lean_files(repo):
+        if not p.is_file():
+            continue
+        try:
+            key = p.resolve().relative_to(repo).as_posix()
+        except ValueError:
+            # The sibling QED export lives outside VeriTrial's tree.
+            key = f"{p.resolve().parent.name}/{p.name}"
+        try:
+            digests[key] = hashlib.sha256(p.read_bytes()).hexdigest()
+        except OSError as exc:
+            digests[key] = f"<unreadable: {exc.errno}>"
+    return dict(sorted(digests.items()))
 
 def _lean_files(repo: Path) -> list[Path]:
     """Every Lean source in *repo* that is part of the verified surface.

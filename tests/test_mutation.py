@@ -642,3 +642,82 @@ def test_equivalent_suppressions_skipped_and_excluded(tmp_path):
     assert summary.skipped >= 1
     assert summary.total == len(all_res)
     assert summary.killed + summary.survived == len(all_res) - summary.skipped
+
+
+def test_mutation_targets_drop_sibling_prefix_duplicates(tmp_path):
+    """A workspace mission spells each changed file twice; mutate it once.
+
+    Regression test for inert phantom mutants on the 2026-10-04 tri-repo gate:
+    the changed-file union carries both ``scripts/x.py`` and the sibling-
+    prefixed ``tether/scripts/x.py``. The room root IS the tether checkout, so
+    the prefixed form does not exist and became a ``skipped`` mutant with
+    detail ``unreadable file`` -- 2 of 14 sampled rows that could never run.
+    """
+    from tether.config import TetherConfig
+    from tether.mission import load_mission
+    from tether.orchestrator import Orchestrator
+
+    (tmp_path / "scripts").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "scripts" / "x.py").write_text("def f():\n    return 1\n")
+    mp = tmp_path / "m.yaml"
+    mp.write_text(
+        "mission:\n  name: m\n  goal: g\n"
+        f"verification:\n  commands:\n    - {PASS_CMD}\n{MUTATION_ON}\n"
+        "adapter: mock\n", encoding="utf-8")
+    orch = Orchestrator(
+        WriterAdapter({}), TetherConfig(audit_dir=".tether/sessions"), tmp_path)
+    targets = orch._mutation_targets(load_mission(mp), [
+        "scripts/x.py", "tether/scripts/x.py"])
+    assert targets == ["scripts/x.py"]
+
+
+def test_mutation_targets_keep_genuinely_missing_files(tmp_path):
+    """The dedupe fails OPEN: a truly absent file is still attempted.
+
+    If this dropped unresolvable paths wholesale, a renamed or deleted file
+    would vanish from the battery instead of being reported as ``unreadable``,
+    turning a visible failure into a silent one.
+    """
+    from tether.config import TetherConfig
+    from tether.mission import load_mission
+    from tether.orchestrator import Orchestrator
+
+    (tmp_path / "scripts").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "scripts" / "x.py").write_text("def f():\n    return 1\n")
+    mp = tmp_path / "m.yaml"
+    mp.write_text(
+        "mission:\n  name: m\n  goal: g\n"
+        f"verification:\n  commands:\n    - {PASS_CMD}\n{MUTATION_ON}\n"
+        "adapter: mock\n", encoding="utf-8")
+    orch = Orchestrator(
+        WriterAdapter({}), TetherConfig(audit_dir=".tether/sessions"), tmp_path)
+    # Neither the prefixed nor the bare spelling of `gone.py` exists, and the
+    # tail is not an already-covered target: both must survive.
+    targets = orch._mutation_targets(load_mission(mp), [
+        "scripts/x.py", "tether/scripts/gone.py", "scripts/gone.py"])
+    assert "tether/scripts/gone.py" in targets
+    assert "scripts/gone.py" in targets
+
+
+def test_mutation_targets_keep_prefixed_file_that_really_exists(tmp_path):
+    """If a real ``tether/`` subdirectory exists, its files are legitimate.
+
+    The dedupe must not assume the first segment is always a workspace
+    repo name -- only drop the prefixed spelling when the bare one is what
+    actually exists on disk.
+    """
+    from tether.config import TetherConfig
+    from tether.mission import load_mission
+    from tether.orchestrator import Orchestrator
+
+    (tmp_path / "tether" / "scripts").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "tether" / "scripts" / "y.py").write_text("def g():\n    return 2\n")
+    mp = tmp_path / "m.yaml"
+    mp.write_text(
+        "mission:\n  name: m\n  goal: g\n"
+        f"verification:\n  commands:\n    - {PASS_CMD}\n{MUTATION_ON}\n"
+        "adapter: mock\n", encoding="utf-8")
+    orch = Orchestrator(
+        WriterAdapter({}), TetherConfig(audit_dir=".tether/sessions"), tmp_path)
+    targets = orch._mutation_targets(load_mission(mp), ["tether/scripts/y.py"])
+    assert targets == ["tether/scripts/y.py"]

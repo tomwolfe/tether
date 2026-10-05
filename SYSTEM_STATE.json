@@ -2,22 +2,33 @@
   "repos": [
     {
       "repo": "tether",
-      "head": "86acbef7b3dc164a40e996f55c5e6f6195df5a23",
-      "dirty": false,
-      "sorry_free": "n/a"
+      "head": "65aacefe8f5bc8c866c5d05d5a07434c77a446ed",
+      "dirty": true,
+      "sorry_free": "n/a",
+      "lean_files": {}
     },
     {
       "repo": "QED",
       "head": "8beb690bd3ee5670441d6b5d1ff2a0ca8df0d8e2",
       "dirty": false,
-      "sorry_free": true
+      "sorry_free": true,
+      "lean_files": {
+        "Compartmental.lean": "c5096b1f07c7badee895ecc6ee306d7c49811674009b9743457b58c2dc0ed324",
+        "QED.lean": "5251cc47c2f0c038ba3f7ab88b047d56a83dc51153955d4f8a6738a6ad2dca0e",
+        "VeriTrialExport.lean": "1560a468f655b639b5a51b1b7b4b3d3ec1c7b5275080fd6d64e82b9e74085232",
+        "lakefile.lean": "18099148020fc55110cf3237d2bf70d9b057e17c82d8c379ea6488c752eb8813",
+        "output.lean": "b8fac5214a5871b6983959b58db23a216d6088ecfdd1d5ba051b8f6e392d4055"
+      }
     },
     {
       "repo": "VeriTrial",
-      "head": "e0d5a8eaddd0718ffe505ec4c1bb25610eb02648",
+      "head": "3d28470ecc759ce87de7bf3d87250af3d0a0d349",
       "dirty": false,
-      "sorry_free": true
+      "sorry_free": true,
+      "lean_files": {
+        "QED/VeriTrialExport.lean": "1560a468f655b639b5a51b1b7b4b3d3ec1c7b5275080fd6d64e82b9e74085232"
+      }
     }
   ],
-  "merkle_root": "d945e268ca4c4211c5fd9c11e05d96120952180c597ab6852a30e705cd73771e"
+  "merkle_root": "8a57340036cf28a1656f85bbe97704ef9b65441a5ea3c2f6003a2967ff416589"
 }

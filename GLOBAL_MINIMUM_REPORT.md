@@ -1433,3 +1433,259 @@ validated run. Running `make report` alone leaves the old `git_shas` in place �
 which is exactly the staleness recorded two sections up, and a second way to
 attribute results to the wrong commit. Refreshed here with a full
 `make validate`, so the attestation now names `be5ba0d` for VeriTrial.
+
+---
+
+## 2026-10-04, session `819940868e53`: the ledger now covers the Lean it claims to
+
+Certifying run: `tri-repo-full-stack-gate`, adapter `opencode`, model
+`opencode/space-bunny-free`, `--auto`, `sandbox_mode: enforce`.
+
+| `819940868e53` | |
+|---|---|
+| status | **success** |
+| review | **approve** (adapter `opencode`) |
+| `sandbox_violations` | `[]` |
+| `git_state_violations` | none |
+| `recovery_attempts` | `[]` |
+| verification | **12/12 commands, 0 non-zero exits** |
+| clean-room Fin 6 | **9/9 verified**, no `sorry`, FORMAL GATE PASSED |
+| clean-room Fin 14 + saturable | **25/25 verified**, no `sorry`, FORMAL GATE PASSED |
+| mutation | **kill_rate 1.0 — 12 killed, 0 survived, 0 equivalent-suppressed** |
+| agent phase | 2 skips, both non-mutants (below) |
+
+### The bug this run exists to certify
+
+`scripts/audit_system_state.py` documented — in this very gate's mission file —
+that it "hashes the host's Fin 14 file into `SYSTEM_STATE.json`". **It did not.**
+`_lean_files()` enumerated exactly the right surface, but was consumed *only* by
+the `sorry` scan. `merkle_root` was therefore a SHA-256 over three commit shas
+and three booleans: it could not move when a single byte of a `.lean` file
+changed. A ledger that names a Lean artifact and cannot detect that artifact
+changing is not a ledger.
+
+`_lean_digests()` now emits a per-file SHA-256 map over that same surface. The
+recorded `VeriTrialExport.lean` digest `1560a468…` matches
+`shasum -a 256 QED/VeriTrialExport.lean`, and a tamper test proves the merkle
+now moves when Lean content moves. The sibling export is keyed
+`QED/VeriTrialExport.lean` so a reader can see it is a *borrowed* cross-repo
+artifact, not VeriTrial's own file.
+
+The gate's reviewer independently re-ran `audit_repo` against the live
+checkouts and confirmed every digest and the merkle root — the fix is externally
+reproduced, not self-asserted. Pinned by five tests in
+`tests/test_audit_system_state.py` (14 pass; full tether suite **827 passed**).
+
+### Ledger duality, stated rather than implied
+
+The host `QED/VeriTrialExport.lean` is **Fin 14** (committed at QED `8207365`,
+"Regenerate the Fin 14 export with the saturable transport theorems"). The
+clean-room copy of that same path is rewritten to **Fin 6** by gate command 1,
+because `rebuild_qed_oleans.py` and the `#print axioms` assertions are pinned to
+it. Two ledgers therefore cover two different Lean artifacts:
+
+- `SYSTEM_STATE.json` merkle `65084342…` — host, **Fin 14**, digest `1560a468…`
+- gate `PROVENANCE_MERKLE` `4ccf7a21…` — clean room, **Fin 6**
+
+**These are not expected to be equal.** Asserting equality would be the bug.
+What must hold — and does — is that each is internally consistent and each
+names the `N` it covers. Verified: host file still 182 `Fin 14`, **0 `sorry`**,
+after the run; the Fin 14 pair passes no `--lean-out`, so it certifies the
+25-lemma *set* while leaving the rebuild artifact at Fin 6.
+
+### Mutation: 1.0 with nothing suppressed
+
+`equivalent: []`, so no kill is bought with a suppression. 14 sampled, 12
+killed, **0 survived**. The 2 skips are **not** equivalents: both are
+`unreadable file` entries for sibling-prefixed duplicate paths
+(`tether/scripts/audit_system_state.py` alongside `scripts/audit_system_state.py`)
+that the room-root-relative sampler cannot resolve. They are inert, not
+suppressed — the same "non-sampleable" class the 2026-10-04 audit deleted rather
+than kept. `target_source: changed`, so the battery attacked the new ledger code
+itself: 6 kills in `scripts/audit_system_state.py`, 6 in its test suite.
+
+### Global-minimum checklist
+
+| criterion | result |
+|---|---|
+| formal gate, Fin 6 | **9/9**, no `sorry` |
+| formal gate, Fin 14 + saturable | **25/25**, no `sorry` |
+| Lean axioms | exactly `[propext, Classical.choice, Quot.sound]` |
+| mutation kill_rate | **1.0** (12/12, 0 survived, 0 suppressed) |
+| clean-room suite | **56 passed** (`test_cleanroom` + `test_multirepo_capture`) |
+| review | **approve** |
+| sandbox violations | `[]` |
+| sibling safety | QED `8beb690b` and VeriTrial `e0d5a8ea` heads unchanged; `patch_QED.diff` is **0 bytes** |
+| `SYSTEM_STATE.json` merkle | `65084342…`, matches live digests |
+| docs truth audit | green — two stale claims corrected (below) |
+
+### Zero leakage
+
+`grep -riE "pbpk|liver|dili|cyp|ka_rate" parser.py agentic_pipeline.py` → **no
+matches** (exit 1). QED's prover carries no VeriTrial vocabulary, which is what
+makes it a general verifier rather than a fitted one. `Compartmental.lean` and
+`VeriTrialExport.lean` ship **0 `sorry`**; the only `sorry` string in
+`Compartmental.lean` is inside prose asserting its absence.
+
+### lake SIGTRAP workaround — retained, do not "fix"
+
+`lake env lean` exits **133 (SIGTRAP)** under this Lake/Lean pair
+(`lean 4.34.0-rc2`, `lake 5.0.0-src+6a10ac8`), while plain `lean` and
+`lake build` both exit 0. `QED/agentic_pipeline.py` therefore invokes the
+elan-shimmed `lean` **directly** with an explicit `LEAN_PATH`
+(`_compile_env`); `_find_lake_root` is retained only to locate `.lake` for the
+olean search path. The gate's own rebuild log shows the bypass working:
+`+ elan run leanprover/lean4:v4.34.0-rc2 lean -o …/VeriTrialExport.olean`.
+Docker is not installed on this host, so the container route is unavailable.
+**Do not revert to `lake env`** — the SIGTRAP reproduces on demand.
+
+### Docs truth audit: two claims were wrong about the code
+
+`docs/gap_closure_plan.md` asserted G2 was "only `diffrax.Tsit5`" and G3 was a
+"three-compartment" model. Both contradict the tree: `pbpk/solvers.py` ships
+SDIRK2 (2-stage L-stable SDIRK, M-matrix stage), and `make_pbpk_ode` is an
+N-state perfusion network with saturable hepatic clearance
+`vmax·C/(km+C)` wired into both the liver outflow and the `elim` accumulator —
+exactly the stiff-system trigger G2 itself named as its closure condition. G6
+claimed "no disease-stratified cohorts", but `configs/population_hepatic_impairment.yaml`
+(Child-Pugh B, `egfr_scale: 0.6`) is validated by `validate_hepatic_impairment`
+inside `run_all_validations()`. All three rewritten to measured reality, each
+stating the genuinely-open remainder (no adaptive step control on the implicit
+path; no CYP-level kinetics; no pediatrics/pregnancy) instead of hiding it.
+
+### Backward compatibility
+
+The saturable term is zero unless **both** `vmax_metabolic` and
+`km_metabolic` are supplied, so the default parameterisation is byte-identical
+to the linear model. `make typecheck` is now **0 errors in 37 files** (was 11);
+`make lint`, `make test`, `make demo`, `make validate`, `make benchmark`,
+`make report` all exit 0. VeriTrial's provenance merkle `fd0f7e50…` matches
+`output/vvv40_report.html`'s `<meta name="merkle-root">`.
+
+### Superseded: this session's own gate run FAILED, and that was correct
+
+The run above (`819940868e53`) certified the ledger fix while the OSError
+soft-pass was still disclosed-but-uncertified. Re-running to close that
+disclosure produced session `3ed940d73031`, which **failed**:
+
+    kill rate 43% (13/30, 17 surviving) is below fail_below 0.8
+
+Not a flake — the gate working. `mutation.target_source` is `changed`, so
+editing *any* tether `.py` file makes it a mutation target. My
+`_drop_workspace_prefix_duplicates` edit put `src/tether/orchestrator.py` and
+two test files into the battery, and the 12-command ladder ran **none** of
+them. Every survivor was a construct no command in the ladder executes:
+
+| target | killed | note |
+|---|---|---|
+| `scripts/audit_system_state.py` | 6/6 | ladder ran its suite |
+| `tests/test_audit_system_state.py` | 6/6 | ladder ran its suite |
+| `src/tether/orchestrator.py` | **1/6** | no command reaches it |
+| `tests/test_mutation.py` | **0/6** | collected by no command |
+| `tests/test_adapters_describe.py` | **0/6** | collected by no command |
+
+This is the third instance of the trap this mission file already documents
+twice ("the gate mutated X but only ran Y, so mutants Y's own suite kills were
+reported as SURVIVING — the gate was structurally understating its own kill
+rate"). The remedy is the same both times: **measure the teeth, then run those
+suites.** Not suppress them.
+
+### Choosing the battery by measurement, not by taste
+
+I scored candidate batteries offline through the harness's own deterministic
+sampler — same per-path sha256 seeds, same operator set, same
+`max_mutants: 6` — so the choice was empirical rather than a guess:
+
+| battery | kill rate |
+|---|---|
+| existing 12-command ladder | 13/30 = 0.433 (fails) |
+| + `test_mutation`, `test_adapters_describe`, `test_core` | 27/30 = 0.900 |
+| + `test_safety`, `test_review_gate`, `test_git_state_guard`, `test_docs` | **30/30 = 1.0000** |
+
+`tests/test_git_state_guard.py` is load-bearing and not decoration. Without it
+`orchestrator.py` scores 5/6, and the survivor is a **fail-open in the safety
+layer**: `_snapshot_hook_integrity`'s digest `return` mutated to `return None`,
+so the git-hook integrity tripwire's baseline silently becomes nothing — and one
+of its callers wraps the sibling loop in `except Exception: pass`, which is why
+it survives unnoticed.
+
+That run's agent had written the opposite conclusion into the mission file:
+that `185:8` and `580:4` were unkillable pre-existing code "outside the changed
+region", settling for an "honest 0.900". That was an **assertion presented as
+a finding**. Both sites are killed by the wider battery. I replaced that block
+with the measurement and deleted the now-subsumed 3-suite command rather than
+leaving it to re-run ~12 s per mutant for teeth already provided.
+
+### Two more real defects found and fixed
+
+**Phantom mutation rows.** The workspace changed-file union spells each file
+both bare and sibling-prefixed (`scripts/audit_system_state.py` *and*
+`tether/scripts/audit_system_state.py`). The room root *is* the tether
+checkout, so the prefixed form does not exist and became a `skipped` mutant
+with detail `unreadable file`. The earlier certified run therefore reported
+`skipped: 2` — inert rows inflating the sampled total, so `total` no longer
+equalled `killed + survived`. `_drop_workspace_prefix_duplicates` drops a
+target only when the bare path is absent **and** stripping its first segment
+yields an existing, already-covered path, so it fails **open**: a genuinely
+missing file is still attempted and still reported, never quietly swallowed.
+
+**A latent ~1-in-120 test flake.** `test_known_settings_are_sorted_not_frozenset_order`
+asserted `settings != list(frozenset)` — that frozenset order differs from
+alphabetical. But frozenset iteration order is a function of string hashes, so
+for some `PYTHONHASHSEED` it *is* alphabetical. Reproduced deterministically at
+`PYTHONHASHSEED=174`, where the test failed while sorting worked perfectly. The
+assertion was unsound, not merely brittle; it is replaced by container-type and
+determinism checks that establish the same claim without the coincidence.
+Verified: 200/200 seeds clean, and the full suite green at seeds 0, 1 and 2.
+
+### Final certification — session `dbd2ba88269e`
+
+Re-run carrying all of the above. The offline prediction matched exactly.
+
+| `dbd2ba88269e` | |
+|---|---|
+| status | **success** |
+| review | **approve** |
+| `sandbox_violations` | `[]` |
+| `git_state_violations` | none |
+| verification | **13/13 commands, 0 non-zero exits** |
+| mutation | **kill_rate 1.0 — 30/30 killed, 0 survived, 0 skipped** |
+| clean-room Fin 6 | **9/9 verified**, no `sorry` |
+| clean-room Fin 14 + saturable | **25/25 verified**, no `sorry` |
+| clean-room `PROVENANCE_MERKLE` | `aa70915b…` (Fin 6 copy) |
+| per-file kills | 6/6 in each of the 5 changed `.py` files |
+
+`skipped: 0` is the dedupe fix landing: the sample is now exactly 30 (5 × 6)
+with no phantom rows, so `total == killed + survived` holds and every scored
+mutant is real. `equivalent: []` throughout — 30/30 is measured, not bought.
+
+Nothing is left disclosed-but-uncertified. The OSError soft-pass fix, the
+dedupe, the flaky-test fix and the widened battery are all inside the certified
+diff rather than described after the fact.
+
+### Final committed state
+
+The certified diff was verified as an uncommitted patch against checkpoint
+`65aacef`, then committed. Nothing in the certification changed: the gate
+asserts on content, and the content is byte-identical — only its address moved.
+
+| repo | HEAD | dirty | sorry_free |
+|---|---|---|---|
+| tether | `65aacef` (this report's commit is its child) | false | `n/a` (ships no Lean) |
+| QED | `8beb690` — untouched all session, `patch_QED.diff` 0 bytes | false | **true** |
+| VeriTrial | `3d28470` — docs truth correction only | false | **true** |
+
+`SYSTEM_STATE.json` merkle root: `8a57340036cf28a1656f85bbe97704ef9b65441a5ea3c2f6003a2967ff416589`
+
+The tether row records `65aacef` because a commit cannot contain its own sha;
+this is the same convention the earlier sections of this report use, and it is
+why the ledger is regenerated *before* the tether commit and not after. The
+VeriTrial row is exact — it was committed first precisely so the ledger could
+record a real head rather than a dirty marker.
+
+Two merkle roots appear in this report and both are correct, because they were
+measured at different times against different trees: `65084342…` (VeriTrial
+still dirty at `e0d5a8e`) and `8a573400…` (VeriTrial committed at `3d28470`).
+The Lean digests are identical in both — QED and VeriTrial ship no changed
+`.lean` bytes — so the difference is entirely the `head` and `dirty` fields
+changing, which is the ledger doing its job.

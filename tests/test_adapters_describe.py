@@ -103,15 +103,30 @@ def _register(monkeypatch, key, **attrs):
 
 def test_known_settings_are_sorted_not_frozenset_order():
     # `mock` declares one setting, so it cannot tell sorted() from any
-    # iteration order. `command` declares five: frozenset order is not
-    # alphabetical, so only a real sort satisfies this.
+    # iteration order. `command` declares five, so a real sort is observable.
     expected = ["command", "env", "prompt_via_stdin", "timeout_seconds",
                 "usage_patterns"]
     settings = describe_adapter("command", {})["known_settings"]
     assert settings == expected
     assert settings == sorted(settings)
-    assert settings != list(
-        registry._REGISTRY["command"].known_settings)
+
+    # The sorting must come from describe_adapter, not from the frozenset.
+    #
+    # This used to assert `settings != list(known_settings)` -- i.e. that
+    # frozenset iteration order differs from alphabetical order. That
+    # assertion is unsound, not merely brittle: a frozenset's iteration order
+    # is a function of the string hashes, so for some PYTHONHASHSEED values it
+    # IS alphabetical. Reproduced at PYTHONHASHSEED=174, where
+    # list(CommandAdapter.known_settings) == sorted(...) exactly, and this
+    # test failed even though sorting was working perfectly. Roughly 1 run in
+    # 120. What is actually being claimed -- "describe_adapter sorted these" --
+    # is established soundly by the container-type check plus determinism.
+    raw = registry._REGISTRY["command"].known_settings
+    assert isinstance(raw, frozenset)
+    assert isinstance(settings, list)
+    assert sorted(raw) == settings
+    # Deterministic across calls, i.e. not echoing a set's incidental order.
+    assert describe_adapter("command", {})["known_settings"] == settings
 
 
 def test_verified_flag_is_read_from_the_adapter_not_hardcoded():

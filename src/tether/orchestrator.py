@@ -1165,6 +1165,48 @@ class Orchestrator:
                 + clip_output(artifact.strip(), FORENSIC_EXCERPT_BUDGET))
         return "\n\n".join(lines)
 
+    def _drop_workspace_prefix_duplicates(self, targets: list[str]) -> list[str]:
+        """Drop sibling-prefixed spellings of targets already covered bare.
+
+        A workspace mission (e.g. the tri-repo gate) unions each changed file
+        under BOTH its project-relative spelling and its sibling-prefixed
+        spelling -- ``scripts/audit_system_state.py`` *and*
+        ``tether/scripts/audit_system_state.py``. That second form is correct
+        for the per-repo ``patch_<repo>.diff`` artifacts, but it is not a path
+        inside the room: the room root IS the tether checkout, so
+        ``<room>/tether/scripts/...`` does not exist.
+
+        Left alone, each duplicate became a ``skipped`` mutant with detail
+        ``unreadable file (...)``. That is honest per-entry but it inflates the
+        sampled total with rows that can never run, and on the 2026-10-04 gate
+        it made 2 of 14 sampled mutants inert. A reader comparing ``total``
+        against ``killed + survived`` would be counting phantom work.
+
+        The filter is deliberately narrow, and fails OPEN: a target is dropped
+        only when the bare path does not exist AND stripping its first segment
+        yields a path that exists AND is itself already a target. So a genuinely
+        missing file is still attempted and still reported as ``unreadable``
+        rather than being quietly swallowed -- only provable duplicates go.
+        """
+        if not targets:
+            return targets
+        base = Path(self.project_dir)
+        present = set(targets)
+        kept: list[str] = []
+        for rel in targets:
+            if (base / rel).exists():
+                kept.append(rel)
+                continue
+            parts = rel.split("/")
+            if len(parts) > 1:
+                tail = "/".join(parts[1:])
+                if tail in present and (base / tail).exists():
+                    log.debug("mutation: dropping sibling-prefixed duplicate "
+                              "%s (covered by %s)", rel, tail)
+                    continue
+            kept.append(rel)
+        return kept
+
     def _mutation_targets(self, mission: Any, changed: list[str],
                             spec: Optional[MutationSpec] = None) -> list[str]:
         """Changed files eligible for mutation (dogfood-22).
@@ -1189,6 +1231,7 @@ class Orchestrator:
             return sandbox_write_violation(posix, allowed, forbidden) is None
 
         targets = [Path(r).as_posix() for r in sorted(changed) if _ok(r)]
+        targets = self._drop_workspace_prefix_duplicates(targets)
         source = "changed"
         if not targets and spec is not None:
             baseline = list(getattr(spec, "baseline_targets", None) or [])
