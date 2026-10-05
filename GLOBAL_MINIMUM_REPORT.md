@@ -1736,8 +1736,30 @@ Fixed rather than re-described:
 - The host row carries `ledger_host: true`, so the exemption is **data a
   verifier reads** rather than a convention in prose.
 
-Current root: `c899c896ad624fd06bc6d2002c5fd3b7d10ec20652dfd8f029d01cf5fe0426ce`,
-`--check` green.
+Current root: `7245b2e2eaee9d8c13ca7c4c186f1a83685e6266a612bab99fdef9971fa1ae35`,
+`--check` green **after** the commit that wrote it — the property the root
+redefinition exists to provide, and the check that would have caught the
+`52f21c3c` drift above.
+
+The first cut of this fix did not work, and the reason is worth recording
+because it is the same shape as the bug it was chasing. The dirty-exemption
+sliced `entry[3:]` off the output of `_run()`, but `_run()` calls `.strip()`,
+which eats the leading space of `" M SYSTEM_STATE.json"` and yields
+`"M SYSTEM_STATE.json"`. The slice then cut into the filename, the ledger's own
+file never matched, and **every freshly written ledger reported itself dirty** —
+precisely the behaviour the exemption was added to prevent. All 29 tests passed
+throughout, because every one asserted `dirty=True` when *other* files were
+dirty. Nothing asserted the negative, so a completely broken exemption was
+invisible to the suite. Found by running the script, not by reading the tests.
+
+Fixed with a dedicated porcelain reader that preserves the XY prefix, and
+failing **closed** on a git error — an unreadable status must not read as clean.
+Four more tests, including one that asserts on the helper's contract rather than
+on slice arithmetic: reintroducing `[3:]` is *not* the original defect, since
+both `[2:]` and `[3:]` happen to give the right path on a clean line. That
+mutant was tried, survived, and was identified as equivalent instead of being
+papered over with a test that cannot fail. Battery after the fix: **8/8 killed**,
+including the strip defect.
 
 The exemption is deliberately narrow: only the host's `head`. Its `dirty`,
 `sorry_free` and `lean_files` are still checked, because a blanket exemption
