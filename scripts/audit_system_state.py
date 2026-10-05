@@ -83,31 +83,82 @@ def _compute() -> dict:
 
 
 def _diff(expected: dict, actual: dict) -> list[str]:
-    """Human-readable field-level differences, ledger_host rows excluded.
+    """Human-readable differences between the live and committed ledgers.
 
-    The ledger_host row is skipped because it is *expected* to differ -- that is
-    the self-reference, not drift. Reporting it would train a reader to ignore
-    the one line that matters.
+    The comparison is BIDIRECTIONAL, and that is load-bearing rather than
+    tidy. An earlier revision walked only ``expected``'s rows and fields, so it
+    reported what live state had that the committed file lacked -- and stayed
+    silent about everything the committed file had *added*. That is precisely
+    the direction a tampered or stale ledger needs: appending a row for a repo
+    that does not exist, duplicating a row, or planting ``ledger_host: true`` on
+    a sibling to exempt its head all passed as "ledger OK". A verifier that
+    cannot be made to disagree by editing the thing it verifies is not verifying.
+
+    So both directions are compared, and the row set is compared as a set:
+    a duplicate key would otherwise collapse in the ``{r["repo"]: r}`` dict and
+    hide itself.
+
+    The ledger_host row's ``head`` is skipped, because that difference is the
+    structural self-reference rather than drift.
     """
     out: list[str] = []
-    actual_rows = {r["repo"]: r for r in actual.get("repos", [])}
-    for exp in expected["repos"]:
-        name = exp["repo"]
+
+    exp_names = [r["repo"] for r in expected["repos"]]
+    act_names = [r.get("repo") for r in actual.get("repos", [])]
+
+    for dup in {n for n in act_names if act_names.count(n) > 1}:
+        out.append(f"{dup}: duplicate row in committed ledger")
+
+    expected_rows = {r["repo"]: r for r in expected["repos"]}
+    actual_rows = {r.get("repo"): r for r in actual.get("repos", [])}
+
+    for name in exp_names:
+        exp = expected_rows[name]
         act = actual_rows.get(name)
         if act is None:
             out.append(f"{name}: absent from committed ledger")
             continue
-        for key, want in exp.items():
+        for key in _comparable_keys(exp, act):
             if key == "head" and _is_ledger_host(name):
                 continue
-            got = act.get(key)
-            if got != want:
+            want, got = exp.get(key), act.get(key)
+            if want != got:
                 out.append(f"{name}.{key}: committed={got!r} live={want!r}")
+
+    # Anything the committed ledger claims that live state does not have at all.
+    for name in act_names:
+        if name not in expected_rows:
+            out.append(f"{name}: in committed ledger but not a live repo")
+
     if expected["merkle_root"] != actual.get("merkle_root"):
         out.append(
             f"merkle_root: committed={actual.get('merkle_root')!r} "
             f"live={expected['merkle_root']!r}")
     return out
+
+
+def _comparable_keys(exp: dict, act: dict) -> list[str]:
+    """Union of the two rows' keys, so neither side can hide a field."""
+    return sorted(set(exp) | set(act))
+
+
+def _rows(payload: object) -> list[dict] | None:
+    """The ledger's repo rows, or None if the file is not shaped like a ledger.
+
+    A committed file can be hand-edited, truncated mid-write, or written by an
+    older/newer version. None of those are excuses to crash: this is a
+    verifier, and a verifier that dies on malformed input reports nothing while
+    the caller sees a non-zero exit and may read that as a pass. Returning None
+    lets the caller say "this is not a ledger" and fail closed.
+    """
+    if not isinstance(payload, dict):
+        return None
+    rows = payload.get("repos")
+    if not isinstance(rows, list):
+        return None
+    if not all(isinstance(r, dict) for r in rows):
+        return None
+    return rows
 
 
 def verify() -> int:
@@ -120,6 +171,10 @@ def verify() -> int:
         actual = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         print(f"ledger unreadable: {exc}", file=sys.stderr)
+        return 1
+    if _rows(actual) is None:
+        print(f"ledger malformed: {path} is not shaped like a ledger "
+              "(expected an object with a list of repo rows)", file=sys.stderr)
         return 1
     diffs = _diff(_compute(), actual)
     if not diffs:

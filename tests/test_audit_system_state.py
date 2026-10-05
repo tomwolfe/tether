@@ -9,6 +9,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "audit_system_state.py"
 
 
@@ -628,6 +630,113 @@ def test_status_entries_fail_closed_when_git_is_unavailable(tmp_path, monkeypatc
     entries = mod._status_entries(ws / "tether")
     assert entries, "must not report an empty (i.e. clean) status"
     assert mod._is_ledger_host("tether")
+
+
+def test_extra_row_for_a_nonexistent_repo_is_drift(tmp_path, monkeypatch):
+    """The committed ledger must not be able to ADD rows that live state lacks.
+
+    _diff originally walked only the live rows, so it reported what was missing
+    from the committed file and said nothing about what the committed file had
+    added. Appending a well-formed row for a repo that does not exist therefore
+    passed as "ledger OK" -- the one direction a tampered ledger actually needs.
+    The comparison is now bidirectional.
+    """
+    mod = _load()
+    ws = tmp_path / "ws"
+    for r in ("tether", "QED", "VeriTrial"):
+        _init_repo(ws / r)
+    monkeypatch.setattr(mod, "ROOT", ws)
+    _write_ledger(mod, ws)
+    path = ws / "tether" / "SYSTEM_STATE.json"
+    payload = json.loads(path.read_text())
+    payload["repos"].append({"repo": "ghost", "head": "f" * 40, "dirty": False,
+                             "sorry_free": True, "lean_files": {}})
+    path.write_text(json.dumps(payload, indent=2))
+    assert mod.verify() == 1
+
+
+def test_ledger_host_cannot_be_planted_on_a_sibling_to_exempt_its_head(
+        tmp_path, monkeypatch):
+    """Marking a sibling ``ledger_host`` must not buy it the head exemption.
+
+    That flag is what disables the head comparison. If a committed file could set
+    it on QED or VeriTrial, their heads would stop being checked -- so the two
+    repos whose heads are genuinely certified would become unauditable by
+    editing the ledger.
+    """
+    mod = _load()
+    ws = tmp_path / "ws"
+    for r in ("tether", "QED", "VeriTrial"):
+        _init_repo(ws / r)
+    monkeypatch.setattr(mod, "ROOT", ws)
+    _write_ledger(mod, ws)
+    path = ws / "tether" / "SYSTEM_STATE.json"
+    payload = json.loads(path.read_text())
+    for row in payload["repos"]:
+        if row["repo"] == "QED":
+            row["ledger_host"] = True
+    path.write_text(json.dumps(payload, indent=2))
+    assert mod.verify() == 1, "a sibling must not be able to claim the exemption"
+
+
+def test_duplicate_row_is_drift(tmp_path, monkeypatch):
+    """A repeated repo must not collapse silently in the row lookup.
+
+    Both sides are indexed by repo name, so a duplicate is invisible to a
+    per-name comparison -- two rows for one repo, one of them fabricated.
+    """
+    mod = _load()
+    ws = tmp_path / "ws"
+    for r in ("tether", "QED", "VeriTrial"):
+        _init_repo(ws / r)
+    monkeypatch.setattr(mod, "ROOT", ws)
+    _write_ledger(mod, ws)
+    path = ws / "tether" / "SYSTEM_STATE.json"
+    payload = json.loads(path.read_text())
+    payload["repos"].append(json.loads(json.dumps(payload["repos"][0])))
+    path.write_text(json.dumps(payload, indent=2))
+    assert mod.verify() == 1
+
+
+@pytest.mark.parametrize("raw", [
+    '{"repos": ["not-a-dict"]}',
+    '{"repos": {"a": 1}}',
+    "[1, 2, 3]",
+    '"a bare string"',
+    "",
+    "null",
+])
+def test_malformed_ledger_fails_closed_without_crashing(tmp_path, monkeypatch, raw):
+    """A verifier must not die on malformed input.
+
+    It must fail closed AND say so. An uncaught AttributeError still exits
+    non-zero, so a caller checking only the exit code reads a crash as a verdict
+    -- indistinguishable from a genuine drift report, and it prints no reason.
+    """
+    mod = _load()
+    ws = tmp_path / "ws"
+    for r in ("tether", "QED", "VeriTrial"):
+        _init_repo(ws / r)
+    monkeypatch.setattr(mod, "ROOT", ws)
+    (ws / "tether" / "SYSTEM_STATE.json").write_text(raw)
+    assert mod.verify() == 1
+
+
+def test_valid_ledger_still_passes_after_the_hardening(tmp_path, monkeypatch):
+    """The guard must not reject well-formed ledgers.
+
+    Added because the hardening above rejects anything _rows() cannot parse, and
+    a validator that fails closed on valid input is just as broken as one that
+    fails open.
+    """
+    mod = _load()
+    ws = tmp_path / "ws"
+    for r in ("tether", "QED", "VeriTrial"):
+        _init_repo(ws / r)
+    (ws / "QED" / "T.lean").write_text("theorem t : True := trivial\n")
+    monkeypatch.setattr(mod, "ROOT", ws)
+    _write_ledger(mod, ws)
+    assert mod.verify() == 0
 
 
 def test_write_then_check_agrees_with_the_committed_file(tmp_path, monkeypatch):
