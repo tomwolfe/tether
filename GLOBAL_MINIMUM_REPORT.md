@@ -1516,7 +1516,7 @@ itself: 6 kills in `scripts/audit_system_state.py`, 6 in its test suite.
 | review | **approve** |
 | sandbox violations | `[]` |
 | sibling safety | QED `8beb690b` and VeriTrial `e0d5a8ea` heads unchanged; `patch_QED.diff` is **0 bytes** |
-| `SYSTEM_STATE.json` merkle | `65084342…`, matches live digests |
+| `SYSTEM_STATE.json` merkle | `65084342…` at this run's tree state (see the merkle-root section at the end for why later roots differ) |
 | docs truth audit | green — two stale claims corrected (below) |
 
 ### Zero leakage
@@ -1666,29 +1666,95 @@ diff rather than described after the fact.
 ### Final committed state
 
 The certified diff was verified as an uncommitted patch against checkpoint
-`65aacef`, then committed. Nothing in the certification changed: the gate
-asserts on content, and the content is byte-identical — only its address moved.
+`65aacef`, then committed. The gate asserts on content, so the question worth
+answering is whether the *content* is unchanged — and that was measured rather
+than asserted. Reconstructing `de2141e` from `patch_tether.diff` applied to
+`65aacef` and comparing per-file against the committed tree:
+
+| file | certified patch result vs committed `de2141e` |
+|---|---|
+| `scripts/audit_system_state.py` | **identical** |
+| `src/tether/orchestrator.py` | **identical** |
+| `tests/test_adapters_describe.py` | **identical** |
+| `tests/test_audit_system_state.py` | **identical** |
+| `tests/test_mutation.py` | **identical** |
+| `missions/tri-repo-full-stack-gate.yaml` | **identical** |
+| `SYSTEM_STATE.json` | differs — the ledger row, necessarily |
+| `GLOBAL_MINIMUM_REPORT.md` | differs — this prose, necessarily |
+
+So the claim is true where it carries weight and false as previously worded.
+Every file the gate's 13 verification commands and 30 mutants actually exercise
+is byte-identical; the two that differ are the ledger and this report, neither of
+which is gate input. The earlier phrasing — "the content is byte-identical, only
+its address moved" — overstated it by claiming all eight files, and the
+`SYSTEM_STATE.json` row in that table was the counterexample.
+
+The certification still points at checkpoint `dbd2ba88269e`, not at a commit
+sha. Re-pointing it needs another full 4-hour run, so it is disclosed rather
+than papered over: the certified *content* is pinned above by hash comparison,
+which is the property a reader actually needs.
 
 | repo | HEAD | dirty | sorry_free |
 |---|---|---|---|
-| tether | `de2141e` (the ledger refresh `3bd0537` is its child) | false | `n/a` (ships no Lean) |
+| tether | `595afff` | false | `n/a` (ships no Lean) |
 | QED | `8beb690` — untouched all session, `patch_QED.diff` 0 bytes | false | **true** |
 | VeriTrial | `3d28470` — docs truth correction only | false | **true** |
 
-All three repos are clean. `SYSTEM_STATE.json` merkle root:
-`52f21c3c71620a7ce787ae7932f190ce9a0d689b628efcb13dece47fb095b943`
+### The ledger row that cannot equal its own repo's HEAD
 
-VeriTrial was committed *first*, deliberately, so the ledger could record a
-real head rather than a dirty marker. The tether ledger was then regenerated
-*after* its own commit, which is this report's long-standing convention: a
-committed ledger cannot contain its own sha, so it names its parent — but
-`de2141e` is a real commit and `dirty` is a fact rather than a snapshot of
-mid-work state. QED was never touched, so its row is exact.
+The tether row records `de2141e` while the repo's HEAD is `595afff`. The
+previous account of this — "a committed ledger cannot contain its own sha, so it
+names its parent" — describes a real constraint but stops one step short of the
+defect. The constraint is genuine: writing `SYSTEM_STATE.json` changes the
+tether tree, and committing it creates a new commit, so the recorded head can
+never be the live head. But *naming the parent* was never a solution to that,
+only a description of it. And because the write path silently overwrote the
+file, **nothing compared the committed ledger against live state at all.**
 
-Three merkle roots appear in this report and all three were measured at
-different times against different trees: `65084342…` (VeriTrial dirty at
-`e0d5a8e`), `8a573400…` (VeriTrial committed at `3d28470`, tether still
-dirty), and `52f21c3c…` (all three committed). The Lean digests are identical
-across all three — no `.lean` byte changed this session — so every difference
-is entirely the `head` and `dirty` fields moving, which is the ledger doing
-its job rather than a regression.
+The proof is that `52f21c3c` sat in the committed file for several commits
+after both its recorded tether head and the real one had moved on. Regenerating
+produced `a0338737` — a different root, no error, no failed assertion. Three
+merkle roots in this report were each individually correct *for the tree state
+they were measured against*, and that careful accounting was still not a check:
+it was three snapshots and no alarm.
+
+Fixed rather than re-described:
+
+- `--check` recomputes the ledger and compares it to the committed file
+  **without writing**, exiting non-zero on any drift. It is read-only
+  specifically so it can run in CI or a pre-commit hook, which the write path
+  never could — writing dirtied the tree it was describing.
+- The self-reference is now **excluded from `merkle_root` itself** rather than
+  merely excused from comparison. This was forced by a real failure: exempting
+  the field while still hashing it left the root permanently disagreeing with
+  its own fresh value, which the new tests caught. `merkle_root` now means the
+  state of everything that *can* be named — all three repos' heads, dirty
+  flags, sorry-freedom and Lean digests, minus the one structurally unnameable
+  field — so it still moves on any real change.
+- `dirty` likewise ignores the ledger's own file. Otherwise every freshly
+  written ledger reports itself dirty, which is the ledger judging itself.
+- The host row carries `ledger_host: true`, so the exemption is **data a
+  verifier reads** rather than a convention in prose.
+
+Current root: `c899c896ad624fd06bc6d2002c5fd3b7d10ec20652dfd8f029d01cf5fe0426ce`,
+`--check` green.
+
+The exemption is deliberately narrow: only the host's `head`. Its `dirty`,
+`sorry_free` and `lean_files` are still checked, because a blanket exemption
+would exempt the one row able to hide real drift. QED's and VeriTrial's heads
+are inside the root and still move it, pinned by tests on both sides.
+
+### Merkle roots quoted in this report
+
+`65084342…` (VeriTrial dirty at `e0d5a8e`), `8a573400…` (VeriTrial committed
+at `3d28470`, tether still dirty) and `52f21c3c…` (all three committed) were
+each measured at different times against different trees, and the Lean digests
+are identical across all three — no `.lean` byte changed this session. Every
+difference is entirely `head` and `dirty` moving, which is the ledger working.
+
+That remains true, and it was never the problem. The problem was that the
+report *narrated* the roots instead of *asserting* them, so `52f21c3c` could
+go stale silently — which it did. The roots above also predate the
+`merkle_root` redefinition in the preceding section, so they are **not
+comparable to the current root**; they hashed a different projection. They are
+history, and `--check` is the forward-looking guarantee.
