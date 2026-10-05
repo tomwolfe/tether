@@ -528,6 +528,108 @@ def test_diff_reports_sibling_dirty_by_name(tmp_path, monkeypatch):
     assert any("QED.dirty" in d for d in diffs), diffs
 
 
+def test_ledger_only_modification_does_not_count_as_dirty(tmp_path, monkeypatch):
+    """Regression: the exemption actually exempts.
+
+    SHIPPED BUG, caught by running the script rather than only its tests. The
+    parser sliced ``entry[3:]`` off ``_run(...)`` output, but ``_run`` applies
+    ``.strip()``, which eats the leading space of ``" M SYSTEM_STATE.json"`` and
+    yields ``"M SYSTEM_STATE.json"``. The slice then cut into the filename and
+    produced ``"YSTEM_STATE.json"``, so the ledger's own file never matched and
+    the exemption never fired.
+
+    Every existing test still passed, because they only ever assert dirty=True
+    when OTHER files are dirty -- a broken exemption is invisible to them. This
+    pins the negative direction, which is the only one that can catch it.
+    """
+    mod = _load()
+    ws = tmp_path / "ws"
+    for r in ("tether", "QED", "VeriTrial"):
+        _init_repo(ws / r)
+    monkeypatch.setattr(mod, "ROOT", ws)
+    _write_ledger(mod, ws)
+
+    assert not mod._is_dirty("tether"), \
+        "the ledger's own file must not count as dirty"
+
+    # Any OTHER uncommitted change must still register.
+    (ws / "tether" / "f.txt").write_text("real change\n")
+    assert mod._is_dirty("tether"), "genuine uncommitted work must count"
+
+
+def test_status_parser_survives_the_strip_that_broke_it(tmp_path, monkeypatch):
+    """Pin the porcelain prefix handling directly.
+
+    The bug above was a whitespace interaction between ``_run``'s ``.strip()``
+    and a fixed-offset slice. Asserting on parsed paths rather than on the
+    end-to-end boolean keeps the failure legible if anyone routes this through
+    a stripping helper again.
+    """
+    mod = _load()
+    assert mod._status_path(" M SYSTEM_STATE.json") == "SYSTEM_STATE.json"
+    assert mod._status_path("M  SYSTEM_STATE.json") == "SYSTEM_STATE.json"
+    assert mod._status_path("?? SYSTEM_STATE.json") == "SYSTEM_STATE.json"
+    # Renames carry "orig -> dest"; only the destination is the live path.
+    assert mod._status_path("R  old.json -> SYSTEM_STATE.json") \
+        == "SYSTEM_STATE.json"
+
+
+def test_status_entries_do_not_go_through_run(tmp_path, monkeypatch):
+    """Pin the ACTUAL original bug: ``_run``'s strip eating the XY prefix.
+
+    Reintroducing a ``[3:]`` slice does NOT test this, because on a clean
+    ``" M SYSTEM_STATE.json"`` line both ``[2:]`` and ``[3:]`` yield the right
+    path -- verified, and the mutant survives for that reason rather than
+    because the suite is blind.
+
+    The shipped defect was the *interaction*: routing porcelain through a helper
+    that calls ``.strip()``. That turns ``" M SYSTEM_STATE.json"`` into
+    ``"M SYSTEM_STATE.json"``, and THEN any fixed offset slices into the
+    filename. So this pins the helper's own contract -- the prefix must survive
+    -- rather than a slice arithmetic that happens to be equivalent.
+    """
+    mod = _load()
+    ws = tmp_path / "ws"
+    _init_repo(ws / "tether")
+    (ws / "tether" / "SYSTEM_STATE.json").write_text("{}\n")
+    entries = mod._status_entries(ws / "tether")
+    assert entries, "the modified ledger must appear in the status"
+    # The status prefix must still be present, i.e. not stripped away.
+    assert all(len(e) >= 3 and e[:2].strip() for e in entries), entries
+    # Precondition, stated precisely: _run's .strip() removes the leading space
+    # that _status_entries preserves. Commit the file first so the porcelain
+    # entry is the " M" (unstaged modification) form that actually has a leading
+    # space -- "??" (untracked) and "A " (staged add) do not exercise this.
+    _git(ws / "tether", "add", "SYSTEM_STATE.json")
+    _git(ws / "tether", "commit", "-m", "track the ledger")
+    (ws / "tether" / "SYSTEM_STATE.json").write_text('{"edited": true}\n')
+    raw = mod._run(ws / "tether", "status", "--porcelain")
+    assert raw.startswith("M"), f"_run stripped the XY prefix: {raw!r}"
+    kept = mod._status_entries(ws / "tether")
+    assert kept and kept[0].startswith(" M"), kept
+
+
+def test_status_entries_fail_closed_when_git_is_unavailable(tmp_path, monkeypatch):
+    """An unreadable status must read as dirty, not as clean.
+
+    Reporting "clean" on a git failure is a soft pass of exactly the kind this
+    ledger already had one of: coverage silently degrading to nothing while the
+    output still looked healthy.
+    """
+    mod = _load()
+    ws = tmp_path / "ws"
+    _init_repo(ws / "tether")
+    import subprocess as _sp
+
+    def _boom(*a, **k):
+        raise OSError("no git")
+
+    monkeypatch.setattr(_sp, "run", _boom)
+    entries = mod._status_entries(ws / "tether")
+    assert entries, "must not report an empty (i.e. clean) status"
+    assert mod._is_ledger_host("tether")
+
+
 def test_write_then_check_agrees_with_the_committed_file(tmp_path, monkeypatch):
     """Round-trip: what --write produces, --check must accept.
 

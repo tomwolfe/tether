@@ -173,12 +173,47 @@ def _is_dirty(name: str) -> bool:
     if not _is_ledger_host(name):
         return bool(_run(repo, "status", "--porcelain"))
     ledger_name = ledger_path().name
-    for line in _run(repo, "status", "--porcelain").splitlines():
-        entry = line[3:].strip().strip('"')
-        if entry == ledger_name:
+    for entry in _status_entries(repo):
+        if _status_path(entry) == ledger_name:
             continue
         return True
     return False
+
+
+def _status_entries(repo: Path) -> list[str]:
+    """Raw porcelain lines for *repo*, with the XY status prefix intact.
+
+    NOTE THE STRIPPING HAZARD. This deliberately does NOT reuse :func:`_run`,
+    which applies ``.strip()`` to its output -- and that strips the leading
+    space out of ``" M SYSTEM_STATE.json"``, yielding ``"M SYSTEM_STATE.json"``.
+    Slicing ``[3:]`` off the stripped line then cuts into the filename and
+    yields ``"YSTEM_STATE.json"``, so the ledger's own file never matches and
+    the exemption silently stops working. That bug shipped once already; this
+    function exists so the prefix cannot be lost a second time.
+    """
+    try:
+        p = subprocess.run(["git", "-C", str(repo), "status", "--porcelain"],
+                           capture_output=True, text=True)
+    except OSError:
+        # Fail closed: an unreadable status means we cannot prove the tree is
+        # clean, so report dirty rather than pass a soft check.
+        return ["<status unavailable>"]
+    if p.returncode != 0:
+        return ["<status unavailable>"]
+    return [ln for ln in p.stdout.splitlines() if ln.strip()]
+
+
+def _status_path(entry: str) -> str:
+    """The path portion of one porcelain entry, quotes stripped.
+
+    Porcelain v1 format is ``XY <path>``, and renames append ``orig -> new``;
+    only the destination path is what git would need to restore, so that is what
+    is compared.
+    """
+    path = entry[2:].strip() if len(entry) > 2 else ""
+    if " -> " in path:
+        path = path.split(" -> ", 1)[1]
+    return path.strip('"')
 
 
 def audit_repo(name: str) -> dict:
