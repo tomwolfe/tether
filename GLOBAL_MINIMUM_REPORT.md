@@ -1841,6 +1841,51 @@ the room. Run it against the **host** tree before a run instead:
 It is read-only, exits non-zero on drift, and — not being a ladder command —
 cannot be credited with a kill.
 
+### Certification of record — session `84486875240e`
+
+The run above failed. This one passed, and it is the certification for the
+ledger work that `dbd2ba88269e` never covered.
+
+| `84486875240e` | |
+|---|---|
+| status | **success** |
+| review | **approve** |
+| `sandbox_violations` | `[]` |
+| `recovery_attempts` | `[]` |
+| verification | **13/13 commands, 0 non-zero exits** |
+| mutation | **kill_rate 1.0 — 30/30 killed, 0 survived, 0 skipped** |
+| `equivalent` | `None` — nothing suppressed |
+| `target_source` | `baseline` (verify-only: the agent left no mutable `.py`) |
+| per-file | **6/6 on all five targets** |
+| agent patch | **comment-only** |
+
+That last row matters, so it was checked rather than believed: `git diff -U0`
+filtered for non-comment lines returns **empty**. The gate's reviewer reached the
+same conclusion independently and approved on that basis. The certified *code* is
+therefore byte-identical to `1c31046`, and this run certifies it.
+
+**`scripts/audit_system_state.py`: 6/6 killed.** That is the row this whole
+sequence was for. Before `1c31046` the ledger code was reachable only through its
+own test suite and never through mutation, so the gate reported a `kill_rate`
+that said nothing about the code deciding whether the ledger can be trusted — the
+same shape as the trap this file records twice, one level up. Adding it to
+`baseline_targets` was verified before the contract was touched: the mission
+still validated, `Orchestrator._mutation_targets` with `changed=[]` (the exact
+verify-only path) actually *selected* the file rather than dropping it, and an
+offline score through the harness's own generator — same per-path sha256 seed,
+same operators, same `max_mutants: 6` — gave 6/6 against the mission's own
+command 9. The gate then reproduced it.
+
+This supersedes the "still open" note above. The `--check` command is not in the
+ladder and is not meant to be; the *code* is now mutation-certified, which is the
+property that was actually missing.
+
+The run's agent also corrected the mutation-cost comment, and was right to: the
+quoted 402 s fused two measurements from **different environments** and itemised
+the pure-Python half as "six commands" when it has been seven since the ladder
+was reordered. `~474 s` is now labelled as the sum of two measurements rather
+than a measurement of the sum, with the untimed-in-a-room caveat kept.
+
 ### Merkle roots quoted in this report
 
 `65084342…` (VeriTrial dirty at `e0d5a8e`), `8a573400…` (VeriTrial committed
