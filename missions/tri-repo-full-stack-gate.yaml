@@ -61,12 +61,27 @@ verification:
     # Each mutant re-runs the full 13-command suite, and the Lean
     # export/rebuild/formal-gate trio dominates its wall time, hence the cap.
     #
-    # That cost is now MEASURED, not guessed (clean-room run 2026-10-04, host
-    # checkpoint 65aacef, sibling VeriTrial e0d5a8e): one full pass of the
-    # battery is 402 s, itemised as export 0.9 s + olean rebuild 10.4 s (elan
-    # direct lean, no lake env) + Fin 6 formal gate 81.8 s + Fin 14 export
-    # 0.8 s + Fin 14 formal gate 190.9 s + merkle 84.2 s + the six pure-Python
-    # commands 33.4 s. verification.timeout_seconds is a PER-COMMAND bound
+    # That cost is now MEASURED, and the two halves come from two different
+    # environments, so they are labelled rather than fused into one number
+    # pretending to be a single observation:
+    #
+    #   Lean + merkle half, commands 1-6, IN THE CLEAN ROOM (run 2026-10-04,
+    #   host checkpoint 65aacef, sibling VeriTrial e0d5a8e): 369.0 s
+    #     = export 0.9 + olean rebuild 10.4 (elan direct lean, no lake env)
+    #     + Fin 6 formal gate 81.8 + Fin 14 export 0.8 + Fin 14 formal gate
+    #     190.9 + merkle 84.2
+    #   Pure-Python half, commands 7-13, ON THE HOST TREE, re-measured
+    #   2026-10-05 at these heads through the harness's own run_verification
+    #   over commands 7..13 verbatim: 105.2 s, 7/7 exit 0.
+    #
+    # So ~474 s per full pass, carrying the caveat above: the Python half has
+    # not been timed inside a room at these heads, and 474 s is the sum of two
+    # measurements rather than a measurement of the sum. The 402 s this
+    # comment used to quote was one such figure and it was already wrong in the
+    # only way that mattered here -- it counted "the six pure-Python commands",
+    # and there have been seven since the ladder was reordered.
+    #
+    # verification.timeout_seconds is a PER-COMMAND bound
     # (verification.py::_run_one), not a wall-clock budget for the tier, and
     # this mission declares no budget.max_wall_seconds, so the mutation cost
     # cannot fail the gate -- it is recorded here because the two SIGTERMs this
@@ -74,22 +89,26 @@ verification:
     # start from a number rather than a fear.
     #
     # MUTANT COUNT IS target_source-DEPENDENT, and the two paths differ by 10x:
-    #   baseline_targets path: 4 VeriTrial scripts x 6 = 24 sampled
+    #   baseline_targets path: 5 targets x 6 = 30 sampled (the 4 VeriTrial
+    #     bridge sources plus the tether ledger script added in 1c31046)
     #   changed-file path:     EVERY changed .py file x 6, no global cap
     #     (verification.py::run_mutation_testing loops all targets;
     #      max_mutants applies per file)
-    # A non-empty tree selects the changed path, and this tree has 5 changed
-    # .py files -> 30 sampled -> 30 x ~412 s ~= 3.4 h of verification on top of
-    # the green pass. An earlier revision of this comment read "the 12 sampled
-    # mutants below re-run it 12 times: ~84 min"; that was measured against a
-    # 2-file tree and understated the real cost 2.5x. Shape, not budget ask.
-    # 4 targets x max_mutants 6 = 24 sampled. The "21 of them scored" figure
+    # The changed path applies only when a run actually leaves .py files
+    # behind; a verify-only run (changed == []) falls back to the list above,
+    # which is the path a doc-only patch keeps. Last measured on the changed
+    # path at 5 changed .py files -> 30 sampled, i.e. the same 30, and
+    # 30 x ~474 s ~= 4.0 h of verification on top of the green pass. An
+    # earlier revision of this comment read "the 12 sampled mutants below
+    # re-run it 12 times: ~84 min"; that was measured against a 2-file tree
+    # and understated the real cost 2.5x. Shape, not budget ask.
+    # 5 targets x max_mutants 6 = 30 sampled. The "21 of them scored" figure
     # below is STALE and is kept only as history: it described a run whose
     # equivalent: entries still matched their sites. As of VeriTrial db6d1ad
     # (2026-10-02) 16 of the 19 entries have DRIFTED off their constructs, so
     # none of them suppress anything and the honest count is skipped: 0 --
-    # all 24 mutants are scored. See the equivalent: block below. Nothing is
-    # being suppressed, and that is why kill_rate 1.0 over 24/24 is not
+    # all 30 mutants are scored. See the equivalent: block below. Nothing is
+    # being suppressed, and that is why kill_rate 1.0 over 30/30 is not
     # bought with equivalences.
     baseline_targets:
       - "../VeriTrial/scripts/export_pbpk_to_qed.py"
@@ -294,8 +313,9 @@ verification:
     #     its callers wraps the sibling loop in `except Exception: pass`, so
     #     the guard's own baseline silently degrades to nothing -- a fail-open
     #     in the safety layer, which is precisely why it is worth a suite.
-    # Pure-Python, ~43 s, so the teeth are cheap relative to the 402 s the
-    # Lean trio already costs per mutant.
+    # Pure-Python, ~57 s measured on the host at these heads, so the teeth are
+    # cheap relative to the ~369 s the Lean and merkle half already costs per
+    # mutant (commands 1-6; the "trio" proper is 1-3).
     - "env PYTHONPATH=src python3 -m pytest tests/test_mutation.py tests/test_adapters_describe.py tests/test_core.py tests/test_safety.py tests/test_review_gate.py tests/test_git_state_guard.py tests/test_docs.py tests/test_audit_system_state.py -q -p no:cacheprovider"
     # Tether-side regression net: the mission mutates changed tether files, so
     # the clean-room suite must exercise them (sibling .git preservation,
@@ -404,23 +424,36 @@ verification:
     # from the room root, so it still selects the room's insilico_trial even
     # though the process later moves into ../VeriTrial. ~5 s.
     - "env PYTHONPATH=../VeriTrial/src python3 -c \"import os, sys, pytest; os.chdir(os.path.join(os.getcwd(), '../VeriTrial')); sys.exit(pytest.main(['-q', '-p', 'no:cacheprovider', 'src/insilico_trial/tests/test_fixed_step.py', 'src/insilico_trial/tests/test_solvers.py']))\""
-    # The committed ledger must describe the tree the gate just ran against.
+    # HISTORY, kept because the miss was real and it is the reason the ledger
+    # exists at all. GLOBAL_MINIMUM_REPORT.md carried three merkle roots and
+    # carefully explained that each was measured against a different tree
+    # state -- and the committed ledger still went stale behind that
+    # explanation, holding 52f21c3c for several commits after both its
+    # recorded head and the live head had moved. Regenerating gave a0338737:
+    # a different root, no error, no failed assertion, because the write path
+    # silently overwrote the file and NOTHING COMPARED it. Accounting for
+    # roots in prose is not the same as asserting them.
     #
-    # Added 2026-10-05, and it is here because of a real miss rather than for
-    # tidiness. GLOBAL_MINIMUM_REPORT.md carried three merkle roots and carefully
-    # explained that each was measured against a different tree state -- and the
-    # committed ledger still went stale behind that explanation, holding 52f21c3c
-    # for several commits after both its recorded head and the live head had
-    # moved. Regenerating gave a0338737: a different root, no error, no failed
-    # assertion, because the write path silently overwrote the file and NOTHING
-    # COMPARED it. Accounting for roots in prose is not the same as asserting
-    # them.
+    # THE ANSWER IS NOT HERE, and the reasoning this block used to carry is
+    # exactly what measurement overturned. `--check` is indeed read-only, and
+    # that used to read as "so it can live in a verification ladder without
+    # dirtying the tree it inspects". It is read-only AND it compares the
+    # COMMITTED ledger against live state, and a clean room is dirty by
+    # construction -- so inside the room the comparison has no truth value to
+    # report. Placed last it went red on a fully green run; placed first it
+    # scored every mutant killed before any mutant existed. Three placements,
+    # each argued in prose and each broken by measurement; the verdict is
+    # recorded at the HEAD of this ladder, under "WHY IT CANNOT LIVE HERE AT
+    # ALL", and that governs. Run it against the HOST tree, outside the ladder:
     #
-    # `--check` is read-only, so it can live in a verification ladder without
-    # dirtying the tree it inspects -- which is exactly why this could not be
-    # bolted on before. It exits non-zero on drift, and tolerates only the one
-    # structural self-reference (the ledger host's own head, which cannot be
-    # contained in the file that records it).
+    #     python3 scripts/audit_system_state.py --check
+    #
+    # One exemption there is structural and worth carrying over to this file,
+    # since it is a property of the ledger rather than of its placement: the
+    # ledger host's own head cannot be contained in the file that records it,
+    # so that single field is the one thing `--check` cannot compare against
+    # the live tree. It is marked in the schema (ledger_host: true) so the
+    # exemption is data a verifier can read rather than prose it has to trust.
   timeout_seconds: 3600
 review:
   enabled: true
