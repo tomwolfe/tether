@@ -1165,8 +1165,10 @@ class Orchestrator:
                 + clip_output(artifact.strip(), FORENSIC_EXCERPT_BUDGET))
         return "\n\n".join(lines)
 
-    def _drop_workspace_prefix_duplicates(self, targets: list[str]) -> list[str]:
-        """Drop sibling-prefixed spellings of targets already covered bare.
+    def _drop_workspace_prefix_duplicates(
+            self, targets: list[str],
+            workspace_repos: Optional[list[str]] = None) -> list[str]:
+        """Respell sibling-prefixed targets into paths that exist in the room.
 
         A workspace mission (e.g. the tri-repo gate) unions each changed file
         under BOTH its project-relative spelling and its sibling-prefixed
@@ -1182,15 +1184,36 @@ class Orchestrator:
         it made 2 of 14 sampled mutants inert. A reader comparing ``total``
         against ``killed + survived`` would be counting phantom work.
 
-        The filter is deliberately narrow, and fails OPEN: a target is dropped
-        only when the bare path does not exist AND stripping its first segment
-        yields a path that exists AND is itself already a target. So a genuinely
-        missing file is still attempted and still reported as ``unreadable``
-        rather than being quietly swallowed -- only provable duplicates go.
+        Two cases, and the second one used to be handled as if it were the
+        first:
+
+        1. DUPLICATE -- the bare spelling is present and already covers it.
+           Dropped, as before.
+        2. SIBLING-ONLY -- e.g. ``VeriTrial/src/.../test_fixed_step.py`` for a
+           file that exists ONLY in the sibling repo. Dropping this was WRONG:
+           nothing else covers it, so the mutation tier ended up with zero
+           readable targets. Every entry was skipped, and because
+           ``denominator = killed + survived`` (verification.py:616) the
+           summary then reported ``kill_rate = 0.0`` -- a gate failure reading
+           "no mutants ran" that said nothing at all about the change under
+           test. That is the fail-vacuous shape this file keeps warning about,
+           arriving from the opposite direction: not a mutant credited to the
+           wrong suite, but no mutant examined at all.
+
+           The correct room spelling of a sibling path is ``../<Repo>/<path>``,
+           which is exactly what this mission's own ``baseline_targets`` use.
+
+        So case 2 is RESPELLED to ``../<Repo>/<path>`` rather than dropped. The
+        rewrite fails OPEN in both directions: it happens only when the bare
+        path does not exist, ``<first segment>`` names a declared workspace
+        repo, and the ``../`` path does exist. So a genuinely missing file is
+        still attempted and still reported as ``unreadable`` rather than being
+        quietly swallowed.
         """
         if not targets:
             return targets
         base = Path(self.project_dir)
+        repo_names = {Path(r).name for r in (workspace_repos or [])}
         present = set(targets)
         kept: list[str] = []
         for rel in targets:
@@ -1204,6 +1227,13 @@ class Orchestrator:
                     log.debug("mutation: dropping sibling-prefixed duplicate "
                               "%s (covered by %s)", rel, tail)
                     continue
+                if parts[0] in repo_names:
+                    sibling = "../" + rel
+                    if (base / sibling).exists():
+                        log.debug("mutation: respelling sibling-only target "
+                                  "%s -> %s", rel, sibling)
+                        kept.append(sibling)
+                        continue
             kept.append(rel)
         return kept
 
@@ -1231,7 +1261,11 @@ class Orchestrator:
             return sandbox_write_violation(posix, allowed, forbidden) is None
 
         targets = [Path(r).as_posix() for r in sorted(changed) if _ok(r)]
-        targets = self._drop_workspace_prefix_duplicates(targets)
+        # Sibling-prefixed spellings are rewritable only when the mission
+        # actually declares the sibling as a workspace repo; without the list
+        # the filter stays duplicate-only and the rewrite is inert.
+        targets = self._drop_workspace_prefix_duplicates(
+            targets, list(getattr(mission, "workspace_repos", None) or []))
         source = "changed"
         if not targets and spec is not None:
             baseline = list(getattr(spec, "baseline_targets", None) or [])

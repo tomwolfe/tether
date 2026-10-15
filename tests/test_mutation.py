@@ -605,6 +605,95 @@ def test_mutation_baseline_targets_when_nothing_changed(tmp_path):
     assert orch._mutation_targets(mission, []) == []
 
 
+def test_sibling_prefixed_changed_file_is_respelled_not_dropped(tmp_path):
+    """A change living ONLY in a sibling repo must stay a mutation target.
+
+    The room root is the tether checkout, so the changed-file spelling
+    `VeriTrial/src/x.py` does not resolve against it. Dropping it leaves the
+    mutation tier with nothing readable: every entry is `skipped`, and since
+    `denominator = killed + survived` the summary reports `kill_rate = 0.0` --
+    "no mutants ran", which measures nothing about the change under test.
+
+    The correct room spelling is `../VeriTrial/src/x.py`, the same form the
+    mission's own `baseline_targets` already use.
+    """
+    from tether.orchestrator import Orchestrator
+    from tether.models import TetherConfig
+    from tether.adapters.mock import MockAdapter
+
+    # The room root IS the tether checkout; siblings sit BESIDE it.
+    room = tmp_path / "tether"
+    room.mkdir()
+    sibling = tmp_path / "VeriTrial" / "src"
+    sibling.mkdir(parents=True)
+    (sibling / "x.py").write_text("v = 1\n", encoding="utf-8")
+
+    orch = Orchestrator(MockAdapter(), TetherConfig(), room)
+    mission = type("M", (), {"allowed_paths": None, "forbidden_paths": None,
+                             "workspace_repos": ["../VeriTrial"]})()
+
+    changed = ["VeriTrial/src/x.py"]
+    assert orch._mutation_targets(mission, changed) == ["../VeriTrial/src/x.py"], (
+        "the sibling-only target was dropped instead of respelled, so the "
+        "mutation tier would score every mutant `skipped` and report "
+        "kill_rate 0.0 without running a single mutant")
+
+    # It must actually be readable at its new spelling -- that is the whole
+    # point of respelling it.
+    assert (room / "../VeriTrial/src/x.py").exists()
+
+
+def test_sibling_rewrite_fails_open(tmp_path):
+    """A missing sibling path, or an undeclared repo, is NOT rewritten away."""
+    from tether.orchestrator import Orchestrator
+    from tether.models import TetherConfig
+    from tether.adapters.mock import MockAdapter
+
+    room = tmp_path / "tether"
+    room.mkdir()
+    (tmp_path / "VeriTrial" / "src").mkdir(parents=True)
+    (tmp_path / "Other").mkdir()
+
+    orch = Orchestrator(MockAdapter(), TetherConfig(), room)
+
+    # Declared repo, but the file does not exist there: still attempted, so it
+    # is still reported as `unreadable` rather than silently swallowed.
+    mission_ok = type("M", (), {"allowed_paths": None, "forbidden_paths": None,
+                                "workspace_repos": ["../VeriTrial"]})()
+    assert orch._mutation_targets(mission_ok, ["VeriTrial/src/nope.py"]) == \
+        ["VeriTrial/src/nope.py"]
+
+    # File exists, but the repo is not a declared workspace repo: the `../`
+    # rewrite must not fire, or an unrelated sibling would get mutated.
+    (tmp_path / "Other" / "y.py").write_text("v = 1\n", encoding="utf-8")
+    mission_none = type("M", (), {"allowed_paths": None,
+                                  "forbidden_paths": None})()
+    assert orch._mutation_targets(mission_none, ["Other/y.py"]) == ["Other/y.py"]
+
+
+def test_sibling_duplicate_is_still_dropped(tmp_path):
+    """The pre-existing duplicate case must keep behaving exactly as before."""
+    from tether.orchestrator import Orchestrator
+    from tether.models import TetherConfig
+    from tether.adapters.mock import MockAdapter
+
+    room = tmp_path / "tether"
+    (room / "scripts").mkdir(parents=True)
+    (room / "scripts" / "audit_system_state.py").write_text(
+        "v = 1\n", encoding="utf-8")
+
+    orch = Orchestrator(MockAdapter(), TetherConfig(), room)
+    mission = type("M", (), {"allowed_paths": None, "forbidden_paths": None,
+                             "workspace_repos": ["../QED", "../VeriTrial",
+                                                 "../tether"]})()
+    # Both spellings present and the bare one resolves: the prefixed form is a
+    # provable duplicate and is dropped, NOT respelled to `../tether/...`.
+    assert orch._mutation_targets(
+        mission,
+        ["scripts/audit_system_state.py", "tether/scripts/audit_system_state.py"],
+    ) == ["scripts/audit_system_state.py"]
+
+
 def test_mutation_baseline_targets_parsed(tmp_path):
     text = ("mission:\n  name: m\n  goal: g\nverification:\n"
             "  mutation:\n"
