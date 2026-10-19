@@ -10,7 +10,7 @@ constraints:
 verification:
   commands:
     - "python -m pytest -q"
-    - "ruff check src tests tools"
+    - "ruff check --no-cache src tests tools"
     - "mypy src/tether"
   probes:
     - command: ".venv/bin/python -c \"from tether.orchestrator import _file_sha256; print('guard ok')\""

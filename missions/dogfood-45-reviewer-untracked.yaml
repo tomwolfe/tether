@@ -15,7 +15,7 @@ constraints:
 verification:
   commands:
     - "python -m pytest -q"
-    - "ruff check src tests tools"
+    - "ruff check --no-cache src tests tools"
     - "mypy src/tether"
     - ".venv/bin/python tools/mutation_killrate.py --target src/tether/cleanroom.py --suite tests/test_cleanroom.py --min-kill-rate 0.8"
   artifacts:
