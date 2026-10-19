@@ -150,6 +150,26 @@ def test_cli_adapters_smoke_command_adapter(tmp_path, monkeypatch):
     assert "Smoke PASSED" in r.output
 
 
+def test_cli_adapters_smoke_default_prompt(tmp_path, monkeypatch):
+    """With --prompt omitted, the documented default is both printed and dispatched.
+
+    tests/test_docs.py pins DEFAULT_PROMPT and the README wording; this pins the
+    CLI wiring that turns that constant into the adapter's actual argv.
+    """
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "tether.yaml").write_text(
+        "adapters:\n  command:\n    command:\n"
+        f"      - {sys.executable}\n"
+        "      - '-c'\n"
+        "      - \"import sys; print('P=' + sys.argv[1])\"\n"
+        "      - '{prompt}'\n"
+    )
+    r = runner.invoke(app, ["adapters", "smoke", "command"])
+    assert r.exit_code == 0, r.output
+    assert "Prompt:       Reply with the single word OK" in r.output
+    assert "P=Reply with the single word OK" in r.output
+
+
 def test_cli_adapters_smoke_command_failure_and_unavailable(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "tether.yaml").write_text(
