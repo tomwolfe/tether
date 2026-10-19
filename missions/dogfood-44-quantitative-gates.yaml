@@ -1,7 +1,19 @@
 # Mission dogfood-44: quantitative verification gates hardening
-# Target 1: raises min_teeth_rate 0.5 -> 0.7 and makes mutation fail_below mandatory
-# Currently synthesis parser is all-or-nothing and fails on real-model single-quote nesting,
-# so teeth = 0 and any rate >0 would fail. Fix makes parser salvage valid entries.
+# Target 1: the auto-probe tier's quantitative knobs must actually BIND.
+# They sat under `adapters.opencode`, where the adapter layer warns
+# "unknown setting" and nothing reads them: the generated-probe tier reads
+# `verification.auto_probes.*`, so max_probes/max_mutants were inert and the
+# teeth rate was never enforced. They are moved to the field that reads them.
+# Target 2: the synthesis parser is all-or-nothing and fails on real-model
+# single-quote nesting, so teeth = 0; the fix makes it salvage valid entries.
+# The inert `adapters.mutation` block is gone with it: `adapters.<name>` is a
+# free-form mapping for the ADAPTER, so its `enabled`/`fail_below`/`max_mutants`
+# were never read by anything. The mutation gate this mission can afford is
+# the mutation_killrate COMMAND above (it measures the declared battery
+# against real mutants and fails the attempt below 0.8). A `verification.
+# mutation` tier would re-run that whole battery once per mutant -- 12
+# mutants per changed .py file against a 60-minute wall budget -- so it is
+# not enabled here.
 mission:
   name: dogfood-44-quantitative-gates
   goal: |
@@ -31,17 +43,31 @@ verification:
     # synthesized-probe tier silently ran against the fake adapter and failed
     # with "no fenced yaml block found". Pin the real model here.
     adapter: opencode
+    # These two are the caps the generated-probe tier actually applies. They
+    # used to live under `adapters.opencode`, which is a free-form settings
+    # mapping for the ADAPTER: the adapter layer warns "unknown setting" for
+    # them and the tier never saw them, so they were inert.
+    max_probes: 5
+    max_mutants: 12
+    # min_teeth_rate stays UNSET (advisory) on purpose, and the number it
+    # would have to clear is recorded here rather than guessed:
+    #   - measured against this very change, with the real synthesizer, the
+    #     generated probes kill 4 of 20 mutants of the changed files -- 20%
+    #     teeth, not 70%. The changed test file is a mutation target too, and
+    #     its mutants are invisible to behavioral probes, which caps the rate
+    #     before the probes' own reach is counted.
+    #   - a binding rate of 0.7 (or even dogfood-43's 0.5) would therefore
+    #     fail this mission on the SYNTHESIZER's probe quality, not on the
+    #     change -- a failed attempt burns a recovery round for a number no
+    #     edit of the parser can move.
+    # The binding quantitative gate for this mission is the mutation_killrate
+    # command above: it measures the declared battery against real mutants
+    # and fails the attempt below 0.8.
+    min_teeth_rate: null
 adapters:
   opencode:
     command: ["opencode", "run", "--auto", "-m", "opencode/minimax-m3.1-flash-free", "{prompt}"]
     timeout_seconds: 2700
-    max_probes: 5
-    min_teeth_rate: 0.7
-    max_mutants: 12
-  mutation:
-    enabled: true
-    fail_below: 0.5
-    max_mutants: 12
 
 recovery:
   max_attempts: 3

@@ -456,6 +456,97 @@ def test_salvage_keeps_sibling_when_others_break():
     assert [p.command for p in specs] == ["echo fine"]
 
 
+def test_salvage_keeps_sibling_after_stray_line_at_item_indent():
+    # A line the model wrote between entries, at the item indent, belongs to
+    # no entry: YAML cannot read the block, so salvage reads the entries one
+    # at a time -- and the stray line must not cost the entries after it
+    # their chance to be read. Ending the scan there would silently drop
+    # every later sibling.
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command: \"echo first\"\n"
+        "    contains: \"first\"\n"
+        "  stray line here\n"
+        "  - command: \"echo second\"\n"
+        "    contains: \"second\"\n"
+        "```"
+    )
+    specs = _parse(response)
+    assert [p.command for p in specs] == ["echo first", "echo second"]
+
+
+def test_salvage_keeps_sibling_after_stray_mapping_key_at_item_indent():
+    # Same shape, but the stray line is a mapping key: a key at the item
+    # indent is not part of any entry, so it is dropped while the entries
+    # on both sides of it survive.
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command: \"echo first\"\n"
+        "    contains: \"first\"\n"
+        "  note: something\n"
+        "  - command: \"echo second\"\n"
+        "    contains: \"second\"\n"
+        "```"
+    )
+    specs = _parse(response)
+    assert [p.command for p in specs] == ["echo first", "echo second"]
+
+
+def test_salvage_recovers_mis_indented_sibling_entry():
+    # A model that indents the second entry deeper than the first leaves
+    # YAML reading both as one broken item. The chunk is re-split at its own
+    # item markers, so the healthy first entry survives -- and the
+    # mis-indented sibling, read on its own, survives with it.
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command: \"echo first\"\n"
+        "    contains: \"first\"\n"
+        "    - command: \"echo second\"\n"
+        "      contains: \"second\"\n"
+        "```"
+    )
+    specs = _parse(response)
+    assert [p.command for p in specs] == ["echo first", "echo second"]
+
+
+def test_parse_still_rejects_a_missing_fence():
+    # The fail-safe contract: salvage never invents a block that is not
+    # there. A response without a fence is not a response with zero probes
+    # -- it is a synthesis failure.
+    with pytest.raises(ProbeSynthesisError) as ei:
+        _parse("probes:\n  - command: \"echo hi\"\n    contains: \"hi\"\n")
+    assert "no fenced yaml block" in str(ei.value)
+
+
+def test_parse_still_rejects_an_empty_fence():
+    # An empty fenced block carries no entries at all, so salvage has
+    # nothing to salvage: the response fails instead of yielding zero.
+    with pytest.raises(ProbeSynthesisError) as ei:
+        _parse("```yaml\n```")
+    assert "no probe entries could be read" in str(ei.value)
+
+
+def test_parse_still_rejects_a_response_with_no_valid_entry():
+    # Per-entry salvage keeps the VALID entries; it must not soften the
+    # empty-set case. Every entry malformed is still a failed synthesis,
+    # so the mission falls back to its human-authored battery.
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command: \"\"\n"
+        "    contains: \"x\"\n"
+        "  - command: \"echo broken\"\n"
+        "    matches: '([unclosed'\n"
+        "```"
+    )
+    with pytest.raises(ProbeSynthesisError) as ei:
+        _parse(response)
+    assert "no valid probes after salvage" in str(ei.value)
+
+
 # ------------------------------------------------------------- teeth gate
 
 

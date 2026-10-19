@@ -312,6 +312,9 @@ def _relax_scalar_line(line: str) -> str:
 
 _PROBES_KEY_RE = re.compile(r"^[ \t]*probes[ \t]*:")
 
+# A list item marker: a bare ``-`` or a ``-`` followed by the item's content.
+_ITEM_LINE_RE = re.compile(r"^[ \t]*-(?:[ \t]|$)")
+
 
 def _iter_probe_entry_chunks(block: str) -> list[str]:
     """Split the ``probes`` list body of ``block`` into one text chunk per item.
@@ -319,7 +322,15 @@ def _iter_probe_entry_chunks(block: str) -> list[str]:
     Purely textual and deliberately dumb: the point is to hand each ``- ``
     item to the YAML parser on its own so that one unparsable entry cannot
     hide its siblings. Continuation lines (deeper indentation) stay with the
-    item they belong to, and the body ends at the first line that is neither.
+    item they belong to.
+
+    The scan ends only when the list body itself ends -- a line indented
+    LESS than the item indent. A line at the item indent that is not an
+    item is stray content the model wrote between entries: it belongs to no
+    entry, so it closes the current chunk and is dropped, but the scan
+    continues. Ending the scan there instead would cost the response every
+    entry that follows the stray line -- the very all-or-nothing failure
+    this salvage exists to remove.
     """
     lines = block.splitlines()
     body_start = None
@@ -349,8 +360,15 @@ def _iter_probe_entry_chunks(block: str) -> list[str]:
         if is_item and indent == item_indent:
             chunks.append("\n".join(current).rstrip("\n"))
             current = []
-        elif indent <= item_indent:
+        elif indent < item_indent:
             break
+        elif indent == item_indent:
+            # Stray content at the item level: it closes the current chunk
+            # and is dropped, but the scan carries on so that the sibling
+            # entries after it are still read.
+            chunks.append("\n".join(current).rstrip("\n"))
+            current = []
+            continue
         current.append(line)
     if current:
         chunks.append("\n".join(current).rstrip("\n"))
@@ -405,6 +423,27 @@ def _parse_entry_chunk(chunk: str) -> list[object]:
     return []
 
 
+def _split_chunk_at_items(chunk: str) -> list[str]:
+    """Split one chunk at its own ``- `` markers.
+
+    A chunk normally holds a single entry, but a model that indents a
+    sibling DEEPER than the first item leaves YAML reading the whole chunk
+    as one broken item. Re-splitting at the inner markers hands each entry
+    to the parser on its own, so the healthy entry in front of the
+    mis-indented one is not lost with it.
+    """
+    parts: list[str] = []
+    current: list[str] = []
+    for line in chunk.splitlines():
+        if current and _ITEM_LINE_RE.match(line):
+            parts.append("\n".join(current).rstrip("\n"))
+            current = []
+        current.append(line)
+    if current:
+        parts.append("\n".join(current).rstrip("\n"))
+    return [part for part in parts if part.strip()]
+
+
 def _salvaged_specs(block: str) -> list[ProbeSpec]:
     """Recover probes from a block that would not parse as a whole.
 
@@ -412,11 +451,22 @@ def _salvaged_specs(block: str) -> list[ProbeSpec]:
     unparsable entry costs only itself. Unreadable items are dropped, never
     guessed at: a chunk that still will not parse after either scalar repair
     — a flow sequence the model left open, say — simply yields nothing.
+
+    A chunk that yields nothing is re-split at its own item markers and each
+    part is read on its own: that is where a mis-indented sibling hides, and
+    it must not cost the healthy entry in front of it.
     """
     specs: list[ProbeSpec] = []
     examined = 0
     for chunk in _iter_probe_entry_chunks(block):
-        for entry in _parse_entry_chunk(chunk):
+        entries = _parse_entry_chunk(chunk)
+        if not entries:
+            entries = [
+                entry
+                for part in _split_chunk_at_items(chunk)
+                for entry in _parse_entry_chunk(part)
+            ]
+        for entry in entries:
             try:
                 specs.append(_validated_probe(examined, entry))
             except ProbeSynthesisError:
