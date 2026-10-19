@@ -24,7 +24,7 @@ def _git(project_dir: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(['git', '-C', str(project_dir), *args], capture_output=True, check=False, shell=False)
 
 def _run_in(dest: Path, argv: List[str]) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.run(argv, cwd=str(dest), capture_output=False, check=False, shell=False)
+    return subprocess.run(argv, cwd=str(dest), capture_output=True, check=False, shell=True)
 
 def _extract_archive(archive: bytes, dest: Path) -> None:
     with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
