@@ -13,7 +13,11 @@ Fail-safe posture: a response that yields NO valid probe raises
 the mission then simply falls back to its human-authored battery (today's
 behavior), never to unverified success. One broken entry never costs the
 response its other probes — salvage is per entry, at the YAML level and at
-the spec level alike.
+the spec level alike. The block's SHAPE is forgiven too when the entries
+themselves are sound: a tab used for indentation, a key whose colon lacks
+its blank, a bare list and a capitalized key are the model's spelling of
+the schema, not a different intent, and each of them used to cost the
+response every probe in it.
 """
 from __future__ import annotations
 
@@ -193,13 +197,17 @@ def _valid_specs(entries: list[object]) -> list[ProbeSpec]:
 
 # A ``key: value`` line inside a probe list item. Only the key, its colon
 # and the separating blanks are captured so the value can be re-quoted
-# without disturbing the item's indentation or a trailing comment.
+# without disturbing the item's indentation. The value itself is captured
+# WHOLE, trailing comment included: YAML only starts a comment at a ``#``
+# that lies OUTSIDE the scalar, and a shell fragment carries ``#`` inside
+# it (``grep '#include'``), so the comment cannot be split off before the
+# scalar's end is known.
 _KEYED_LINE_RE = re.compile(
     r"^(?P<prefix>[ \t]*(?:-[ \t]+)?[A-Za-z_][A-Za-z0-9_]*:[ \t]*)"
-    r"(?P<value>\S.*?)[ \t]*(?P<tail>\#.*)?$")
+    r"(?P<value>\S.*)$")
 
-# Whatever trails a double-quoted scalar's closing quote: blanks, a comment,
-# or nothing. Anything else means the value is not what this repair assumes.
+# Whatever trails a quoted scalar's closing quote: blanks, a comment, or
+# nothing. Anything else means the value is not what this repair assumes.
 _SCALAR_TAIL_RE = re.compile(r"[ \t]*(?:\#.*)?")
 
 # The only two escapes a shell fragment legitimately needs once it is being
@@ -207,6 +215,99 @@ _SCALAR_TAIL_RE = re.compile(r"[ \t]*(?:\#.*)?")
 # double quote. Every other backslash (a regex ``\d``, a Windows path, a
 # literal newline inside a fragment) is data and must survive verbatim.
 _DQ_ESCAPE_RE = re.compile(r"\\(.)")
+
+
+def _quote_positions(value: str, quote: str,
+                     backslash_escapes: bool) -> list[int]:
+    """The positions in ``value`` whose quote can close the scalar.
+
+    A double-quoted scalar escapes a quote with a backslash, so an escaped
+    quote never closes it. A single-quoted scalar escapes a quote by
+    doubling it -- but a model that nests shell quotes wrongly leaves the
+    inner quote bare, which is exactly the casualty this repair exists
+    for, so every quote is a candidate there.
+    """
+    positions: list[int] = []
+    index = 1
+    while index < len(value):
+        char = value[index]
+        if backslash_escapes and char == "\\":
+            index += 2
+            continue
+        if char == quote:
+            positions.append(index)
+        index += 1
+    return positions
+
+
+def _closing_quote(value: str, quote: str,
+                    backslash_escapes: bool) -> Optional[int]:
+    """Index of the quote that closes ``value``'s scalar, or ``None``.
+
+    A candidate closing quote is one whose trailing text is blanks and/or
+    a comment -- the only thing YAML allows after a quoted scalar. The
+    candidates are taken from the LEFT, so a ``#`` inside the scalar is
+    data and a quote inside a trailing comment is not mistaken for the
+    scalar's end. A model that left an inner quote unescaped
+    (``"python -c "print(1)""``) has no legal tail after that inner
+    quote, so the candidate that survives the tail check is the one that
+    closes the scalar.
+    """
+    for index in _quote_positions(value, quote, backslash_escapes):
+        if _SCALAR_TAIL_RE.fullmatch(value[index + 1:]):
+            return index
+    return None
+
+
+def _readable(text: str) -> bool:
+    """True when YAML reads ``text`` without complaint."""
+    try:
+        yaml.safe_load(text)
+    except yaml.YAMLError:
+        return False
+    return True
+
+
+def _separated(prefix: str) -> bool:
+    """True when the key's colon is followed by a blank.
+
+    ``command: 'x'`` is a mapping entry; ``command:'x'`` is a plain scalar
+    the model MEANT as a mapping entry, and YAML reads it as one string,
+    so the entry is lost. The repair puts the blank back.
+    """
+    return prefix.endswith((" ", "\t"))
+
+
+def _repaired_line(prefix: str, literal: str, tail: str) -> str:
+    """Re-emit ``prefix`` with a single-quoted scalar and the trailing text.
+
+    The tail is whatever followed the scalar -- blanks and a comment --
+    and it is kept: the comment is the model's, and dropping it would
+    change the very line the repair just fixed. A comment needs a blank
+    in front of it to stay one, so the separator is added when the model
+    left it out.
+    """
+    separator = "" if not tail or tail[0].isspace() else " "
+    return f"{prefix.rstrip()} '{literal}'{separator}{tail}"
+
+
+def _dq_escape(match: "re.Match[str]") -> str:
+    r"""Collapse the two escapes a shell fragment needs; keep the rest.
+
+    ``\"`` is a literal double quote the model escaped on purpose, and
+    ``\\`` is a literal backslash (a Windows path); each collapses to the
+    one character it stands for. Every other backslash is the character
+    that made YAML choke in the first place -- a regex ``\d``, a stray
+    ``\t`` -- and is DATA, so both the backslash and the character after
+    it survive verbatim. Dropping the character too would turn
+    ``grep '\d+'`` into the runnable-looking but wrong ``grep '\+'``.
+    """
+    char = match.group(1)
+    if char == '"':
+        return '"'
+    if char == "\\":
+        return "\\"
+    return "\\" + char
 
 
 def _relax_double_quoted_scalars(text: str) -> str:
@@ -250,20 +351,12 @@ def _relax_single_quoted_line(line: str) -> str:
     value = match.group("value")
     if not value.startswith("'"):
         return line
-    # The closing quote is the LAST one whose trailing text is still a plain
-    # comment. For `python -c 'print(1)'` the final quote closes the scalar
-    # and everything between the first quote and it is data.
-    closing = value.rfind("'")
-    if closing <= 0:
+    prefix = match.group("prefix")
+    closing = _closing_quote(value, "'", backslash_escapes=False)
+    if closing is None:
         return line
     inner, tail = value[1:closing], value[closing + 1:]
-    if not _SCALAR_TAIL_RE.fullmatch(tail):
-        return line
-    try:
-        yaml.safe_load("'" + inner + "'")
-    except yaml.YAMLError:
-        pass
-    else:
+    if _separated(prefix) and _readable("'" + inner + "'"):
         return line
     # The model opened the scalar and then wrote the shell's own quotes
     # unescaped, so the final quote of the value is ambiguous: it may be the
@@ -275,7 +368,7 @@ def _relax_single_quoted_line(line: str) -> str:
     # is left exactly as written.
     if inner.count(chr(39)) % 2:
         inner += chr(39)
-    return f"{match.group('prefix')}'{inner.replace(chr(39), chr(39) * 2)}'{tail}"
+    return _repaired_line(prefix, inner.replace(chr(39), chr(39) * 2), tail)
 
 
 def _relax_scalar_line(line: str) -> str:
@@ -285,32 +378,18 @@ def _relax_scalar_line(line: str) -> str:
     value = match.group("value")
     if not value.startswith('"'):
         return line
-    closing = value.rfind('"')
-    if closing <= 0:
+    prefix = match.group("prefix")
+    closing = _closing_quote(value, '"', backslash_escapes=True)
+    if closing is None:
         return line
     inner, tail = value[1:closing], value[closing + 1:]
-    if not _SCALAR_TAIL_RE.fullmatch(tail):
+    if _separated(prefix) and _readable('"' + inner + '"'):
         return line
-    try:
-        yaml.safe_load('"' + inner + '"')
-    except yaml.YAMLError:
-        pass
-    else:
-        return line
-    # `\"` is the one escape the model wrote on purpose: it wanted a literal
-    # double quote, so the backslash is dropped and the quote kept. Every
-    # other backslash is the character that made YAML choke in the first
-    # place -- a regex `\d`, a Windows path -- and is data, so BOTH the
-    # backslash and the character after it survive verbatim. Dropping the
-    # character too would turn `grep '\d+'` into the runnable-looking but
-    # wrong `grep '\+'`, so the fix is to keep both halves of the match.
-    literal = _DQ_ESCAPE_RE.sub(
-        lambda m: m.group(1) if m.group(1) == '"' else "\\" + m.group(1),
-        inner).replace("'", "''")
-    return f"{match.group('prefix')}'{literal}'{tail}"
+    literal = _DQ_ESCAPE_RE.sub(_dq_escape, inner).replace("'", "''")
+    return _repaired_line(prefix, literal, tail)
 
 
-_PROBES_KEY_RE = re.compile(r"^[ \t]*probes[ \t]*:")
+_PROBES_KEY_RE = re.compile(r"^[ \t]*probes[ \t]*:", re.IGNORECASE)
 
 # A list item marker: a bare ``-`` or a ``-`` followed by the item's content.
 _ITEM_LINE_RE = re.compile(r"^[ \t]*-(?:[ \t]|$)")
@@ -339,7 +418,11 @@ def _iter_probe_entry_chunks(block: str) -> list[str]:
             body_start = i + 1
             break
     if body_start is None:
-        return []
+        # No 'probes' key: the model wrote a BARE LIST of entries. The
+        # whole block is then the list body. An entry that is not a probe
+        # is dropped by the spec gate, so the shape is forgiven and the
+        # content is not.
+        body_start = 0
     chunks: list[str] = []
     current: list[str] = []
     item_indent: Optional[int] = None
@@ -391,16 +474,67 @@ def _read_probe_list(block: str) -> tuple[Optional[list[object]], str]:
         data = None
     if data is None:
         return None, blocked_by
+    if isinstance(data, list):
+        # A bare list of entries: the model wrote the probes without the
+        # 'probes' key. The shape is forgiven; the entries are not -- they
+        # go through the same spec gate as any other.
+        if not data:
+            return None, "'probes' list is empty"
+        return data, blocked_by
     if not isinstance(data, dict):
         return None, "fenced block is not a mapping"
-    raw = data.get("probes")
-    if raw is None:
+    found, raw = _probes_value(data)
+    if not found or raw is None:
         return None, "fenced block has no 'probes' list"
     if not isinstance(raw, list):
         return None, "'probes' is not a list"
     if not raw:
         return None, "'probes' list is empty"
     return raw, blocked_by
+
+
+def _normalize_block(block: str) -> str:
+    """Return the block with its shape normalized for a second reading.
+
+    Two shape mistakes cost a whole response even when the entries
+    themselves are sound: a TAB used for indentation (YAML forbids it
+    outright) and a key whose colon is not followed by a blank (YAML then
+    reads the whole line as one plain scalar, not a mapping entry). Both
+    are the model's spelling of the shape Tether asked for, so both are
+    forgiven here. Only the leading whitespace of a line and the blank
+    after a key's colon are touched; the values themselves are not.
+    """
+    return "\n".join(_normalize_line(line) for line in block.split("\n"))
+
+
+def _normalize_line(line: str) -> str:
+    """Expand a leading tab, and put back a blank a key's colon lacks."""
+    stripped = line.lstrip(" \t")
+    indent = line[:len(line) - len(stripped)]
+    if "\t" in indent:
+        indent = indent.replace("\t", "    ")
+    line = indent + stripped
+    match = _KEYED_LINE_RE.match(line)
+    if match is None:
+        return line
+    if _separated(match.group("prefix")):
+        return line
+    value = match.group("value")
+    if not value.startswith(("'", '"')):
+        return line
+    return f"{match.group('prefix').rstrip()} {value}"
+
+
+def _probes_value(data: dict) -> tuple[bool, object]:
+    """The ``probes`` value of a mapping, whatever case the key was in.
+
+    The key is a schema the model was shown, so a capitalized ``Probes:``
+    is a spelling of the same intent, not a different one.
+    """
+    for key, value in data.items():
+        if isinstance(key, str) and key.lower() == "probes":
+            return True, value
+    return False, None
 
 
 def _parse_entry_chunk(chunk: str) -> list[object]:
@@ -410,16 +544,25 @@ def _parse_entry_chunk(chunk: str) -> list[object]:
     treats that entry as malformed and moves on to the next one.
     """
     document = "probes:\n" + chunk
-    repairs = (None, _relax_double_quoted_scalars, _relax_single_quoted_scalars)
-    for relax in repairs:
-        text = document if relax is None else relax(document)
+    # The two repairs work per line, so they compose: a chunk with one
+    # double-quoted casualty AND one single-quoted casualty is read only
+    # when both are applied, and neither repair alone can read it.
+    dq = _relax_double_quoted_scalars(document)
+    candidates = (
+        document,
+        dq,
+        _relax_single_quoted_scalars(document),
+        _relax_single_quoted_scalars(dq),
+    )
+    for text in candidates:
         try:
             data = yaml.safe_load(text)
         except yaml.YAMLError:
             continue
         if isinstance(data, dict) and isinstance(data.get("probes"), list):
             return data["probes"]
-        return []
+        # The candidate parsed but does not hold a list of entries: a
+        # later candidate may still read it, so the search goes on.
     return []
 
 
@@ -492,8 +635,14 @@ def parse_generated_probes(
     cannot be read as YAML at all — the common real-model failure being a
     shell command's quotes nested inside a quoted scalar — the ``probes``
     list is re-read one list item at a time so the readable entries still
-    parse. More than ``max_probes`` valid probes truncate deterministically
-    to the first ``max_probes``.
+    parse. The same second reading forgives a block whose SHAPE the model
+    spelled wrong while its entries are sound: a tab used for indentation
+    (YAML forbids it), a key whose colon lacks its blank (YAML then reads
+    the line as a plain scalar), a bare list of entries and a capitalized
+    ``Probes:`` key. The CONTENT is never forgiven: an entry that fails
+    the spec gate is still dropped, and a response with no valid probe at
+    all still fails. More than ``max_probes`` valid probes truncate
+    deterministically to the first ``max_probes``.
     """
     cleaned = strip_ansi(response or "")
     fences = _FENCE_RE.findall(cleaned)
@@ -501,13 +650,16 @@ def parse_generated_probes(
         raise _fail("no fenced yaml block found in response")
     block = fences[-1]
     entries, blocked_by = _read_probe_list(block)
-    if entries is None:
-        specs = _salvaged_specs(block)
-        if not specs:
-            raise _fail(blocked_by or "no probe entries could be read")
-        return specs[:max_probes]
-    specs = _valid_specs(entries)
+    specs = _valid_specs(entries) if entries is not None else []
     if not specs:
+        # The block did not read as a probes list, or it read into nothing
+        # usable. The SHAPE may be what the model wrote wrong while the
+        # entries themselves are sound, so the block is read again with its
+        # shape normalized, one list item at a time.
+        specs = _salvaged_specs(_normalize_block(block))
+    if not specs:
+        if entries is None:
+            raise _fail(blocked_by or "no probe entries could be read")
         raise _fail("no valid probes after salvage; all entries malformed")
     return specs[:max_probes]
 

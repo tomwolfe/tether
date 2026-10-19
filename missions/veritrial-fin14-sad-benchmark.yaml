@@ -1,0 +1,126 @@
+# Mission: veritrial-fin14-sad-benchmark
+#
+# WHY THIS EXISTS (closes the G3 N-scaling gap)
+#
+# VeriTrial/docs/gap_closure_plan.md records for G3:
+#   "N-scaling: DEFAULT_ORGAN_NETWORK ... is the validated 6-state fast path
+#    used by the demo and by `make validate`; STANDARD_14_ORGAN_NETWORK adds
+#    kidney, lung, brain, heart, muscle, adipose, bone, skin, spleen and
+#    pancreas as perfused tissues and is selected per-protocol via
+#    TrialEngine._organ_network (organ_network == 'STANDARD_14'). Both networks
+#    are exercised by the same tests, so the 14-state model is scaffolded and
+#    certified, not hypothetical."
+#
+# "Scaffolded and certified" is the honest scope today. What is NOT yet
+# demonstrated is that the 14-organ model survives the FULL 1000-patient SAD
+# benchmark -- the same run the 6-state model passes -- and that the two
+# networks agree on the quantity a regulator would actually compare: Cmax.
+# The prompt's claim that the 14-organ path is "certified" was found to be
+# narrow in exactly this way: an isomorphism file for Fin 14 was never
+# emitted, and the two networks' Cmax were never compared.
+#
+# SCOPE OF THE CLAIM: this mission runs the 14-organ network through the
+# existing SAD benchmark and compares Cmax between the two networks. It does
+# NOT promote STANDARD_14_ORGAN_NETWORK to the default -- the six-organ model
+# stays the default, because changing it would invalidate the Fin 6 export,
+# the J[5][2]/J[5][5] pins and the exported lemmas.
+
+mission:
+  name: veritrial-fin14-sad-benchmark
+  goal: |
+    Run STANDARD_14_ORGAN_NETWORK through the full 1000-patient SAD benchmark,
+    compare Cmax against the validated 6-state DEFAULT, pin the agreement with
+    a test, and document the measured delta.
+
+    TASK 1 - RUN THE FULL SAD BENCHMARK ON THE 14-ORGAN NETWORK
+    The demo path is `python -m insilico_trial.cli demo --patients 1000
+    --duration-days 7`. The 14-organ network is selected per-protocol via
+    TrialEngine._organ_network with organ_network == "STANDARD_14". Find the
+    supported way to run that same benchmark on the 14-organ network and RUN
+    IT FOR REAL at 1000 patients. If the CLI cannot currently select it for
+    the full run, add the selection -- but do not change what the DEFAULT
+    selection means.
+    The run must actually complete. A 100-patient "demo-small" is not the
+    benchmark and must not be reported as if it were.
+
+    TASK 2 - COMPARE Cmax, AND PIN IT
+    Compute Cmax for the same protocol on both networks. They will NOT be
+    identical -- the 14-organ model adds perfused tissues that change
+    distribution -- so the tolerance must be a PHYSIOLOGICAL one, justified
+    and stated, not a number chosen to make the test pass.
+    Add a test that asserts DEFAULT vs 14 Cmax agree within that tolerance.
+    Record the MEASURED delta (the actual relative difference) in the test's
+    docstring and in the docs, so the number is visible and not hidden behind
+    a loose bound. If the measured delta is large enough that "within
+    physiological tolerance" would be a false claim, say THAT instead of
+    widening the tolerance.
+
+    TASK 3 - DO NOT BREAK THE VALIDATED 6-STATE MODEL
+    The six-organ model remains the default and must keep passing everything
+    it passes today: the 216-test suite, the benchmark harness, and the
+    formal gate. Nothing in this mission may change the default network, the
+    6-state physiology, or the exported Fin 6 lemmas.
+
+    TASK 4 - DOCUMENT THE DELTA
+    Update the G3 "N-scaling" section of docs/gap_closure_plan.md with: the
+    measured Cmax delta between DEFAULT and STANDARD_14, the tolerance and
+    WHY that tolerance is physiological, the benchmark size that was actually
+    run, and the throughput on each network. If the 14-organ run is slower,
+    say by how much -- that is a real cost of the wider model and belongs in
+    the same place as the accuracy delta.
+
+context_files:
+  - src/insilico_trial/pbpk/model.py
+  - src/insilico_trial/engine.py
+  - src/insilico_trial/tests/test_population.py
+  - docs/gap_closure_plan.md
+  - Makefile
+
+constraints:
+  - "do not change DEFAULT_ORGAN_NETWORK or promote STANDARD_14_ORGAN_NETWORK to the default"
+  - "do not change the validated 6-state model's physiology"
+  - "do not weaken any existing test or threshold"
+  - "the benchmark must be the real 1000-patient run, not a reduced stand-in"
+
+verification:
+  commands:
+    # The whole suite, with the project default addopts (-x --tb=short -q).
+    - ".venv/bin/python -m pytest src/insilico_trial/tests/ -q"
+    # The 14-organ network is selected and IS the 14-organ network.
+    - >-
+      .venv/bin/python -c "import sys; sys.path.insert(0,'src');
+      from insilico_trial.pbpk.model import DEFAULT_ORGAN_NETWORK, STANDARD_14_ORGAN_NETWORK;
+      assert len(DEFAULT_ORGAN_NETWORK)==6, 'the default network must stay 6-state';
+      assert len(STANDARD_14_ORGAN_NETWORK)==14, 'the wide network must stay 14-state';
+      assert DEFAULT_ORGAN_NETWORK==('gut','liver','central','peripheral','effect','elim');
+      print('default unchanged, wide network intact')"
+    # Cmax is compared between the two networks by a real test.
+    - >-
+      .venv/bin/python -c "import re, pathlib;
+      tst=pathlib.Path('src/insilico_trial/tests').rglob('*.py');
+      blob='\n'.join(p.read_text() for p in tst);
+      assert re.search(r'Cmax', blob), 'no Cmax comparison test found';
+      assert re.search(r'STANDARD_14', blob), 'no test references the 14-organ network';
+      print('a Cmax comparison exists')"
+    # The docs record the measured delta.
+    - >-
+      .venv/bin/python -c "import pathlib, re;
+      doc=pathlib.Path('docs/gap_closure_plan.md').read_text();
+      assert re.search(r'Cmax', doc), 'gap_closure_plan.md does not mention Cmax';
+      assert re.search(r'1000', doc), 'gap_closure_plan.md does not record the benchmark size';
+      print('docs record the Cmax comparison and the benchmark size')"
+  timeout_seconds: 3600
+
+recovery:
+  max_attempts: 3
+
+review:
+  enabled: true
+  adapter: opencode
+
+budget:
+  max_sends: 24
+  max_wall_seconds: 5400
+
+adapter: opencode
+git_state_guard: true

@@ -14,6 +14,27 @@
 # mutation` tier would re-run that whole battery once per mutant -- 12
 # mutants per changed .py file against a 60-minute wall budget -- so it is
 # not enabled here.
+#
+# WHAT THE PARSER DOES NOW (src/tether/autoprobes.py), all of it per-entry:
+# a malformed entry costs only itself, and a response with no valid probe at
+# all still FAILS (empty or missing fence, empty list, every entry
+# malformed), so the mission falls back to its human-authored battery.
+#   - The two scalar repairs COMPOSE: a chunk with a double-quoted casualty
+#     AND a single-quoted casualty is read only when both of them run.
+#   - A double-quoted scalar keeps the two escapes a shell fragment needs
+#     (an escaped double quote and an escaped backslash); every other
+#     backslash is data and survives verbatim.
+#   - A `#` inside a quoted scalar is data, not the start of a comment, and
+#     a trailing comment survives the repair.
+#   - The SHAPE is forgiven when the entries themselves are sound: a tab
+#     used for indentation (YAML forbids it), a key whose colon lacks its
+#     blank (YAML then reads the line as one plain scalar), a bare list of
+#     entries, and a capitalized `Probes:` key.
+#   - The CONTENT is not: an entry that fails the spec gate is still
+#     dropped, and a placeholder probe is still never executed.
+# NOT changed on purpose: the LAST fenced yaml block still wins (an earlier
+# block is a draft, and the architecture doc pins that rule), and a
+# non-string `contains` is still rejected rather than coerced.
 mission:
   name: dogfood-44-quantitative-gates
   goal: |

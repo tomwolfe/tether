@@ -547,6 +547,171 @@ def test_parse_still_rejects_a_response_with_no_valid_entry():
     assert "no valid probes after salvage" in str(ei.value)
 
 
+# ------------------------------------------- double-quoted shell fragments
+
+
+def test_double_quoted_scalar_collapses_an_escaped_backslash():
+    # `\\` is the other escape a shell fragment legitimately needs: it is a
+    # literal backslash (a Windows path), not data to be doubled. The
+    # repair re-emits the scalar, so it has to honor that escape or the
+    # path the model wrote comes back with twice the separators. The raw
+    # `\d` beside it is the invalid escape that makes the repair run at
+    # all; it is data and must survive verbatim.
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        r'  - command: "type C:\\Users\\bob\\tool.exe \d"'
+        "\n"
+        "    contains: \"x\"\n"
+        "```"
+    )
+    specs = _parse(response)
+    assert len(specs) == 1
+    assert specs[0].command == r"type C:\Users\bob\tool.exe \d"
+
+
+def test_hash_inside_a_quoted_shell_fragment_survives():
+    # A `#` inside a quoted scalar is DATA: YAML only starts a comment at a
+    # `#` outside the scalar. The repair splits the value from the comment
+    # before it knows where the scalar ends, so a naive split truncates the
+    # command at the `#` -- and the entry is lost with it.
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command: \"grep '#include' \\d+ f\"\n"
+        "    contains: \"x\"\n"
+        "```"
+    )
+    specs = _parse(response)
+    assert len(specs) == 1
+    assert specs[0].command == "grep '#include' \\d+ f"
+
+
+def test_trailing_comment_is_not_swallowed_into_the_command():
+    # The comment is the model's own text and must stay OUT of the command:
+    # a command that carries `# the probe` never matches what it asserts.
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command: \"grep '\\d+' f\"  # the probe\n"
+        "    contains: \"x\"\n"
+        "```"
+    )
+    specs = _parse(response)
+    assert len(specs) == 1
+    assert specs[0].command == "grep '\\d+' f"
+
+
+def test_trailing_comment_survives_the_scalar_repair():
+    # The comment must survive the repair itself, not merely avoid being
+    # swallowed into the value: the repair rewrites the line, and a rewrite
+    # that drops the model's comment changes the line it just fixed.
+    from tether.autoprobes import _relax_double_quoted_scalars
+
+    repaired = _relax_double_quoted_scalars(
+        "  - command: \"grep '\\d+' f\"  # the probe")
+    assert repaired.endswith("# the probe")
+    assert "grep ''\\d+'' f" in repaired
+
+
+# ------------------------------------------------------- shape tolerance
+
+
+def test_probes_key_is_read_case_insensitively():
+    # The key is a schema the model was shown; a capitalized `Probes:` is a
+    # spelling, not a different intent, and it must not cost the response.
+    response = (
+        "```yaml\n"
+        "Probes:\n"
+        "  - command: \"echo hi\"\n"
+        "    contains: \"hi\"\n"
+        "```"
+    )
+    specs = _parse(response)
+    assert [p.command for p in specs] == ["echo hi"]
+
+
+def test_bare_list_of_entries_is_salvaged():
+    # The model wrote the entries without the `probes:` key. The shape is
+    # forgiven, the entries are not: they still have to pass the spec gate.
+    response = (
+        "```yaml\n"
+        "- command: \"echo hi\"\n"
+        "  contains: \"hi\"\n"
+        "- command: \"echo bye\"\n"
+        "  contains: \"bye\"\n"
+        "```"
+    )
+    specs = _parse(response)
+    assert [p.command for p in specs] == ["echo hi", "echo bye"]
+
+
+def test_tab_indented_list_is_salvaged():
+    # YAML forbids a tab as indentation, so a tab-indented list is not
+    # YAML at all -- and the whole response used to go with it. The tabs
+    # are indentation, not data, so they become blanks.
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "\t- command: \"echo hi\"\n"
+        "\t  contains: \"hi\"\n"
+        "```"
+    )
+    specs = _parse(response)
+    assert [p.command for p in specs] == ["echo hi"]
+    assert specs[0].contains == "hi"
+
+
+def test_key_without_a_blank_before_a_quoted_value_is_normalized():
+    # `command:'echo hi'` is a plain scalar to YAML, not a mapping entry,
+    # so the entry is lost. The blank the model forgot is put back.
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command:'echo hi'\n"
+        "    contains:'hi'\n"
+        "```"
+    )
+    specs = _parse(response)
+    assert [p.command for p in specs] == ["echo hi"]
+    assert specs[0].contains == "hi"
+
+
+def test_the_two_scalar_repairs_compose():
+    # One entry can need both repairs at once: a double-quoted command
+    # with a regex backslash AND a single-quoted value with a nested shell
+    # quote. Each repair alone leaves the other line broken, so they have
+    # to be applied together.
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command: 'python -c 'print(1)''\n"
+        "    contains: \"x\\d\"\n"
+        "```"
+    )
+    specs = _parse(response)
+    assert len(specs) == 1
+    assert specs[0].command == "python -c 'print(1)'"
+    assert specs[0].contains == "x\\d"
+
+
+def test_shape_tolerance_does_not_rescue_a_response_with_no_valid_probe():
+    # Forgiving the SHAPE must not forgive the CONTENT: a block that
+    # survives every shape tolerance still fails when it holds no valid
+    # probe, so the mission falls back to its human-authored battery.
+    response = (
+        "```yaml\n"
+        "- command: \"\"\n"
+        "  contains: \"x\"\n"
+        "- command: \"echo broken\"\n"
+        "  matches: '([unclosed'\n"
+        "```"
+    )
+    with pytest.raises(ProbeSynthesisError) as ei:
+        _parse(response)
+    assert "no valid probes after salvage" in str(ei.value)
+
+
 # ------------------------------------------------------------- teeth gate
 
 

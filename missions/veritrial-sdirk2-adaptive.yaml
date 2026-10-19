@@ -1,0 +1,138 @@
+# Mission: veritrial-sdirk2-adaptive
+#
+# WHY THIS EXISTS (closes the G2 gap named in VeriTrial/docs/gap_closure_plan.md)
+#
+# That plan states it plainly:
+#   "Remaining gap: SDIRK2 is a *fixed-step* L-stable method; there is still no
+#    adaptive step-size controller on the implicit path."
+#
+# `solve_implicit` in src/insilico_trial/pbpk/solvers.py computes
+# n_steps = ceil((t_end - t0)/dt) and runs them with jax.lax.scan at a FIXED
+# dt. The reference integrators it is compared against (diffrax.Tsit5) are
+# adaptive. So the implicit path either wastes work on smooth stretches or
+# loses accuracy on stiff ones, and the two paths can only be compared at one
+# hand-picked dt.
+#
+# SCOPE OF THE CLAIM: this adds an adaptive step-size controller to the
+# IMPLICIT path. It does NOT change the default behaviour of the existing
+# entry points, and it does NOT weaken any fail-closed guard -- the
+# mass-conservation monitor that poisons a blown-up trajectory must still
+# poison it on the adaptive path.
+
+mission:
+  name: veritrial-sdirk2-adaptive
+  goal: |
+    Give the L-stable SDIRK2 implicit solver an adaptive step-size controller,
+    without changing the behaviour of any existing entry point.
+
+    TASK 1 - A NEW ADAPTIVE ENTRY POINT, NOT A CHANGED DEFAULT
+    Add an adaptive controller to the implicit path. Keep `solve_implicit` and
+    `solve_implicit_batch` behaving EXACTLY as they do today when called the
+    way they are called today: same signature, same default dt, same outputs,
+    same poisoning behaviour. The adaptive controller should be reachable
+    explicitly -- a new keyword argument with a default that preserves today's
+    behaviour, or a new function -- and the existing call sites must not start
+    using it unless they already opt in.
+    Rationale: `solve_implicit` is on the validated 6-state path, and the
+    brief is explicit that the validated model must not break.
+
+    TASK 2 - THE CONTROLLER MUST BE L-STABLE
+    The method is 2nd-order L-stable (Hairer-Wanner SDIRK2 constants already
+    in the file: _GAMMA, _A21, _B1, _B2). An adaptive controller built on
+    step rejection would DESTROY L-stability unless it is implemented as a
+    proper embedded pair or step-doubling. Use an approach that preserves
+    L-stability, and PIN that property with a test on a stiff linear decay:
+    a rapidly decaying stiff system must still be damped to the correct
+    (essentially zero) value with a LARGE step, rather than oscillating or
+    growing. This is the property that distinguishes SDIRK2 from an explicit
+    method, so losing it silently would be worse than not having adaptivity.
+
+    TASK 3 - THE VARIABLE STEP COUNT NEEDS A WHILE LOOP
+    A fixed-length jax.lax.scan cannot express an adaptive step count. Use
+    jax.lax.while_loop (or equivalent), and keep the whole thing jit-able and
+    vmap-able in the same way `solve_implicit_batch` is today. The batch
+    variant must keep working: check how `solve_implicit_batch` is structured
+    and make the adaptive path work under it, or state clearly in your summary
+    that it does not and why.
+
+    TASK 4 - PIN IT AGAINST THE ADAPTIVE REFERENCE
+    `tests/test_solvers.py` already pins fixed-step SDIRK2 against
+    diffrax.Tsit5 on Warfarin PK at <1% relative error, and
+    `test_implicit_stiff_linear_decay` pins the stiff-decay behaviour.
+    ADD an equivalent pin for the ADAPTIVE path: adaptive SDIRK2 vs
+    diffrax.Tsit5 on the same Warfarin PK problem, relative error < 1%.
+    This is the test that proves the controller is not merely running, but
+    running correctly. A test that only asserts the adaptive path returns
+    finite numbers is NOT acceptable as covering this task.
+
+    TASK 5 - THE FAIL-CLOSED GUARDS MUST STILL FIRE
+    The trajectory-level mass-conservation monitor poisons a trajectory whose
+    monitored sum GAINS beyond tolerance, and poisons a non-finite
+    trajectory. Both behaviours must hold on the adaptive path too. The
+    existing tests for that (in tests/test_solvers.py) must keep passing
+    unchanged, and the adaptive path must not gain a clamp or a
+    mass-conserving correction that the fixed path does not have.
+
+    TASK 6 - DOCUMENT HONESTLY
+    Update the G2 section of docs/gap_closure_plan.md to state what the
+    adaptive controller does, how it preserves L-stability, what it is pinned
+    against, and what it does NOT do. If the adaptive path is not vmap-able,
+    or is slower, or has a step-count cap, say so. Narrower claims are safer
+    than overclaims: if something is not closed, do not write that it is.
+
+context_files:
+  - src/insilico_trial/pbpk/solvers.py
+  - src/insilico_trial/tests/test_solvers.py
+  - docs/gap_closure_plan.md
+
+constraints:
+  - "do not change the default behaviour of solve_implicit or solve_implicit_batch"
+  - "do not weaken the mass-conservation monitor or any fail-closed guard"
+  - "do not introduce a clamp (jnp.maximum) on concentrations"
+  - "do not change DEFAULT_ORGAN_NETWORK or the validated 6-state model"
+  - "no new runtime dependencies: pure JAX primitives only, no diffrax/lineax/scipy in the solver"
+
+verification:
+  commands:
+    # The whole solver suite, unchanged and extended.
+    - ".venv/bin/python -m pytest src/insilico_trial/tests/test_solvers.py -q"
+    # The adaptive path is pinned against the adaptive reference at <1%.
+    - >-
+      .venv/bin/python -c "import inspect, re, pathlib;
+      src=pathlib.Path('src/insilico_trial/pbpk/solvers.py').read_text();
+      tst=pathlib.Path('src/insilico_trial/tests/test_solvers.py').read_text();
+      assert 'while_loop' in src, 'the adaptive path must use a while loop for a variable step count';
+      assert re.search(r'adaptive', src, re.I), 'no adaptive entry point found in solvers.py';
+      assert 'Tsit5' in tst, 'the adaptive path must be pinned against diffrax.Tsit5';
+      assert re.search(r'adaptive', tst, re.I), 'no adaptive test found in test_solvers.py';
+      print('adaptive controller present and pinned against Tsit5')"
+    # L-stability is preserved: a stiff decay must not oscillate.
+    - >-
+      .venv/bin/python -c "import sys; sys.path.insert(0,'src');
+      import jax, jax.numpy as jnp;
+      from insilico_trial.pbpk.solvers import solve_implicit;
+      lam=-50.0;
+      f=lambda t,y,a: lam*y;
+      y0=jnp.array([1.0]);
+      t=jnp.linspace(0.0,1.0,11);
+      ys=solve_implicit(f,y0,t,None,dt=0.5);
+      assert jnp.all(jnp.isfinite(ys)), 'stiff decay produced non-finite values';
+      assert float(ys[-1,0])>=0.0, 'stiff decay went negative (L-stability lost): '+str(float(ys[-1,0]));
+      print('L-stability preserved on the fixed path')"
+    # The fixed path's behaviour is unchanged (the validated 6-state model).
+    - ".venv/bin/python -m pytest src/insilico_trial/tests/ -q --override-ini=\"addopts=\""
+  timeout_seconds: 2400
+
+recovery:
+  max_attempts: 3
+
+review:
+  enabled: true
+  adapter: opencode
+
+budget:
+  max_sends: 24
+  max_wall_seconds: 5400
+
+adapter: opencode
+git_state_guard: true
