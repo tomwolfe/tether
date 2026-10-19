@@ -14,7 +14,9 @@ Exit codes: 0 = at/above the gate (or advisory), 2 = below the gate,
 from __future__ import annotations
 
 import argparse
+import atexit
 import hashlib
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -76,6 +78,33 @@ def measure(
     lines = text.splitlines()
     killed = survived = 0
     survivors: List[str] = []
+
+    # The target is mutated IN PLACE, so it must be restored on every exit
+    # path. The `finally` blocks below cover the normal path, but they do NOT
+    # cover SIGTERM: SIGTERM does not raise in Python, so no `finally` runs
+    # when the process is terminated by a signal. Tether's process-tree reaper
+    # sends exactly that signal at the verification timeout, which left the
+    # target mutated -- reported afterwards as an out-of-scope write and left
+    # the working tree dirty, blocking the next mission.
+    #
+    # So restore on SIGTERM/SIGINT too (exiting 128+signo, the conventional
+    # code), and register an atexit restore as a second line for interpreter
+    # teardown. SIGKILL cannot be trapped by definition; that residual is
+    # left documented rather than overclaimed.
+    def _restore_original() -> None:
+        try:
+            path.write_bytes(original)
+        except OSError:
+            pass
+
+    def _on_signal(signum, _frame):
+        _restore_original()
+        raise SystemExit(128 + signum)
+
+    _prev_term = signal.signal(signal.SIGTERM, _on_signal)
+    _prev_int = signal.signal(signal.SIGINT, _on_signal)
+    atexit.register(_restore_original)
+
     try:
         for m in mutants:
             try:
@@ -97,6 +126,8 @@ def measure(
                     f"{rel}:{m.site} [{m.operator}] {source_line}")
     finally:
         path.write_bytes(original)
+        signal.signal(signal.SIGTERM, _prev_term)
+        signal.signal(signal.SIGINT, _prev_int)
     denominator = killed + survived
     kill_rate = round(killed / denominator, 4) if denominator else 0.0
     return {

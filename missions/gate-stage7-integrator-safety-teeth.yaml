@@ -205,5 +205,5 @@ budget:
 adapter: opencode
 adapters:
   opencode:
-    command: ["opencode", "run", "--auto", "-m", "opencode/space-bunny-free", "{prompt}"]
+    command: ["opencode", "run", "--auto", "-m", "opencode/beam-free", "{prompt}"]
     timeout_seconds: 3600

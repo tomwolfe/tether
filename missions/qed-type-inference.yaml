@@ -69,6 +69,6 @@ adapters:
       - run
       - --auto
       - "-m"
-      - opencode/space-bunny-free
+      - opencode/beam-free
       - "{prompt}"
     timeout_seconds: 1800

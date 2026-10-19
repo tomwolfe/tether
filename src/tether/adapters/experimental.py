@@ -50,7 +50,7 @@ class OpencodeAdapter(CommandAdapter):
             # enforcement and does not hold; this is. The safety given up at
             # the model layer is held by the project's own write sandbox, so a
             # project using this preset should set `sandbox_mode: enforce`.
-            "opencode", "run", "--auto", "-m", "opencode/space-bunny-free",
+            "opencode", "run", "--auto", "-m", "opencode/beam-free",
             "{prompt}",
         ]}
         merged.update(settings or {})

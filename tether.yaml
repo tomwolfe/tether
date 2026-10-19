@@ -36,4 +36,4 @@ default_adapter: opencode
 # answerable from the audit record alone, and an inherited default is not.
 adapters:
   opencode:
-    command: ["opencode", "run", "--auto", "-m", "opencode/space-bunny-free", "{prompt}"]
+    command: ["opencode", "run", "--auto", "-m", "opencode/beam-free", "{prompt}"]
