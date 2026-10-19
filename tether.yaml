@@ -30,3 +30,10 @@ verification_timeout_seconds: 1800
 max_attempts: 3
 audit_dir: .tether/sessions
 default_adapter: opencode
+# Spelled out rather than inherited from the built-in preset, even though the
+# two are currently identical (src/tether/adapters/experimental.py:53). The
+# tri-repo gate is the one place where "which command actually ran" has to be
+# answerable from the audit record alone, and an inherited default is not.
+adapters:
+  opencode:
+    command: ["opencode", "run", "--auto", "-m", "opencode/space-bunny-free", "{prompt}"]
