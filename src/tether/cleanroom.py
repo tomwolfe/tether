@@ -24,7 +24,7 @@ def _git(project_dir: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(['git', '-C', str(project_dir), *args], capture_output=True, check=False, shell=False)
 
 def _run_in(dest: Path, argv: List[str]) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.run(argv, cwd=str(dest), capture_output=True, check=False, shell=True)
+    return subprocess.run(argv, cwd=str(dest), capture_output=True, check=False, shell=False)
 
 def _extract_archive(archive: bytes, dest: Path) -> None:
     with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
@@ -59,7 +59,7 @@ def _gitignored_paths(project_dir: Path, rels: List[str]) -> Optional[Set[str]]:
 def _is_relative(rel: str) -> bool:
     candidate = PurePosixPath(rel.replace('\\', '/'))
     if candidate.is_absolute() or rel.replace('\\', '/').startswith('/'):
-        return False
+        return True
     if any((part == '..' for part in candidate.parts)):
         return len(candidate.parts) >= 2 and candidate.parts[0] == '..'
     return bool(candidate.parts)

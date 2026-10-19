@@ -1,0 +1,124 @@
+# Mission: dogfood-47-mutation-tool-non-destructive
+#
+# WHY THIS EXISTS (root cause, found by a gate failing three times)
+# dogfood-44 and dogfood-45 both failed with:
+#   write sandbox violated: src/tether/cleanroom.py is outside allowed_paths
+# That reads like the agent escaped its sandbox. It did not. The cause is the
+# VERIFICATION stage:
+#   .venv/bin/python tools/mutation_killrate.py --target src/tether/cleanroom.py ...
+# `mutation_killrate.py` mutates its target IN PLACE and restores the original
+# bytes in a `finally` block. Tether's process-tree reaper sends SIGTERM at the
+# verification timeout; SIGTERM does not raise an exception in Python, so
+# `finally` never runs and the target is left mutated. Two consequences, both
+# observed:
+#   1. the leftover mutation is caught by the filesystem-manifest diff and
+#      reported as an out-of-scope write (it looks exactly like a sandbox
+#      escape, which is why it was misattributed to the agent on first read);
+#   2. the tree is left dirty, and tether refuses to start the next mission --
+#      which is why dogfood-44 failed in 3 seconds with "Working tree is dirty".
+# GLOBAL_MINIMUM_REPORT.md already records the hazard ("killing the process
+# mid-run leaves ... mutated in the working tree ... Worth a trap in the tool").
+#
+# This mission closes that "worth a trap" note.
+#
+# SCOPE OF THE CLAIM: SIGTERM/SIGINT can be trapped. SIGKILL cannot, by
+# definition -- no handler runs. Do not claim SIGKILL safety. What this mission
+# buys is that every signal tether actually sends is covered, and that a
+# leftover from any other cause is detected and repaired on the next run rather
+# than silently poisoning a later mission.
+
+mission:
+  name: dogfood-47-mutation-tool-non-destructive
+  goal: |
+    Make tools/mutation_killrate.py restore its target when it is terminated,
+    and repair a leftover mutation left by an earlier interrupted run.
+
+    TASK 1 - TRAP THE SIGNALS TETHER ACTUALLY SENDS
+    In `run_mutation` (or the equivalent entry point in
+    tools/mutation_killrate.py), install handlers for SIGTERM and SIGINT that
+    restore the original bytes BEFORE the process exits, then exit with the
+    conventional 128+signo code (143 for SIGTERM, 130 for SIGINT).
+    Requirements:
+      - restore must be idempotent and must not raise over an already-correct
+        file;
+      - the handler must work for a mutation that is interrupted mid-suite,
+        not just at a loop boundary;
+      - do NOT change the restore that already exists in the `finally` blocks;
+        it stays as the normal path.
+
+    TASK 2 - REPAIR A LEFTOVER, DO NOT SILENTLY MUTATE
+    On entry, compare the target against its committed content
+    (`git show HEAD:<rel>`) when the file is inside a git repo. If they
+    differ, the previous run was interrupted. Restore from git and say so on
+    stderr. If the file differs but the repo has no committed version, refuse
+    to run and exit non-zero with a clear message -- do not guess which of the
+    two contents is correct.
+    Never leave the tool's opinion of "correct" implicit.
+
+    TASK 3 - ATEXIT AS A SECOND LINE
+    Register an atexit restore as well. It costs nothing and covers normal
+    interpreter shutdown paths that bypass `finally` (e.g. os._exit after a
+    fork teardown). Document that atexit does NOT cover SIGKILL.
+
+    TASK 4 - TESTS THAT WOULD HAVE CAUGHT THIS
+    Add tests (new file tests/test_mutation_tool_safety.py, or the house
+    location if one exists) that prove:
+      a) a SIGTERM delivered mid-run leaves the target byte-identical to its
+         original content -- this is the test that fails today;
+      b) SIGINT behaves the same way;
+      c) a pre-existing leftover (target already differing from HEAD) is
+         detected, reported, and repaired before any mutant is applied;
+      d) the no-committed-version case refuses rather than guessing;
+      e) a normal, uninterrupted run still restores exactly as before.
+    The SIGTERM test must actually deliver the signal to a real child process
+    and then assert on the file. A test that only calls the restore helper
+    in-process does not prove TASK 1 and must not be accepted as covering it.
+
+context_files:
+  - tools/mutation_killrate.py
+  - src/tether/verification.py
+  - missions/dogfood-44-quantitative-gates.yaml
+
+constraints:
+  - "do not change MUTATION_OPERATORS, generate_mutants, stable_seed, or the killed/survived accounting: the kill rate this gate reports must be unchanged by this fix"
+  - "do not weaken any fail-closed behaviour"
+  - do not modify any mission YAML
+  - no "sorry"
+
+verification:
+  commands:
+    # The suite the tool runs must still pass.
+    - ".venv/bin/python -m pytest tests/ -q"
+    - "ruff check --no-cache src tests tools"
+    - "mypy src/tether"
+    # The safety tests, by name, so a future rename cannot quietly drop them.
+    - ".venv/bin/python -m pytest tests/test_mutation_tool_safety.py -q"
+    # Behavioural proof against a real SIGTERM, independent of the new tests:
+    # run the tool on a scratch target, SIGTERM it mid-flight, and assert the
+    # target is unchanged. This is the check that reproduces the original bug.
+    - >-
+      .venv/bin/python -c "import os,signal,subprocess,sys,time,pathlib;
+      root=pathlib.Path('.').resolve();
+      tgt=root/'tools'/'mutation_killrate.py';
+      before=tgt.read_bytes();
+      p=subprocess.Popen([sys.executable,'tools/mutation_killrate.py','--repo-root','.','--target','tools/mutation_killrate.py','--suite','tests/test_mutation_tool_safety.py','--min-kill-rate','0.0'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);
+      time.sleep(3); p.send_signal(signal.SIGTERM);
+      p.wait(timeout=60);
+      after=tgt.read_bytes();
+      assert after==before, 'SIGTERM left the target mutated (this is the dogfood-44/45 bug)';
+      print('SIGTERM restoration proven')"
+  timeout_seconds: 1800
+
+recovery:
+  max_attempts: 3
+
+review:
+  enabled: true
+  adapter: opencode
+
+budget:
+  max_sends: 20
+  max_wall_seconds: 3600
+
+adapter: opencode
+git_state_guard: true
