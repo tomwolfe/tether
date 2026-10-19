@@ -1695,13 +1695,14 @@ def test_opencode_preset_auto_approves_in_scope_reads():
     cmd = OpencodeAdapter().settings["command"]
     assert "--auto" in cmd
     # The pinned model must survive the change; only permission handling moved.
-    # The model was changed deliberately (space-bunny-free -> beam-free) when
-    # the former started returning HTTP 429 rate-limit errors and every gate
-    # mission failed in its planning step before doing any work. This pin
-    # exists to catch an ACCIDENTAL model change, so it has to move with a
-    # deliberate one -- and it must still name a model, so that a preset that
-    # quietly drops the `-m` pin entirely is caught here.
-    assert "-m" in cmd and "opencode/beam-free" in cmd
+    # The model was changed deliberately (space-bunny-free -> beam-free ->
+    # minimax-m3.1-flash-free) when the earlier models started returning HTTP
+    # 429 rate-limit errors and every gate mission failed in its planning step
+    # before doing any work. This pin exists to catch an ACCIDENTAL model
+    # change, so it has to move with a deliberate one -- and it must still name
+    # a model, so that a preset that quietly drops the `-m` pin entirely is
+    # caught here.
+    assert "-m" in cmd and "opencode/minimax-m3.1-flash-free" in cmd
     assert cmd[-1] == "{prompt}"
 
 

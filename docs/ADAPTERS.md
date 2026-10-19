@@ -247,7 +247,7 @@ stragglers. All of these claims are pinned by the acceptance tests in
 Thin presets over CommandAdapter. The command shapes were checked against the
 `--help` output of locally installed CLIs (2026-08):
 
-- opencode: `["opencode", "run", "--auto", "-m", "opencode/beam-free", "{prompt}"]`
+- opencode: `["opencode", "run", "--auto", "-m", "opencode/minimax-m3.1-flash-free", "{prompt}"]`
   (`opencode run [message..]`; the `-m` model pin avoids a server error some
   installations hit on bare `opencode run`; `--auto` = "auto-approve
   permissions that are not explicitly denied" — see the pairing note below)

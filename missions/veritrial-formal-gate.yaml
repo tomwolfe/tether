@@ -263,7 +263,7 @@ budget:
 adapter: opencode
 adapters:
   opencode:
-    command: ["opencode", "run", "--auto", "-m", "opencode/beam-free", "{prompt}"]
+    command: ["opencode", "run", "--auto", "-m", "opencode/minimax-m3.1-flash-free", "{prompt}"]
     # Must be >= verification.timeout_seconds (3600). Per-adapter settings are
     # deep-merged with precedence mission-file > project config, so THIS value
     # wins over tether.yaml's command_timeout_seconds. The 1800 recorded before

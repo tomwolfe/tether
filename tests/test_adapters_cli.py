@@ -383,7 +383,7 @@ def test_experimental_adapters_are_unverified_presets():
     # the siblings it is scoped to. Safety is held by the project's own
     # sandbox (sandbox_mode: enforce), not by the model-side prompt.
     assert oc.command == [
-        "opencode", "run", "--auto", "-m", "opencode/beam-free",
+        "opencode", "run", "--auto", "-m", "opencode/minimax-m3.1-flash-free",
         "{prompt}",
     ]
     ok, _ = oc.is_available()

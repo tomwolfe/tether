@@ -36,4 +36,4 @@ default_adapter: opencode
 # answerable from the audit record alone, and an inherited default is not.
 adapters:
   opencode:
-    command: ["opencode", "run", "--auto", "-m", "opencode/beam-free", "{prompt}"]
+    command: ["opencode", "run", "--auto", "-m", "opencode/minimax-m3.1-flash-free", "{prompt}"]

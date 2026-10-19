@@ -69,6 +69,6 @@ adapters:
       - run
       - --auto
       - "-m"
-      - opencode/beam-free
+      - opencode/minimax-m3.1-flash-free
       - "{prompt}"
     timeout_seconds: 1800
