@@ -306,14 +306,17 @@ def test_parse_salvages_when_broken_entry_comes_last():
 
 
 def test_parse_relaxes_double_quoted_shell_fragment():
-    # A raw backslash inside a double-quoted scalar is an unknown YAML
+    # A SINGLE raw backslash inside a double-quoted scalar is an unknown YAML
     # escape, so the block must be read with that scalar re-quoted — and the
-    # backslash must survive as the data the shell fragment needs.
+    # backslash must survive as the data the shell fragment needs. The fixture
+    # deliberately holds one backslash, not two: `\\` is a valid YAML escape,
+    # so a doubled one would parse natively and this test would never reach
+    # the repair it is named for.
     response = (
         "```yaml\n"
         "probes:\n"
-        "  - command: \"printf 'a\\\\db'\"\n"
-        "    contains: \"a\\\\db\"\n"
+        "  - command: \"printf 'a\\db'\"\n"
+        "    contains: \"a\\db\"\n"
         "    matches: 'id \\d+'\n"
         "```"
     )
@@ -335,6 +338,73 @@ def test_parse_keeps_properly_escaped_double_quoted_scalar():
     )
     specs = _parse(response)
     assert specs[0].command == 'python -c "print(1)"'
+
+
+def test_relaxed_scalar_keeps_regex_backslash_and_its_character():
+    # A regex class is the common shell fragment, and the repair must not
+    # "simplify" it: `\d+` is a raw backslash followed by `d`, and only the
+    # backslash is the YAML complaint. Yielding `\d+` back as `d+` or `\+`
+    # would leave a command that still runs but no longer matches.
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command: \"grep '\\d+' src/*.py\"\n"
+        "    contains: \"x\"\n"
+        "```"
+    )
+    specs = _parse(response)
+    assert specs[0].command == "grep '\\d+' src/*.py"
+
+
+def test_relaxed_scalar_keeps_windows_path_verbatim():
+    # A path is backslashes with nothing to escape, so every one of them is
+    # data. Truncating them to bare separators yields a command that runs and
+    # silently addresses the wrong file.
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command: \"type C:\\Users\\bob\\tool.exe\"\n"
+        "    contains: \"x\"\n"
+        "```"
+    )
+    specs = _parse(response)
+    assert specs[0].command == "type C:\\Users\\bob\\tool.exe"
+
+
+def test_relaxed_scalar_unescapes_quotes_but_keeps_data_backslashes():
+    # The two escapes are not symmetric: `\"` is the one the model escaped on
+    # purpose, so it collapses to a literal quote, while the raw `\d` beside
+    # it is data. Handling them alike either mangles the regex or leaves a
+    # trailing backslash that shlex cannot read, losing the entry outright.
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command: \"python -c \\\"print('x')\\d\\\"\"\n"
+        "    contains: \"1\"\n"
+        "```"
+    )
+    specs = _parse(response)
+    assert specs[0].command == "python -c \"print('x')\\d\""
+    # The recovered command must survive the same shlex gate real probes do.
+    assert shlex.split(specs[0].command)[-1] == "print('x')\\d"
+
+
+def test_salvage_keeps_sibling_of_relaxed_shell_fragment():
+    # Per-entry salvage, end to end: an entry whose double-quoted scalar
+    # needed both repairs still comes through, and a healthy sibling beside
+    # it is untouched.
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command: \"python -c \\\"print(1)\\d\\\"\"\n"
+        "    contains: \"1\"\n"
+        "  - command: \"echo fine\"\n"
+        "    contains: \"fine\"\n"
+        "```"
+    )
+    specs = _parse(response)
+    assert [p.command for p in specs] == [
+        'python -c "print(1)\\d"', "echo fine"]
 
 
 def test_parse_fails_when_no_entry_survives_bad_yaml():

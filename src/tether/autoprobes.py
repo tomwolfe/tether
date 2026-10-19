@@ -297,8 +297,16 @@ def _relax_scalar_line(line: str) -> str:
         pass
     else:
         return line
+    # `\"` is the one escape the model wrote on purpose: it wanted a literal
+    # double quote, so the backslash is dropped and the quote kept. Every
+    # other backslash is the character that made YAML choke in the first
+    # place -- a regex `\d`, a Windows path -- and is data, so BOTH the
+    # backslash and the character after it survive verbatim. Dropping the
+    # character too would turn `grep '\d+'` into the runnable-looking but
+    # wrong `grep '\+'`, so the fix is to keep both halves of the match.
     literal = _DQ_ESCAPE_RE.sub(
-        lambda m: "" if m.group(1) == '"' else "\\", inner).replace("'", "''")
+        lambda m: m.group(1) if m.group(1) == '"' else "\\" + m.group(1),
+        inner).replace("'", "''")
     return f"{match.group('prefix')}'{literal}'{tail}"
 
 
