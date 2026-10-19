@@ -59,7 +59,7 @@ def _gitignored_paths(project_dir: Path, rels: List[str]) -> Optional[Set[str]]:
 def _is_relative(rel: str) -> bool:
     candidate = PurePosixPath(rel.replace('\\', '/'))
     if candidate.is_absolute() or rel.replace('\\', '/').startswith('/'):
-        return True
+        return False
     if any((part == '..' for part in candidate.parts)):
         return len(candidate.parts) >= 2 and candidate.parts[0] == '..'
     return bool(candidate.parts)
