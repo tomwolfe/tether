@@ -929,3 +929,42 @@ def test_broken_single_quoted_entry_costs_only_itself():
     )
     specs = parse_generated_probes(response)
     assert [s.command for s in specs] == ["python -c 'print(1)'", "echo hi"]
+
+
+def test_repaired_single_quoted_entry_survives_an_invalid_sibling():
+    # The two layers meet here: the repair makes the entry readable, and
+    # the spec gate drops the empty-command sibling beside it. The repaired
+    # entry must survive its invalid sibling, and the invalid sibling must
+    # not be resurrected by the repair that ran next to it.
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command: 'python -c 'print(1)''\n"
+        "    contains: '1'\n"
+        "  - command: ''\n"
+        "    contains: 'x'\n"
+        "```"
+    )
+    specs = _parse(response)
+    assert [s.command for s in specs] == ["python -c 'print(1)'"]
+    assert specs[0].contains == "1"
+
+
+def test_repaired_double_quoted_entry_survives_an_invalid_sibling():
+    # The mirror case for the other repair: a double-quoted scalar holding a
+    # shell fragment (a raw regex backslash is an unknown YAML escape) is
+    # re-quoted, and the empty-command sibling beside it is dropped by the
+    # spec gate. The fragment must come back verbatim -- the backslash is
+    # data the shell needs, not an escape.
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command: \"grep '\\d+' f\"\n"
+        "    contains: \"x\"\n"
+        "  - command: \"\"\n"
+        "    contains: \"y\"\n"
+        "```"
+    )
+    specs = _parse(response)
+    assert [s.command for s in specs] == ["grep '\\d+' f"]
+    assert specs[0].contains == "x"

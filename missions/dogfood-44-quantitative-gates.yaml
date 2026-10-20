@@ -35,6 +35,23 @@
 # NOT changed on purpose: the LAST fenced yaml block still wins (an earlier
 # block is a draft, and the architecture doc pins that rule), and a
 # non-string `contains` is still rejected rather than coerced.
+#
+# THE PROBE BATTERY BELOW pins every clause of the goal and both rejections
+# the constraints name, so the mission's own behavioral verification says
+# what the change claims: one malformed entry costs only itself
+# (`salvaged:1`), a double-quoted scalar holding a shell fragment survives
+# verbatim (`dq-ok`), the single-quote casualty the goal names is repaired
+# (`sq-ok`), and a response with no valid probe at all -- empty valid set,
+# or no fence -- still fails (`zero-ok`).
+#
+# DOC DRIFT, recorded rather than quietly fixed: docs/ARCHITECTURE.md's
+# parser paragraph and docs/DOGFOODING.md's earlier parser paragraph still
+# say that ANY malformation rejects the whole response. That was true
+# before this change and is false after it, so those two sentences are
+# stale. (DOGFOODING.md's later dogfood-44 section already describes the
+# per-entry salvage correctly, and ARCHITECTURE.md never mentions it at
+# all.) Both files are outside `allowed_paths`, so the fix belongs to a
+# follow-up mission, not to this one.
 mission:
   name: dogfood-44-quantitative-gates
   goal: |
@@ -57,6 +74,12 @@ verification:
   probes:
     - command: ".venv/bin/python -c \"from tether.autoprobes import parse_generated_probes; r='''\n\\`\\`\\`yaml\nprobes:\n  - command: \\\"echo hi\\\"\n    contains: \\\"hi\\\"\n  - command: \\\"\\\"\n    contains: \\\"x\\\"\n\\`\\`\\`'''; specs=parse_generated_probes(r); print('salvaged:'+str(len(specs)))\""
       contains: "salvaged:1"
+    - command: ".venv/bin/python -c \"from tether.autoprobes import parse_generated_probes\nr = r\\\"\\\"\\\"```yaml\nprobes:\n  - command: \\\"grep '\\\\d+' f\\\"\n    contains: \\\"x\\\"\n  - command: \\\"\\\"\n    contains: \\\"y\\\"\n```\\\"\\\"\\\"\nspecs = parse_generated_probes(r)\nwant = r\\\"grep '\\\\d+' f\\\"\ngot = [s.command for s in specs]\nprint(\\\"dq-ok\\\" if got == [want] else \\\"dq-bad:\\\" + repr(got))\""
+      contains: "dq-ok"
+    - command: ".venv/bin/python -c \"from tether.autoprobes import parse_generated_probes\nr = r\\\"\\\"\\\"```yaml\nprobes:\n  - command: 'python -c 'print(1)''\n    contains: '1'\n  - command: ''\n    contains: 'x'\n```\\\"\\\"\\\"\nspecs = parse_generated_probes(r)\nwant = \\\"python -c 'print(1)'\\\"\ngot = [s.command for s in specs]\nprint(\\\"sq-ok\\\" if got == [want] else \\\"sq-bad:\\\" + repr(got))\""
+      contains: "sq-ok"
+    - command: ".venv/bin/python -c \"from tether.autoprobes import parse_generated_probes, ProbeSynthesisError\ndef rejects(text):\n    try:\n        parse_generated_probes(text)\n    except ProbeSynthesisError:\n        return True\n    return False\nempty_set = r\\\"\\\"\\\"```yaml\nprobes:\n  - command: \\\"\\\"\n    contains: \\\"x\\\"\n```\\\"\\\"\\\"\nno_fence = \\\"probes:\\\\n  - command: \\\\\\\"echo hi\\\\\\\"\\\\n    contains: \\\\\\\"hi\\\\\\\"\\\\n\\\"\nprint(\\\"zero-ok\\\" if rejects(empty_set) and rejects(no_fence) else \\\"zero-bad\\\")\""
+      contains: "zero-ok"
   auto_probes:
     enabled: true
     # The `--adapter` CLI override only replaces the top-level agent adapter;
