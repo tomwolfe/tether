@@ -4,7 +4,7 @@
 # "unknown setting" and nothing reads them: the generated-probe tier reads
 # `verification.auto_probes.*`, so max_probes/max_mutants were inert and the
 # teeth rate was never enforced. They are moved to the field that reads them.
-# Target 2: the synthesis parser is all-or-nothing and fails on real-model
+# Target 2: the synthesis parser WAS all-or-nothing and failed on real-model
 # single-quote nesting, so teeth = 0; the fix makes it salvage valid entries.
 # The inert `adapters.mutation` block is gone with it: `adapters.<name>` is a
 # free-form mapping for the ADAPTER, so its `enabled`/`fail_below`/`max_mutants`
@@ -57,18 +57,19 @@
 # at all -- empty valid set, or no fence -- still fails (`zero-ok`).
 #
 # DOC DRIFT, recorded rather than quietly fixed: docs/ARCHITECTURE.md's
-# parser paragraph and docs/DOGFOODING.md's earlier parser paragraph still
-# say that ANY malformation rejects the whole response. That was true
-# before this change and is false after it, so those two sentences are
+# parser paragraph and docs/DOGFOODING.md's earlier parser paragraph said
+# that ANY malformation rejects the whole response. That was true
+# before this change and is false after it, so those two sentences were
 # stale. (DOGFOODING.md's later dogfood-44 section already describes the
 # per-entry salvage correctly, and ARCHITECTURE.md never mentions it at
 # all.) Both files are outside `allowed_paths`, so the fix belongs to a
-# follow-up mission, not to this one.
+# follow-up mission, not to this one -- that follow-up is
+# dogfood-48-doc-truth-salvage, and it corrected both paragraphs.
 mission:
   name: dogfood-44-quantitative-gates
   goal: |
     Harden auto_probes synthesis parser to salvage valid probes when some entries are malformed.
-    Currently parse_generated_probes rejects the whole response if any probe entry is invalid
+    Before this change parse_generated_probes rejected the whole response if any probe entry was invalid
     (e.g. single-quote YAML nesting from shell-style commands). Change to per-entry salvage:
     skip invalid entries, keep valid ones; only fail if zero valid probes remain. Also ensure
     double-quoted scalars handle shell fragments correctly. Keep all tests green.

@@ -111,12 +111,16 @@ mission goal plus the bounded captured change (`patch.diff` AND
 parsed fail-safe (`tether.autoprobes.parse_generated_probes`): ANSI
 stripped first (dogfood-40 lesson), LAST fenced yaml block wins, every
 entry must carry a non-empty shlex-parsable `command` within 2000 chars
-plus at least one of non-empty `contains`/valid-regex `matches`; ANY
-malformation rejects the whole response. Accepted specs are capped by
-`max_probes` (default 6) and run as an extra ladder tier right after the
-human-authored probes on otherwise-green attempts — a failing generated
-probe fails the attempt like any deliverable miss; results ride
-`verification_results` in the report.
+plus at least one of non-empty `contains`/valid-regex `matches`. Salvage
+is per entry: a malformed entry is dropped and its valid siblings are
+kept, and only a response left with NO valid probe at all is rejected. A
+single-quote-nested shell scalar is REPAIRED (quote-count parity) rather
+than dropped — unlike a genuinely unparsable entry, it never costs the
+response its other probes. Accepted specs are capped by `max_probes`
+(default 6) and run as an extra ladder tier right after the human-authored
+probes on otherwise-green attempts — a failing generated probe fails the
+attempt like any deliverable miss; results ride `verification_results` in
+the report.
 
 The TEETH gate then mutation-tests the generated probes against the
 change: each changed `.py` file (same sandbox-filtered targets as the

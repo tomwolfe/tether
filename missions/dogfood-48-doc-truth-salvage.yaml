@@ -8,8 +8,9 @@
 # itself, and the response is only rejected when ZERO valid probes remain.
 # That behaviour landed in commit cecd21d and was extended by the agent.
 #
-# Two documents still describe the OLD behaviour, and they now state something
-# false:
+# Two documents described the OLD behaviour, and they stated something
+# false (this mission corrects both; the quoted sentences are what they
+# used to say):
 #
 #   docs/ARCHITECTURE.md: "ANY malformation rejects the whole response"
 #   docs/DOGFOODING.md:  "ANY malformation rejects the whole response and the
@@ -88,14 +89,20 @@ constraints:
   - "do not delete a true historical statement about the old all-or-nothing parser"
 
 verification:
+  # The runner tokenizes each command with shlex and executes it WITHOUT a
+  # shell (tether.verification._run_one), so a command here must be a single
+  # argv: the python one-liners below stay on ONE line (a compound statement
+  # after a `;` is a SyntaxError) and the shell pipeline is wrapped in `sh -c`.
+  # Only the quoting is fixed here -- every regex, assertion and threshold
+  # below is the one this mission always intended; the previous spelling
+  # simply could not run, so it failed for everyone.
   commands:
     # The stale claim is gone from the forward-looking documentation.
     - >-
       python3 -c "import pathlib, re;
       bad = re.compile(r'ANY\s+malformation rejects the whole response', re.I);
-      for f in ('docs/ARCHITECTURE.md','docs/DOGFOODING.md'):
-        t = pathlib.Path(f).read_text();
-        assert not bad.search(t), f+' still claims ANY malformation rejects the whole response';
+      hits = [f for f in ('docs/ARCHITECTURE.md','docs/DOGFOODING.md') if bad.search(pathlib.Path(f).read_text())];
+      assert not hits, 'still claims ANY malformation rejects the whole response: '+', '.join(hits);
       print('stale all-or-nothing claim removed')"
     # The replacement prose actually says the new rule.
     - >-
@@ -113,13 +120,12 @@ verification:
     # The docs still describe the caps and rules that were not changed.
     - >-
       python3 -c "import pathlib;
-      for f in ('docs/ARCHITECTURE.md','docs/DOGFOODING.md'):
-        t = pathlib.Path(f).read_text();
-        for token in ('max_probes','fenced yaml'):
-          assert token in t, f+' no longer mentions '+token;
+      missing = [(f, tok) for f in ('docs/ARCHITECTURE.md','docs/DOGFOODING.md') for tok in ('max_probes','fenced yaml') if tok not in pathlib.Path(f).read_text()];
+      assert not missing, 'no longer mentions '+str(missing);
       print('caps and the fenced-block rule still documented')"
     # The code is untouched, and the suite is still green.
-    - "git diff --name-only | grep -E '^(src|tests)/' && echo 'SOURCE FILES CHANGED -- not allowed' && exit 1 || echo 'no source files changed'"
+    - >-
+      sh -c "git diff --name-only | grep -E '^(src|tests)/' && echo 'SOURCE FILES CHANGED -- not allowed' && exit 1 || echo 'no source files changed'"
     - ".venv/bin/python -m pytest tests/ -q"
   timeout_seconds: 1800
 

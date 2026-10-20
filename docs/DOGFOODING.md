@@ -259,8 +259,12 @@ mission goal plus the bounded captured change (`patch.diff` AND
 `untracked.txt` — a plain git diff misses untracked contents). The
 response parses fail-safe (ANSI stripped first per the dogfood-40 lesson,
 LAST fenced yaml block wins, strict per-entry validation, 2000-char
-command cap, `max_probes` cap default 6); ANY malformation rejects the
-whole response and the mission falls back to exactly today's battery.
+command cap, `max_probes` cap default 6). Salvage is per entry: a
+malformed entry is dropped and its valid siblings are kept, and only a
+response left with no valid probe at all is rejected — the mission then
+falls back to exactly today's battery. A single-quote-nested shell scalar
+is REPAIRED (quote-count parity) rather than dropped, which is different
+from a genuinely unparsable entry.
 Accepted specs run as a new ladder tier after the human probes; the TEETH
 gate then mutation-tests them against the change — changed `.py` files
 are mutated with the built-in seeded operators and ONLY the generated
