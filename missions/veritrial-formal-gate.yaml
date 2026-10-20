@@ -34,6 +34,7 @@ context:
   - "Parametric theorems over [LinearOrderedField R] / [Field R] prove via positivity / field_simp+ring with auto-generated positivity hypotheses"
   - "Static numeric witnesses (129 = 129, closed arithmetic sums, reflexive x = x) are banned from the bridge and fail the gate in --strict mode"
 constraints:
+  - "DO NOT create any git commits. Leave every change in the working tree, uncommitted. This mission runs with git_state_guard: true, which compares the repo HEAD against a checkpoint taken at session start; a commit made during the session is reported as 'history was rewritten' and the mission fails with verification skipped -- even when the work is correct and the tests pass. The guard is strict on purpose, so the fix is to not commit."
   - "Do NOT modify Tether's core orchestration logic"
   - "Do NOT introduce sorry axioms in QED output; the no-sorry gate must remain strict"
   - "Keep all changes backward compatible with existing VeriTrial simulations"

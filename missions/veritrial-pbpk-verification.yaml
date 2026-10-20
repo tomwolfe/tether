@@ -15,6 +15,7 @@ context:
   - "Formal specs in VeriTrial/formal_specs/pbpk_mass_conservation.tex"
   - "Semantic bridge: VeriTrial/scripts/export_pbpk_to_qed.py generates lemmas from source"
 constraints:
+  - "DO NOT create any git commits. Leave every change in the working tree, uncommitted. This mission runs with git_state_guard: true, which compares the repo HEAD against a checkpoint taken at session start; a commit made during the session is reported as 'history was rewritten' and the mission fails with verification skipped -- even when the work is correct and the tests pass. The guard is strict on purpose, so the fix is to not commit."
   - "Do NOT modify QED's core parser or pipeline logic unnecessarily"
   - "All new code must pass existing test suites"
   - "Keep formal specs decomposed into QED-parseable fragments"

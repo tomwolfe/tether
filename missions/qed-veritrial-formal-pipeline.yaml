@@ -35,6 +35,7 @@ context:
   - "QED splits its suite in two: run_tests.py (18 e2e/no-sorry tests) and test_pipeline.py (256 unit tests covering the parser, the no-sorry policy and the VeriTrial-shaped lemma classification)"
   - "QED/agentic_pipeline.py locates its Lake root by walking up from the CWD and is invoked by bare relative name, so both QED suites must run with CWD=../QED"
 constraints:
+  - "DO NOT create any git commits. Leave every change in the working tree, uncommitted. This mission runs with git_state_guard: true, which compares the repo HEAD against a checkpoint taken at session start; a commit made during the session is reported as 'history was rewritten' and the mission fails with verification skipped -- even when the work is correct and the tests pass. The guard is strict on purpose, so the fix is to not commit."
   - "Do NOT weaken the no-sorry gate or the fail-closed formal gate"
   - "Do NOT modify Tether's core orchestration logic"
   - "If the QED suite fails, the whole mission fails (VeriTrial must not be certified on a broken multiplier)"

@@ -101,6 +101,7 @@ context_files:
   - pyproject.toml
 
 constraints:
+  - "DO NOT create any git commits. Leave every change in the working tree, uncommitted. This mission runs with git_state_guard: true, which compares the repo HEAD against a checkpoint taken at session start; a commit made during the session is reported as 'history was rewritten' and the mission fails with verification skipped -- even when the work is correct and the tests pass. The guard is strict on purpose, so the fix is to not commit."
   - "do not change the package's CPU-backend policy or the refusal behaviour"
   - "do not delete or weaken any existing assertion"
   - "no new runtime dependencies"

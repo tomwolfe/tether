@@ -39,6 +39,7 @@ workspace_repos:
   # not found" -- a green gate would have been unreachable by construction.
   - "../tether"
 constraints:
+  - "DO NOT create any git commits. Leave every change in the working tree, uncommitted. This mission runs with git_state_guard: true, which compares the repo HEAD against a checkpoint taken at session start; a commit made during the session is reported as 'history was rewritten' and the mission fails with verification skipped -- even when the work is correct and the tests pass. The guard is strict on purpose, so the fix is to not commit."
   - "Do NOT introduce sorry axioms in any QED output"
   - "Do NOT modify existing test expectations without justification"
   - "Keep all changes backward compatible with existing simulations"
