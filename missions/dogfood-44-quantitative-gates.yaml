@@ -30,6 +30,16 @@
 #     used for indentation (YAML forbids it), a key whose colon lacks its
 #     blank (YAML then reads the line as one plain scalar), a bare list of
 #     entries, and a capitalized `Probes:` key.
+#   - An entry indented DEEPER than its siblings (a tab, or one stray space
+#     too many) does not cost the siblings behind it: a shallower item
+#     marker re-anchors the list body instead of ending the scan, so the
+#     healthy entries behind the deep one are still read.
+#   - A bulk reading that LOST an entry is re-read per entry. `command:'x'`
+#     is one plain scalar to YAML, so the bulk reading holds the entry as
+#     a string and drops it -- and a healthy sibling kept the valid set
+#     non-empty, so the entry was never read at all. The second reading
+#     wins only when it finds MORE probes; the bulk reading stands when it
+#     does not, so the CONTENT is never forgiven.
 #   - The CONTENT is not: an entry that fails the spec gate is still
 #     dropped, and a placeholder probe is still never executed.
 # NOT changed on purpose: the LAST fenced yaml block still wins (an earlier
@@ -41,8 +51,10 @@
 # what the change claims: one malformed entry costs only itself
 # (`salvaged:1`), a double-quoted scalar holding a shell fragment survives
 # verbatim (`dq-ok`), the single-quote casualty the goal names is repaired
-# (`sq-ok`), and a response with no valid probe at all -- empty valid set,
-# or no fence -- still fails (`zero-ok`).
+# (`sq-ok`), a deeper-indented entry does not cost the siblings behind it
+# (`indent-ok`), an entry whose key colon lacks its blank is repaired
+# beside a healthy sibling (`shape-ok`), and a response with no valid probe
+# at all -- empty valid set, or no fence -- still fails (`zero-ok`).
 #
 # DOC DRIFT, recorded rather than quietly fixed: docs/ARCHITECTURE.md's
 # parser paragraph and docs/DOGFOODING.md's earlier parser paragraph still
@@ -89,6 +101,10 @@ verification:
       contains: "sq-ok"
     - command: ".venv/bin/python -c \"from tether.autoprobes import parse_generated_probes, ProbeSynthesisError\ndef rejects(text):\n    try:\n        parse_generated_probes(text)\n    except ProbeSynthesisError:\n        return True\n    return False\nempty_set = r\\\"\\\"\\\"```yaml\nprobes:\n  - command: \\\"\\\"\n    contains: \\\"x\\\"\n```\\\"\\\"\\\"\nno_fence = \\\"probes:\\\\n  - command: \\\\\\\"echo hi\\\\\\\"\\\\n    contains: \\\\\\\"hi\\\\\\\"\\\\n\\\"\nprint(\\\"zero-ok\\\" if rejects(empty_set) and rejects(no_fence) else \\\"zero-bad\\\")\""
       contains: "zero-ok"
+    - command: ".venv/bin/python -c \"from tether.autoprobes import parse_generated_probes\nr = r\\\"\\\"\\\"```yaml\nprobes:\n\t- command: 'echo A'\n\t  contains: 'A'\n  - command: 'echo B'\n    contains: 'B'\n  - command: 'echo C'\n    contains: 'C'\n```\\\"\\\"\\\"\nspecs = parse_generated_probes(r)\ngot = [s.command for s in specs]\nwant = ['echo A', 'echo B', 'echo C']\nprint(\\\"indent-ok\\\" if got == want else \\\"indent-bad:\\\" + repr(got))\""
+      contains: "indent-ok"
+    - command: ".venv/bin/python -c \"from tether.autoprobes import parse_generated_probes\nr = r\\\"\\\"\\\"```yaml\nprobes:\n  - command:'echo a'\n    contains:'a'\n  - command: 'echo b'\n    contains: 'b'\n```\\\"\\\"\\\"\nspecs = parse_generated_probes(r)\ngot = [s.command for s in specs]\nwant = ['echo a', 'echo b']\nprint(\\\"shape-ok\\\" if got == want else \\\"shape-bad:\\\" + repr(got))\""
+      contains: "shape-ok"
   auto_probes:
     enabled: true
     # The `--adapter` CLI override only replaces the top-level agent adapter;

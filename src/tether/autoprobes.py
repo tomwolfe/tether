@@ -410,6 +410,13 @@ def _iter_probe_entry_chunks(block: str) -> list[str]:
     continues. Ending the scan there instead would cost the response every
     entry that follows the stray line -- the very all-or-nothing failure
     this salvage exists to remove.
+
+    An item marker SHALLOWER than the item indent re-anchors the scan
+    rather than ending it: the model indented that one entry deeper than
+    its siblings (a tab, or one stray space too many), and the list body
+    is still going. Latching the FIRST item's indent instead would end the
+    scan at the first shallower sibling, and the deeper entry would cost
+    the response every entry behind it.
     """
     lines = block.splitlines()
     body_start = None
@@ -440,16 +447,27 @@ def _iter_probe_entry_chunks(block: str) -> list[str]:
                     break
                 continue
             item_indent = indent
-        if is_item and indent == item_indent:
-            chunks.append("\n".join(current).rstrip("\n"))
+        if is_item and indent <= item_indent:
+            if indent < item_indent:
+                # A SHALLOWER item marker re-anchors the list body: the
+                # model indented the entry in front of it deeper than its
+                # siblings, and the body is still going. Without the
+                # re-anchor the scan would END here, and that one deeper
+                # entry would cost the response every sibling behind it.
+                item_indent = indent
+            if current:
+                chunks.append("\n".join(current).rstrip("\n"))
             current = []
-        elif indent < item_indent:
+            current.append(line)
+            continue
+        if indent < item_indent:
             break
-        elif indent == item_indent:
+        if indent == item_indent:
             # Stray content at the item level: it closes the current chunk
             # and is dropped, but the scan carries on so that the sibling
             # entries after it are still read.
-            chunks.append("\n".join(current).rstrip("\n"))
+            if current:
+                chunks.append("\n".join(current).rstrip("\n"))
             current = []
             continue
         current.append(line)
@@ -618,6 +636,18 @@ def _salvaged_specs(block: str) -> list[ProbeSpec]:
     return specs
 
 
+def _per_entry_specs(block: str) -> list[ProbeSpec]:
+    """Read a block one list item at a time, with its shape normalized.
+
+    The per-entry reading is the forgiving one. Each ``- `` item is read
+    and validated on its own, so an entry the bulk reading could not hold
+    does not cost its siblings, and the block's SHAPE is forgiven before
+    the items are read: a tab used for indentation, a key whose colon
+    lacks its blank, a bare list of entries.
+    """
+    return _salvaged_specs(_normalize_block(block))
+
+
 def parse_generated_probes(
         response: str,
         max_probes: int = DEFAULT_MAX_PROBES) -> list[ProbeSpec]:
@@ -629,20 +659,23 @@ def parse_generated_probes(
     yields no valid probe — missing fence, unreadable block, wrong shape,
     empty list, every entry malformed — raises :class:`ProbeSynthesisError`.
 
-    One bad entry does not sink the response. Salvage is per entry at two
+    One bad entry does not sink the response. Salvage is per entry at three
     layers: the whole block is read as YAML first and each entry is then
-    validated on its own (a malformed entry is skipped); and if the block
-    cannot be read as YAML at all — the common real-model failure being a
-    shell command's quotes nested inside a quoted scalar — the ``probes``
-    list is re-read one list item at a time so the readable entries still
-    parse. The same second reading forgives a block whose SHAPE the model
-    spelled wrong while its entries are sound: a tab used for indentation
-    (YAML forbids it), a key whose colon lacks its blank (YAML then reads
-    the line as a plain scalar), a bare list of entries and a capitalized
-    ``Probes:`` key. The CONTENT is never forgiven: an entry that fails
-    the spec gate is still dropped, and a response with no valid probe at
-    all still fails. More than ``max_probes`` valid probes truncate
-    deterministically to the first ``max_probes``.
+    validated on its own (a malformed entry is skipped); if the block cannot
+    be read as YAML at all — the common real-model failure being a shell
+    command's quotes nested inside a quoted scalar — the ``probes`` list is
+    re-read one list item at a time so the readable entries still parse;
+    and if the bulk reading produced FEWER probes than it read entries, the
+    block is re-read per entry too, because a bulk reading that lost an
+    entry would otherwise be trusted for the whole response. The same second
+    reading forgives a block whose SHAPE the model spelled wrong while its
+    entries are sound: a tab used for indentation (YAML forbids it), a key
+    whose colon lacks its blank (YAML then reads the line as a plain
+    scalar), a bare list of entries and a capitalized ``Probes:`` key. The
+    CONTENT is never forgiven: an entry that fails the spec gate is still
+    dropped, and a response with no valid probe at all still fails. More
+    than ``max_probes`` valid probes truncate deterministically to the first
+    ``max_probes``.
     """
     cleaned = strip_ansi(response or "")
     fences = _FENCE_RE.findall(cleaned)
@@ -656,7 +689,20 @@ def parse_generated_probes(
         # usable. The SHAPE may be what the model wrote wrong while the
         # entries themselves are sound, so the block is read again with its
         # shape normalized, one list item at a time.
-        specs = _salvaged_specs(_normalize_block(block))
+        specs = _per_entry_specs(block)
+    elif entries is not None and len(specs) < len(entries):
+        # The block DID read as YAML, but it did not read as the model's
+        # list: an entry whose key colon lacks its blank is read as one
+        # plain scalar, so the bulk reading LOST that entry. A healthy
+        # sibling kept the valid set non-empty, so the per-entry reading
+        # above never ran and the lost entry was never read at all. The
+        # entry is the model's own spelling of the shape, so the block is
+        # read again one list item at a time; the second reading is kept
+        # when it finds MORE probes, and the bulk reading stands when it
+        # does not -- the CONTENT is never forgiven either way.
+        recovered = _per_entry_specs(block)
+        if len(recovered) > len(specs):
+            specs = recovered
     if not specs:
         if entries is None:
             raise _fail(blocked_by or "no probe entries could be read")

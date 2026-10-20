@@ -695,6 +695,140 @@ def test_the_two_scalar_repairs_compose():
     assert specs[0].contains == "x\\d"
 
 
+def test_deeper_indented_entry_does_not_cost_its_siblings():
+    # A tab used for indentation is the model's own spelling of the shape,
+    # and the entry in front of it must not cost its siblings. The chunk
+    # scan used to latch the FIRST item's indent and stop at the first
+    # shallower line, so the two healthy entries behind the tab-indented
+    # one were never read at all -- the response kept one probe out of
+    # three and called it salvage.
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "\t- command: 'echo A'\n"
+        "\t  contains: 'A'\n"
+        "  - command: 'echo B'\n"
+        "    contains: 'B'\n"
+        "  - command: 'echo C'\n"
+        "    contains: 'C'\n"
+        "```"
+    )
+    specs = _parse(response)
+    assert [p.command for p in specs] == ["echo A", "echo B", "echo C"]
+
+
+def test_over_indented_entry_does_not_cost_its_siblings():
+    # The same failure without a tab: an entry indented deeper than its
+    # siblings used to end the scan, and the healthy entry behind it was
+    # lost. A shallower item marker re-anchors the list body instead.
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "    - command: 'echo A'\n"
+        "      contains: 'A'\n"
+        "  - command: 'echo B'\n"
+        "    contains: 'B'\n"
+        "```"
+    )
+    specs = _parse(response)
+    assert [p.command for p in specs] == ["echo A", "echo B"]
+
+
+def test_deeper_indented_entry_in_last_position_keeps_its_siblings():
+    # The mirror of the two tests above: the deeper entry comes LAST, so
+    # the re-anchor has nothing to re-anchor. The healthy entry in front
+    # of it must still be read, and the deeper one must not swallow it.
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command: 'echo A'\n"
+        "    contains: 'A'\n"
+        "\t- command: 'echo B'\n"
+        "\t  contains: 'B'\n"
+        "```"
+    )
+    specs = _parse(response)
+    assert [p.command for p in specs] == ["echo A", "echo B"]
+
+
+def test_missing_blank_after_colon_is_repaired_beside_a_healthy_sibling():
+    # `command:'echo a'` is a PLAIN SCALAR to YAML, not a mapping entry,
+    # so the bulk reading loses that entry. The entry is the model's own
+    # spelling of the shape, so the per-entry reading recovers it -- and
+    # the healthy sibling beside it must survive the recovery.
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command:'echo a'\n"
+        "    contains:'a'\n"
+        "  - command: 'echo b'\n"
+        "    contains: 'b'\n"
+        "```"
+    )
+    specs = _parse(response)
+    assert [p.command for p in specs] == ["echo a", "echo b"]
+    assert [p.contains for p in specs] == ["a", "b"]
+
+
+def test_missing_blank_after_colon_is_repaired_in_last_position():
+    # Same, with the mangled entry last: the source order is kept, and
+    # the healthy entry in front of it is not lost either.
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command: 'echo b'\n"
+        "    contains: 'b'\n"
+        "  - command:'echo a'\n"
+        "    contains:'a'\n"
+        "```"
+    )
+    specs = _parse(response)
+    assert [p.command for p in specs] == ["echo b", "echo a"]
+
+
+def test_bulk_read_that_lost_an_entry_is_reread_per_entry():
+    # The mechanism behind the test above, pinned from the outside: the
+    # bulk reading holds the mangled entry as ONE plain scalar instead of
+    # a mapping, so it lost that entry -- and a healthy sibling kept the
+    # valid set non-empty, so the per-entry reading never ran. The block
+    # is re-read per entry exactly when the bulk reading lost something.
+    from tether.autoprobes import _read_probe_list
+
+    block = (
+        "probes:\n"
+        "  - command:'echo a'\n"
+        "    contains:'a'\n"
+        "  - command: 'echo b'\n"
+        "    contains: 'b'\n"
+    )
+    entries, _blocked_by = _read_probe_list(block)
+    assert entries is not None
+    assert len(entries) == 2
+    # The first entry was not read as a mapping, so it was not a probe.
+    assert isinstance(entries[0], str)
+    specs = _parse(f"```yaml\n{block}```")
+    assert [p.command for p in specs] == ["echo a", "echo b"]
+
+
+def test_per_entry_reread_does_not_resurrect_a_rejected_entry():
+    # The re-read that recovers a lost entry goes through the SAME spec
+    # gate, so it is not a way around it: the empty-command sibling of a
+    # recoverable entry stays dropped, and the healthy one survives.
+    response = (
+        "```yaml\n"
+        "probes:\n"
+        "  - command:'echo a'\n"
+        "    contains:'a'\n"
+        "  - command: 'echo b'\n"
+        "    contains: 'b'\n"
+        "  - command: ''\n"
+        "    contains: 'x'\n"
+        "```"
+    )
+    specs = _parse(response)
+    assert [p.command for p in specs] == ["echo a", "echo b"]
+
+
 def test_shape_tolerance_does_not_rescue_a_response_with_no_valid_probe():
     # Forgiving the SHAPE must not forgive the CONTENT: a block that
     # survives every shape tolerance still fails when it holds no valid
