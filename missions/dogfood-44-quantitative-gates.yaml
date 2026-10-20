@@ -61,6 +61,15 @@ mission:
     skip invalid entries, keep valid ones; only fail if zero valid probes remain. Also ensure
     double-quoted scalars handle shell fragments correctly. Keep all tests green.
 
+    DO NOT CREATE ANY GIT COMMITS. Leave every change in the working tree,
+    uncommitted. This mission runs with git_state_guard: true, and that guard
+    compares the repo HEAD against a checkpoint taken at session start, so a
+    commit made during the session is reported as "history was rewritten" and
+    the mission fails with verification skipped -- even though the work itself
+    is correct and the tests pass. The guard is strict on purpose
+    (test_enabled_agent_commit_forward_trips_guard_strictness pins that
+    semantics), so the fix is to not commit, not to weaken the guard.
+
 constraints:
   - "only src/tether/autoprobes.py, tests/test_autoprobes.py, missions/dogfood-44-quantitative-gates.yaml may be modified"
   - "parse_generated_probes must still reject empty/missing fence and empty valid set"

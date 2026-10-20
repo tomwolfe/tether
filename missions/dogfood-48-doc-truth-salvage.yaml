@@ -1,0 +1,138 @@
+# Mission: dogfood-48-doc-truth-salvage
+#
+# WHY THIS EXISTS (doc drift, found by dogfood-44 and recorded rather than
+# quietly fixed)
+#
+# dogfood-44's agent changed the auto-probe synthesis parser from
+# all-or-nothing to per-entry salvage: one malformed entry now costs only
+# itself, and the response is only rejected when ZERO valid probes remain.
+# That behaviour landed in commit cecd21d and was extended by the agent.
+#
+# Two documents still describe the OLD behaviour, and they now state something
+# false:
+#
+#   docs/ARCHITECTURE.md: "ANY malformation rejects the whole response"
+#   docs/DOGFOODING.md:  "ANY malformation rejects the whole response and the
+#                         mission falls back to exactly today's battery"
+#
+# The dogfood-44 agent could not fix them: both files are outside that
+# mission's allowed_paths, so it recorded the drift instead of reaching for
+# them. That is the correct behaviour for a scoped mission, and it is exactly
+# why this mission exists.
+#
+# SCOPE OF THE CLAIM: this corrects the PROSE to match the implemented
+# behaviour. It does not change the parser, the salvage rules, the caps, or
+# any threshold. If the prose is found to describe something other than what
+# the code does, the CODE is wrong and this mission must say so rather than
+# rewriting the documentation to match a bug.
+
+mission:
+  name: dogfood-48-doc-truth-salvage
+  goal: |
+    Correct the two documentation paragraphs that still claim the auto-probe
+    parser is all-or-nothing, so the docs describe the behaviour the code
+    actually has.
+
+    TASK 1 - READ THE CODE FIRST
+    Read `parse_generated_probes` and the per-entry salvage path in
+    src/tether/autoprobes.py and establish, from the CODE, what actually
+    happens to a malformed entry. The specific claims to verify:
+      - is a malformed entry dropped, with its valid siblings kept?
+      - is the whole response rejected only when ZERO valid probes remain?
+      - what happens to a scalar that cannot be repaired (e.g. an empty
+        command)? Is it dropped, or does it fail the response?
+      - does the "last fenced yaml block wins" rule still hold, and does the
+        scalar repair (the quote-count parity fix) change what "malformation"
+        means?
+    Write down what the code does BEFORE editing any prose. If the code and
+    the two doc paragraphs disagree in a way that is not explained by the
+    salvage change, STOP and report that instead of editing the prose.
+
+    TASK 2 - FIX THE PROSE, PRECISELY
+    Update docs/ARCHITECTURE.md and docs/DOGFOODING.md so each says what the
+    code does. Requirements:
+      - say that a malformed entry is dropped and its valid siblings are kept;
+      - say that the response is rejected only when no valid probe remains;
+      - keep the scalar-repair clause: a single-quote-nested shell scalar is
+        REPAIRED (quote-count parity) rather than dropped, and that is
+        different from a genuinely unparsable entry;
+      - keep the existing caps and rules (2000-char command cap, max_probes
+        cap, last fenced block wins) -- do not soften them;
+      - do not claim anything the code does not do.
+    Keep the surrounding structure and voice of each document. These are
+    dense paragraphs; edit the sentences that are wrong, not the paragraph.
+
+    TASK 3 - CHECK FOR THE SAME CLAIM ELSEWHERE
+    grep the whole repo (docs/, README.md, and the mission files) for other
+    statements of the same rule -- "ANY malformation", "all-or-nothing",
+    "rejects the whole response", "the whole response is rejected". Fix the
+    ones that are false. docs/DOGFOODING.md may legitimately DESCRIBE the old
+    all-or-nothing parser as history ("The prior parser was all-or-nothing --
+    one malformed probe entry...") -- that is a true statement about the past
+    and must be KEPT. Only forward-looking claims about current behaviour get
+    corrected.
+
+    TASK 4 - NO CODE CHANGES
+    Do not modify any source file. This is a documentation-truth mission. If
+    you believe a code change is required, report it rather than making it.
+
+context_files:
+  - src/tether/autoprobes.py
+  - docs/ARCHITECTURE.md
+  - docs/DOGFOODING.md
+  - missions/dogfood-44-quantitative-gates.yaml
+
+constraints:
+  - "documentation only: no source file may be modified"
+  - "do not weaken or soften any threshold, cap, or rejection rule in the prose"
+  - "do not delete a true historical statement about the old all-or-nothing parser"
+
+verification:
+  commands:
+    # The stale claim is gone from the forward-looking documentation.
+    - >-
+      python3 -c "import pathlib, re;
+      bad = re.compile(r'ANY\s+malformation rejects the whole response', re.I);
+      for f in ('docs/ARCHITECTURE.md','docs/DOGFOODING.md'):
+        t = pathlib.Path(f).read_text();
+        assert not bad.search(t), f+' still claims ANY malformation rejects the whole response';
+      print('stale all-or-nothing claim removed')"
+    # The replacement prose actually says the new rule.
+    - >-
+      python3 -c "import pathlib, re;
+      t = pathlib.Path('docs/ARCHITECTURE.md').read_text();
+      assert re.search(r'(dropped|skipped|costs only itself|only itself)', t, re.I), 'ARCHITECTURE.md does not describe per-entry salvage';
+      assert re.search(r'(zero valid|no valid probe)', t, re.I), 'ARCHITECTURE.md does not say the response is rejected only when no valid probe remains';
+      print('per-entry salvage is documented')"
+    # The historical statement about the OLD parser was kept.
+    - >-
+      python3 -c "import pathlib, re;
+      t = pathlib.Path('docs/DOGFOODING.md').read_text();
+      assert re.search(r'prior parser was all-or-nothing', t, re.I), 'the true historical statement was deleted -- do not rewrite history';
+      print('history preserved')"
+    # The docs still describe the caps and rules that were not changed.
+    - >-
+      python3 -c "import pathlib;
+      for f in ('docs/ARCHITECTURE.md','docs/DOGFOODING.md'):
+        t = pathlib.Path(f).read_text();
+        for token in ('max_probes','fenced yaml'):
+          assert token in t, f+' no longer mentions '+token;
+      print('caps and the fenced-block rule still documented')"
+    # The code is untouched, and the suite is still green.
+    - "git diff --name-only | grep -E '^(src|tests)/' && echo 'SOURCE FILES CHANGED -- not allowed' && exit 1 || echo 'no source files changed'"
+    - ".venv/bin/python -m pytest tests/ -q"
+  timeout_seconds: 1800
+
+recovery:
+  max_attempts: 3
+
+review:
+  enabled: true
+  adapter: opencode
+
+budget:
+  max_sends: 16
+  max_wall_seconds: 3600
+
+adapter: opencode
+git_state_guard: true
