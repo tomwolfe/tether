@@ -5,9 +5,17 @@
 # Also hardens quantitative gate: mutation fail_below mandatory, teeth 0.7 already pinned in dogfood-44.
 mission:
   name: dogfood-45-reviewer-untracked
+  # The goal is the reviewer's framing of the task: it is embedded verbatim in
+  # the review prompt and in the auto-probe synthesis prompt, so it has to
+  # state the premise the reviewer needs. The deliverable is UNTRACKED in the
+  # working tree (out of git's index, never committed), so the captured diff
+  # renders it as deleted and its contents reach the reviewer only through
+  # the untracked-contents appendix -- the point of this mission.
   goal: |
     Add src/tether/untracked_helper.py with function helper() returning 42 and a test proving it.
     Keep all tests green. This file is new (untracked before capture) so the reviewer must see its contents.
+    Both deliverable files are untracked in the working tree (out of git's index), so the captured diff
+    renders them as deleted; the untracked-contents appendix below carries their contents.
 
 constraints:
   - "only src/tether/untracked_helper.py, tests/test_untracked_helper.py, src/tether/orchestrator.py, missions/dogfood-45-reviewer-untracked.yaml may be modified"
@@ -17,7 +25,11 @@ verification:
     - "python -m pytest -q"
     - "ruff check --no-cache src tests tools"
     - "mypy src/tether"
-    - ".venv/bin/python tools/mutation_killrate.py --target src/tether/cleanroom.py --suite tests/test_cleanroom.py --min-kill-rate 0.8"
+    # Kill-rate target = THIS mission's deliverable: the gate has to show that
+    # the new test actually catches a broken helper. It measured an unrelated
+    # module (cleanroom.py) against cleanroom's own suite, which says nothing
+    # about the change this mission makes -- and cost ~340s per battery run.
+    - ".venv/bin/python tools/mutation_killrate.py --target src/tether/untracked_helper.py --suite tests/test_untracked_helper.py --min-kill-rate 0.8"
   artifacts:
     - "src/tether/untracked_helper.py"
   assertions:
@@ -26,6 +38,12 @@ verification:
   probes:
     - command: ".venv/bin/python -c \"import tether.untracked_helper; print(tether.untracked_helper.helper())\""
       contains: "42"
+    # The mission's premise, asserted: the deliverable is UNTRACKED in the
+    # working tree, which is what forces the review gate to read the new
+    # file's contents out of the untracked-contents appendix instead of the
+    # diff. Asserted so the run proves the premise instead of assuming it.
+    - command: "git ls-files --others --exclude-standard"
+      contains: "src/tether/untracked_helper.py"
   mutation:
     enabled: true
     fail_below: 0.5
