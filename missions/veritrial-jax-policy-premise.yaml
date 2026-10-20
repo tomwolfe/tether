@@ -1,0 +1,137 @@
+# Mission: veritrial-jax-policy-premise
+#
+# WHY THIS EXISTS (a test whose PREMISE is not checked)
+#
+# VeriTrial's
+#   src/insilico_trial/tests/test_jax_policy.py::test_natural_order_refuses_unrecoverable_backend_on_darwin
+# fails on this machine, and it is NOT a code regression:
+#
+#   assert "X64 True" not in result.stdout
+#   AssertionError: X64 True
+#   BACKEND cpu
+#
+# The test's premise is that on darwin, jax's DEFAULT BACKEND IS METAL, so a
+# consumer that imports jax before insilico_trial has already bound a backend
+# the package cannot change -- the "unrecoverable backend" case. It asserts
+# that in that case the package refuses and does NOT repair x64.
+#
+# But jax-metal is an OPTIONAL dependency
+# (pyproject.toml: metal = ["jax-metal>=0.1.0; platform_machine == 'arm64'"]),
+# and it is not installed in the checkout this was measured on. Without it,
+# jax's default backend on darwin is CPU:
+#
+#   $ python -c "import jax; print(jax.default_backend())"
+#   cpu
+#   devices: [CpuDevice(id=0)]
+#
+# So the unrecoverable-backend scenario never arises, the package repairs x64
+# as it is supposed to, and the assertion fails. The test asserted a
+# CONSEQUENCE without checking that its PREMISE held.
+#
+# This is the same class of defect as the one GLOBAL_MINIMUM_REPORT.md records
+# for the Lean toolchain ("it reproduces in an empty directory with no project
+# involved"): a check that only holds in one environment, written as if it
+# held in all of them.
+#
+# SCOPE OF THE CLAIM: make the test assert its premise, so it runs where it
+# means something and is SKIPPED (with a reason) where it does not. Do not
+# weaken the behaviour it was written to protect, and do not change the
+# package's CPU policy.
+
+mission:
+  name: veritrial-jax-policy-premise
+  goal: |
+    Make the darwin-only jax backend test assert its own premise, so it
+    measures the policy where the policy applies and skips (with a reason)
+    where it does not.
+
+    TASK 1 - FIND THE PREMISE
+    In src/insilico_trial/tests/test_jax_policy.py, the test
+    `test_natural_order_refuses_unrecoverable_backend_on_darwin` depends on
+    jax's default backend on darwin being Metal. Confirm that from the code
+    and from the environment: read the package's CPU policy in
+    src/insilico_trial/__init__.py (the _force_cpu block and the refusal it
+    documents) and check what the default backend actually is on this
+    machine. Record both in your summary.
+    The test's current guard is only `if sys.platform != "darwin": pytest.skip(...)`.
+    That is not enough: on darwin WITHOUT jax-metal installed, the premise is
+    still false.
+
+    TASK 2 - ASSERT THE PREMISE, THEN SKIP IF IT DOES NOT HOLD
+    Extend the guard so the test runs only when the unrecoverable-backend
+    scenario can actually arise. The premise is that jax's default backend on
+    this machine is NOT cpu -- i.e. there is a backend the package could not
+    have chosen. Detect that the way the CODE does, not by guessing from
+    platform strings: query jax for its default backend (the same way the
+    package does) and skip with a clear, specific reason naming the missing
+    precondition (for example, that jax-metal is not installed so the default
+    backend is cpu and there is nothing to refuse).
+    A skip must say WHY. "skipped" with no reason is the failure mode this
+    whole exercise is about.
+
+    TASK 3 - KEEP THE OTHER TWO TESTS MEANINGFUL
+    The file has two sibling tests that must keep their meaning:
+      - `test_x64_enabled_when_consumer_imports_jax_first` -- the natural
+        order must still end up in float64, and it runs with Metal explicitly
+        opted into so the precision assertion is not preempted by the
+        fail-closed refusal. If that test cannot run on this machine, say so
+        and why; do not delete it.
+      - `test_normal_import_order_is_cpu_and_x64` -- the common path is cpu
+        and x64.
+    Do NOT change the package's behaviour to make a test pass. The package
+    must still default to CPU on darwin and still refuse an unrecoverable
+    backend.
+
+    TASK 4 - ADD A TEST FOR THE PREMISE ITSELF
+    Add a test that pins the premise check itself: that the darwin-only test
+    is skipped when jax's default backend is cpu, and that the skip reason
+    names the missing precondition. Without this, the guard could be widened
+    until the test never runs anywhere and nothing would notice.
+
+    TASK 5 - SAY WHAT THIS MEANS FOR CI
+    Note in your summary, and in the module docstring of the test file if
+    that is where it belongs, what this means for a Linux CI runner: the
+    darwin-only policy tests do not apply there (the platform guard already
+    skips them), so the CPU-backend policy is UNVERIFIED on Linux. Say that
+    plainly rather than implying the policy is covered everywhere.
+
+context_files:
+  - src/insilico_trial/tests/test_jax_policy.py
+  - src/insilico_trial/__init__.py
+  - pyproject.toml
+
+constraints:
+  - "do not change the package's CPU-backend policy or the refusal behaviour"
+  - "do not delete or weaken any existing assertion"
+  - "no new runtime dependencies"
+
+verification:
+  commands:
+    # The policy suite is green, and the premise check is itself pinned.
+    - ".venv/bin/python -m pytest src/insilico_trial/tests/test_jax_policy.py -q"
+    # The whole suite is green.
+    - ".venv/bin/python -m pytest src/insilico_trial/tests/ -q"
+    # The skip is honest: the darwin-only test either ran or skipped WITH a
+    # reason that names the missing precondition -- never silently.
+    - >-
+      .venv/bin/python -c "import subprocess, sys;
+      r=subprocess.run([sys.executable,'-m','pytest','src/insilico_trial/tests/test_jax_policy.py','-q','-rs'],capture_output=True,text=True);
+      out=r.stdout+r.stderr;
+      assert r.returncode==0, 'the jax policy suite is not green: '+out[-1500:];
+      assert 'skipped' not in out.lower() or 'SKIPPED' in out, 'no skip reporting enabled';
+      print('jax policy suite green with skip reasons reported')"
+  timeout_seconds: 1800
+
+recovery:
+  max_attempts: 3
+
+review:
+  enabled: true
+  adapter: opencode
+
+budget:
+  max_sends: 16
+  max_wall_seconds: 3600
+
+adapter: opencode
+git_state_guard: true

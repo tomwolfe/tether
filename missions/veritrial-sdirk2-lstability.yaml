@@ -1,0 +1,192 @@
+# Mission: veritrial-sdirk2-lstability
+#
+# WHY THIS EXISTS (a real defect, found by measurement, not by inspection)
+#
+# G2 in VeriTrial/docs/gap_closure_plan.md claims:
+#   "SDIRK2 is a *fixed-step* L-stable method"
+# and the module docstring in src/insilico_trial/pbpk/solvers.py says
+# "SDIRK2 is a 2-stage, L-stable, A-stable method".
+#
+# THE IMPLEMENTED METHOD IS NOT L-STABLE. It is not even stable for the stiff
+# regime it exists to handle: it DIVERGES.
+#
+# MEASURED (one step of the implemented _sdirk2_step on y' = lambda*y, i.e.
+# the amplification factor R(z) with z = lambda*dt):
+#
+#       z        R(implemented)   R(ESDIRK2)        e^z
+#      -0.1          0.914239        0.90480     0.90483742
+#      -1            0.948679        0.35044     0.36787944
+#      -5            3.939831       -0.17635     0.00673795
+#     -25            8.888740       -0.13507     0.00000000
+#    -100           10.855801       -0.04406     0.00000000
+#   -1000           11.572878       -0.00478     0.00000000
+#
+# R(implemented) GREW past 1 at z = -5 and kept growing: the method amplifies
+# where it must damp. R -> ~15 as z -> -infinity, where an L-stable method has
+# R -> 0. The implemented column reproduces the closed form exactly
+# (0.914239, 3.939831, 8.888740, 11.572878), so this is the method's real
+# stability function, not a measurement artefact.
+#
+# WHY: the b coefficients are wrong for the tableau they are used with.
+# The code uses
+#     _GAMMA = 1 - 1/sqrt(2)      (0.292893)
+#     _A21   = 1 - _GAMMA         (0.707107)
+#     _B1    = 1 - 1/(2*_GAMMA)   (-0.707107)
+#     _B2    = 1/(2*_GAMMA)       ( 1.707107)
+# and evaluates the stage times as c = (_GAMMA, 1). The second-order condition
+# for that tableau is b1*c1 + b2*c2 = 1/2, and the code's coefficients give
+#     (-0.707107)*0.292893 + (1.707107)*1 = 1.5   NOT 0.5
+# The correct ESDIRK2 coefficients for this gamma with c = (gamma, 1) are
+#     b1 = 1 - _GAMMA   (0.707107)
+#     b2 = _GAMMA       (0.292893)
+# which give b1*c1 + b2*c2 = 0.5 exactly, reproduce e^z to second order
+# (R(-0.1) = 0.90480 vs e^-0.1 = 0.90483742), and are L-stable
+# (R(-1e12) = -4.8e-12, i.e. R -> 0).
+#
+# WHY IT WAS NEVER CAUGHT: the existing stiff-decay test uses lambda = 10 and
+# dt = 0.01, i.e. z = -0.1 -- two orders of magnitude away from the stiff
+# limit, where both the broken and the correct scheme behave alike.
+#
+# CONSEQUENCE: the implicit fallback is supposed to be what handles stiff
+# systems. On a stiff decay it instead grows ~9x per step, and the
+# trajectory-level mass monitor then poisons the whole trajectory to NaN --
+# fail-closed, but the solver is useless exactly where it is needed.
+#
+# SCOPE OF THE CLAIM: fix the coefficients and pin the stability property.
+# This mission does NOT add the adaptive step controller (that is
+# veritrial-sdirk2-adaptive, and it should be built on a correct base
+# method). It does NOT change the default dt, the default solver selection,
+# or any fail-closed guard.
+
+mission:
+  name: veritrial-sdirk2-lstability
+  goal: |
+    Make the SDIRK2 implicit solver actually L-stable, and pin that property
+    with a test that would have caught the defect.
+
+    TASK 1 - FIX THE COEFFICIENTS
+    In src/insilico_trial/pbpk/solvers.py the SDIRK2 b coefficients do not
+    satisfy the second-order condition for the tableau they are used with,
+    and the resulting method diverges in the stiff regime instead of damping.
+    The stage times are c = (_GAMMA, 1) and the order condition is
+    b1*c1 + b2*c2 = 1/2. The coefficients that satisfy it for this gamma are
+    b1 = 1 - _GAMMA and b2 = _GAMMA. Change the constants to those.
+    Verify the change against the measured table in this mission's header:
+    with the corrected coefficients, one step of y' = lambda*y must give
+    R(-0.1) = 0.90480 (exact e^-0.1 = 0.90483742), R(-25) = -0.13507,
+    R(-1000) = -0.00478, and R must tend to 0 as z -> -infinity.
+    Do NOT change _GAMMA or _A21. Do NOT change the stage times or the
+    solve-and-update structure: only the b coefficients are wrong.
+
+    TASK 2 - PIN THE STABILITY PROPERTY, NOT JUST A DECAY
+    Add a test that pins the STABILITY FUNCTION, because "the solution did
+    not blow up at one (lambda, dt)" is much weaker than "|R(z)| < 1 for every
+    z < 0 and R(z) -> 0 as z -> -infinity".
+    The test must, for a range of z including at least -1, -5, -25, -100 and
+    -1000:
+      - compute the amplification factor of the ACTUAL implemented step (one
+        call to _sdirk2_step on a linear problem), not a re-implementation of
+        the formula in the test -- a test that recomputes R from the
+        coefficients proves only the coefficients, not the code;
+      - assert |R(z)| <= 1 (the method must not amplify), and
+      - assert that R is DAMPED toward zero in the stiff limit, e.g.
+        |R(-1000)| < 0.05 and |R(-1e12)| < 1e-6, which is the L-stability
+        property specifically and is what distinguishes it from A-stability.
+    Also assert the second-order accuracy in the non-stiff regime:
+    R(-0.1) must be within a small tolerance of e^-0.1.
+    This test is the point of the mission: it must FAIL against the current
+    coefficients and PASS after the fix. Confirm that by running it before
+    and after.
+
+    TASK 3 - RECALIBRATE THE OVERFLOW FIXTURE, KEEP ITS INTENT
+    src/insilico_trial/tests/test_solvers.py has
+    `test_blowup_is_poisoned_even_though_it_is_not_a_positive_gain`, which
+    builds a fixture that is supposed to overflow float64 so that the
+    monitored gain is NaN, and asserts the non-finite arm of the disjunction
+    is exercised. With the corrected coefficients that fixture NO LONGER
+    overflows -- the method now damps what used to grow -- so the test fails
+    with "this fixture is supposed to overflow; gain was 1e+150".
+    The test's INTENT is sound and must be preserved: the monitor must catch a
+    non-finite gain, and NaN compares false against every threshold.
+    Recalibrate the FIXTURE so it still overflows (a larger initial magnitude
+    will do it -- the current y0 uses -1e150 and the corrected method damps it
+    to a finite value, so scale the magnitude up until the square overflows).
+    Do NOT delete the test, and do NOT weaken its assertions: it must still
+    assert a NON-FINITE gain, that the gain does not compare greater than the
+    tolerance, and that the diverged trajectory is poisoned to NaN.
+    If the recalibrated fixture cannot overflow without changing the monitor,
+    say so in your summary instead of changing the monitor.
+
+    TASK 4 - THE VALIDATED PATH MUST NOT REGRESS
+    The PBPK path must be unaffected in the ways that matter:
+      - the existing solver suite stays green, including
+        `test_implicit_matches_diffrax_warfarin_pk` (SDIRK2 vs diffrax.Tsit5
+        on Warfarin PK, relative error < 1%);
+      - `test_implicit_stiff_linear_decay` still holds;
+      - the mass-conservation monitor still poisons a blown-up trajectory;
+      - the full VeriTrial suite stays green.
+    The corrected method is MORE accurate in the non-stiff regime (it
+    reproduces e^z to second order), so the Tsit5 comparison should improve
+    or hold, not degrade. If it degrades, that is a finding to report, not a
+    reason to keep the broken coefficients.
+
+    TASK 5 - CORRECT THE CLAIMS THAT ARE NOW WRONG
+    Two places assert the method is L-stable:
+      - the module docstring of src/insilico_trial/pbpk/solvers.py;
+      - the G2 section of docs/gap_closure_plan.md, which says "SDIRK2 is a
+        *fixed-step* L-stable method".
+    After the fix those claims become TRUE, so they may stay -- but the docs
+    must also record what was wrong and how it was found, because the
+    previous version of the same sentence was false and the only test that
+    existed could not detect it. State the measured stability numbers and the
+    corrected coefficients. If the fix does NOT end up making the method
+    L-stable, correct the claim instead and say so plainly.
+
+context_files:
+  - src/insilico_trial/pbpk/solvers.py
+  - src/insilico_trial/tests/test_solvers.py
+  - docs/gap_closure_plan.md
+
+constraints:
+  - "do not change _GAMMA, _A21, the stage times, or the solve/update structure"
+  - "do not weaken or delete any fail-closed guard, including the mass-conservation monitor"
+  - "do not add a clamp (jnp.maximum) on concentrations"
+  - "do not change DEFAULT_ORGAN_NETWORK or the validated 6-state model"
+  - "do not change the default solver selection or the default dt"
+  - "no new runtime dependencies: pure JAX primitives only"
+
+verification:
+  commands:
+    # The solver suite, with the project default addopts (-x --tb=short -q).
+    - ".venv/bin/python -m pytest src/insilico_trial/tests/test_solvers.py -q"
+    # The stability function is pinned: no amplification anywhere, damping to
+    # zero in the stiff limit, and second-order accuracy when not stiff.
+    - >-
+      .venv/bin/python -c "import sys; sys.path.insert(0,'src');
+      import math, jax, jax.numpy as jnp;
+      from insilico_trial.pbpk.solvers import _sdirk2_step, _GAMMA;
+      R=lambda z: float(_sdirk2_step(lambda t,y,a: jnp.array([z*y[0]]), 0.0, jnp.array([1.0]), 1.0, None, jnp.array([[z]]), _GAMMA)[0]);
+      zs=[-1.0,-5.0,-25.0,-100.0,-1000.0];
+      amp={z: R(z) for z in zs};
+      assert all(abs(v)<=1.0 for v in amp.values()), 'the method amplifies in the stiff regime: '+str(amp);
+      assert abs(R(-1000.0))<0.05, 'not L-stable: |R(-1000)|='+str(abs(R(-1000.0)));
+      assert abs(R(-1e12))<1e-6, 'R does not tend to 0: '+str(R(-1e12));
+      assert abs(R(-0.1)-math.exp(-0.1))<1e-3, 'not second-order accurate in the non-stiff regime: '+str(R(-0.1));
+      print('stability function pinned: '+str(amp))"
+    # The whole suite stays green.
+    - ".venv/bin/python -m pytest src/insilico_trial/tests/ -q"
+  timeout_seconds: 2400
+
+recovery:
+  max_attempts: 3
+
+review:
+  enabled: true
+  adapter: opencode
+
+budget:
+  max_sends: 24
+  max_wall_seconds: 5400
+
+adapter: opencode
+git_state_guard: true

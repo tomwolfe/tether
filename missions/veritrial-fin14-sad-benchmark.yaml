@@ -71,7 +71,7 @@ mission:
 
 context_files:
   - src/insilico_trial/pbpk/model.py
-  - src/insilico_trial/engine.py
+  - src/insilico_trial/trial/engine.py
   - src/insilico_trial/tests/test_population.py
   - docs/gap_closure_plan.md
   - Makefile

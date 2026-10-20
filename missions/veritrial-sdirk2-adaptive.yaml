@@ -37,15 +37,25 @@ mission:
     brief is explicit that the validated model must not break.
 
     TASK 2 - THE CONTROLLER MUST BE L-STABLE
-    The method is 2nd-order L-stable (Hairer-Wanner SDIRK2 constants already
-    in the file: _GAMMA, _A21, _B1, _B2). An adaptive controller built on
-    step rejection would DESTROY L-stability unless it is implemented as a
-    proper embedded pair or step-doubling. Use an approach that preserves
-    L-stability, and PIN that property with a test on a stiff linear decay:
-    a rapidly decaying stiff system must still be damped to the correct
-    (essentially zero) value with a LARGE step, rather than oscillating or
-    growing. This is the property that distinguishes SDIRK2 from an explicit
-    method, so losing it silently would be worse than not having adaptivity.
+    An adaptive controller built on step rejection would DESTROY L-stability
+    unless it is implemented as a proper embedded pair or step-doubling. Use
+    an approach that preserves L-stability, and PIN that property with a test
+    on a stiff linear decay: a rapidly decaying stiff system must still be
+    damped with a LARGE step, rather than oscillating or growing. This is the
+    property that distinguishes SDIRK2 from an explicit method, so losing it
+    silently would be worse than not having adaptivity.
+
+    IMPORTANT PRECONDITION, measured not assumed: the BASE method's b
+    coefficients were WRONG (they did not satisfy the second-order condition,
+    so the scheme amplified instead of damping in the stiff regime -- see the
+    measured stability function in the veritrial-sdirk2-lstability mission,
+    which fixes it). If that fix is not present in the tree you are working
+    on, the adaptive path cannot be L-stable either, because the base step it
+    is built from is not. In that case, report that and stop: do not build an
+    adaptive controller on a method whose base step diverges, and do not
+    re-derive the coefficients here (that is the other mission's job, and
+    two agents editing the same constants is how the coefficients got
+    wrong in the first place).
 
     TASK 3 - THE VARIABLE STEP COUNT NEEDS A WHILE LOOP
     A fixed-length jax.lax.scan cannot express an adaptive step count. Use
@@ -106,19 +116,18 @@ verification:
       assert 'Tsit5' in tst, 'the adaptive path must be pinned against diffrax.Tsit5';
       assert re.search(r'adaptive', tst, re.I), 'no adaptive test found in test_solvers.py';
       print('adaptive controller present and pinned against Tsit5')"
-    # L-stability is preserved: a stiff decay must not oscillate.
+    # The base step is L-stable (this is the precondition for an adaptive
+    # controller on top of it). Measured on the IMPLEMENTED step, not on a
+    # formula recomputed in the gate.
     - >-
       .venv/bin/python -c "import sys; sys.path.insert(0,'src');
-      import jax, jax.numpy as jnp;
-      from insilico_trial.pbpk.solvers import solve_implicit;
-      lam=-50.0;
-      f=lambda t,y,a: lam*y;
-      y0=jnp.array([1.0]);
-      t=jnp.linspace(0.0,1.0,11);
-      ys=solve_implicit(f,y0,t,None,dt=0.5);
-      assert jnp.all(jnp.isfinite(ys)), 'stiff decay produced non-finite values';
-      assert float(ys[-1,0])>=0.0, 'stiff decay went negative (L-stability lost): '+str(float(ys[-1,0]));
-      print('L-stability preserved on the fixed path')"
+      import math, jax, jax.numpy as jnp;
+      from insilico_trial.pbpk.solvers import _sdirk2_step, _GAMMA;
+      R=lambda z: float(_sdirk2_step(lambda t,y,a: jnp.array([z*y[0]]), 0.0, jnp.array([1.0]), 1.0, None, jnp.array([[z]]), _GAMMA)[0]);
+      amp={z: R(z) for z in (-1.0,-5.0,-25.0,-100.0,-1000.0)};
+      assert all(abs(v)<=1.0 for v in amp.values()), 'the base step amplifies in the stiff regime: '+str(amp);
+      assert abs(R(-1e12))<1e-6, 'the base step is not L-stable: R(-1e12)='+str(R(-1e12));
+      print('base step is L-stable: '+str(amp))"
     # The fixed path's behaviour is unchanged (the validated 6-state model).
     - ".venv/bin/python -m pytest src/insilico_trial/tests/ -q --override-ini=\"addopts=\""
   timeout_seconds: 2400
