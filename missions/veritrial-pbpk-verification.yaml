@@ -51,7 +51,7 @@ review:
   required: false
 budget:
   max_sends: 20
-  max_wall_seconds: 3600
+  max_wall_seconds: 7200
 git_state_guard: false
 # The opencode adapter requires network/API access unavailable here, so the
 # agent step is executed via the local mock adapter (which returns success),

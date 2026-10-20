@@ -121,7 +121,6 @@ review:
 
 budget:
   max_sends: 24
-  max_wall_seconds: 5400
-
+  max_wall_seconds: 10800
 adapter: opencode
 git_state_guard: true
