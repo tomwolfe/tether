@@ -1,7 +1,13 @@
 # Global Minimum Report — tri-repo (Tether / QED / VeriTrial)
 
-Model for every Tether run in this session: **`opencode/space-bunny-free`**.
-No mock adapter was used for any gate recorded below.
+> **CURRENT STATE (re-measured 2026-10-21) is in [Pass 3](#pass-3-2026-10-21--the-toolchain-seal-the-l-stability-defect-and-the-parser-defect)
+> at the end of this document.** The sections above it are the historical
+> record of earlier passes and are left as written, except where a later pass
+> explicitly supersedes them.
+
+Model for every Tether run in the most recent pass: **`opencode/minimax-m3.1-flash-free`**.
+No mock adapter was used for any gate recorded below. The model was changed
+deliberately during the pass — see "Pass 3 → The model changed mid-session".
 
 ## Ledger
 
@@ -1900,3 +1906,280 @@ go stale silently — which it did. The roots above also predate the
 `merkle_root` redefinition in the preceding section, so they are **not
 comparable to the current root**; they hashed a different projection. They are
 history, and `--check` is the forward-looking guarantee.
+
+---
+
+# Pass 3 (2026-10-21): the toolchain seal, the L-stability defect, and the parser defect
+
+Model for every Tether run in this pass: **`opencode/minimax-m3.1-flash-free`**.
+No mock adapter was used for any gate recorded below.
+
+## Ledger (re-measured 2026-10-21, all three trees clean)
+
+| repo | HEAD | dirty | sorry_free |
+|---|---|---|---|
+| tether | `89426aa` (the head the ledger records; this report's own commit is its child) | false | `n/a` (ships no Lean) |
+| QED | `fce0e96` (digit-suffixed-identifier defect recorded; its fix is a mission, not merged) | false | **true** |
+| VeriTrial | `037bbc4` (G8 recorded: the fidelity gap; the SDIRK2 L-stability fix) | false | **true** |
+
+`SYSTEM_STATE.json` merkle root: `73c9c5549c84a1a941966bb93861bd5f60bb9a797d81cba902086290ee7565d1`
+V&V report `<meta name="merkle-root">`: `61319c5dd567f01a029307604bea9b40e8c274b5200451495a8a84382e28cf04`
+
+The report's `<meta name="merkle-root">` **matches**
+`output/validation/regulatory_provenance.json` exactly, and that file's
+`git_shas` are the three heads above. `git merge-base --is-ancestor` holds
+for all three, so the report and the ledger agree on the same commits;
+`dirty` is false for all three at audit time. The two roots remain
+**different quantities** — the report chains the validation leaves, the
+ledger hashes the three repo audit records — and the binding between them is
+containment, not equality, because the ledger necessarily trails the report by
+the ledger's own commit.
+
+`validation_summary.json`: `overall_pass: true`,
+`formal_verification_pass: true`. `formal_gate_compound.json`:
+`overall_pass: true`.
+
+## The tri-repo gate, re-run for real (2026-10-21)
+
+`tri-repo-full-stack-gate.yaml`, session **`e124fd196e20`**, `--adapter opencode`,
+real run:
+
+| layer | result |
+|---|---|
+| status | **success** |
+| clean-room verification | **13/13 commands exit 0** (the mission grew from 9) |
+| formal gate, Fin 6 | **all 9 lemmas verified by QED (no sorry)** |
+| formal gate, Fin 14 | **all 25 lemmas verified by QED (no sorry)** |
+| review | **approve**, on cited evidence |
+| sandbox violations | **none** (`[]`) |
+| mutation | **kill_rate 0.9667** — 29 killed, 1 survived (`fail_below` 0.8) |
+| siblings after the run | QED `23d2286` and VeriTrial `42fdc31`, both **clean and unmoved** |
+
+**The kill rate is 0.9667, not 1.0000**, and the one survivor is in
+`VeriTrial/scripts/export_pbpk_to_qed.py` (5 killed, 1 survived). The
+mission's own `fail_below` is 0.8, so the gate passes on its stated
+criterion. A stricter reading — "23 killed, 0 survived", which an earlier
+pass recorded — is **not** met by this run, and is not claimed.
+
+The Fin 14 path is now certified end to end for **provability**: the same
+gate that certifies the six-organ model also certifies the fourteen-organ one,
+25 lemmas, no sorry, in the same clean room.
+
+## Three real defects found this pass, each by a gate failing
+
+### 1. The pinned Lean toolchain's `lake` is broken, and the fix is not a downgrade
+
+`leanprover/lean4:v4.34.0-rc2`'s `lake` exits **133 (SIGTRAP)** on every
+invocation on arm64 Darwin 27, including `lake --version` in an empty
+directory, while `lean` from the same toolchain exits 0.
+
+Ruled out before touching anything: a **corrupt download** (clean
+`elan toolchain uninstall` + `install` reproduces it) and **code signing**
+(ad-hoc `codesign --force --sign -` on the binary reproduces it).
+
+**The fix is not the one the brief prescribed.** Downgrading the toolchain
+alone does not work: `lakefile.lean` required mathlib from `master`, which had
+floated to a commit that itself requires v4.34.0-rc2, so the Lean pin and the
+mathlib pin cannot be decoupled — `lake build` fails inside *mathlib's own*
+lakefile with `Invalid field 'baseName'`. The pair has to move together.
+
+Chosen: **`leanprover/lean4:v4.33.0`** with mathlib pinned to the matching
+`v4.33.0` tag. v4.33.0 is the newest release whose `lake` exits 0, so it is
+the smallest step away from the broken pin. One import also had to move:
+`Mathlib.Basic.Real.Basic` (a deprecated shim removed after v4.34, absent at
+v4.33.0) → `Mathlib.Data.Real.Basic`, which exists in both.
+
+This was **latent, not new**: with `lake build` unsatisfiable, QED's suite
+could not run at all, so its failures were invisible rather than absent. The
+generator still emitted the removed shim, and QED's suite had **10 failing
+tests** (248 passed) that were all the parametric proofs, all with the same
+error — a stale `.olean` from the old toolchain being read by the new one.
+Fixed; the suite is **258 passed, 0 failed**, and `lake build` exits 0.
+
+### 2. The SDIRK2 implicit solver was not L-stable. It diverged.
+
+`docs/gap_closure_plan.md` claimed "SDIRK2 is a *fixed-step* L-stable
+method", and the solver's own docstring said the same. The implemented method
+**amplifies in the stiff regime it exists to handle**.
+
+Measured amplification factor of the *implemented* `_sdirk2_step` on
+`y' = lambda*y`, with `z = lambda*dt`:
+
+| z | R(implemented) | R(ESDIRK2) | exact e^z |
+|---|---|---|---|
+| −0.1 | 0.914239 | 0.90480 | 0.90483742 |
+| −1 | 0.948679 | 0.35044 | 0.36787944 |
+| −5 | **3.939831** | −0.17635 | 0.00673795 |
+| −25 | **8.888740** | −0.13507 | ~0 |
+| −100 | **10.855801** | −0.04406 | ~0 |
+| −1000 | **11.572878** | −0.00478 | ~0 |
+
+R grows past 1 at z = −5 and tends to ~15 as z → −∞, where an L-stable method
+has R → 0. The implemented column reproduces the closed form exactly
+(0.914239, 3.939831, 8.888740, 11.572878), so this is the method's real
+stability function, not a measurement artefact.
+
+**Cause:** the `b` coefficients do not satisfy the second-order condition for
+the tableau they are used with. The stage times are `c = (_GAMMA, 1)` and the
+condition is `b1*c1 + b2*c2 = 1/2`; the code's coefficients give **1.5**. The
+correct ESDIRK2 coefficients for this γ are `b1 = 1 - _GAMMA`, `b2 = _GAMMA`,
+which give exactly 0.5, reproduce e^z to second order, and are L-stable
+(R(−10¹²) = −4.8e−12 → 0).
+
+**Why it was never caught:** the only stiff-decay test uses `lambda = 10`,
+`dt = 0.01` — z = −0.1, two orders of magnitude from the stiff limit, where
+the broken and the correct schemes behave alike. Patching the constants turns
+a stiff decay (λ=50, dt=0.5) from **NaN into a bounded 0.0182**.
+
+Fixed via `veritrial-sdirk2-lstability` (mission **success**), with the
+stability function pinned by a test that computes it from the *implementation's
+own step* — a test that recomputed the formula from the coefficients would
+prove only the coefficients. The adaptive controller was then added on top
+(`veritrial-sdirk2-adaptive`, **success**): new opt-in
+`solve_implicit_adaptive` / `solve_implicit_adaptive_batch`, `jax.lax.while_loop`
+for the variable step count, existing entry points unchanged.
+
+### 3. QED's parser collapses digit-suffixed identifiers — and a gate that would have caught it is green anyway
+
+`parse_equation("(Q3/Vc) + (Q4/Vc) = 0")` → free vars `['Q', 'Vc']`. **`Q3`
+and `Q4` are the same variable to QED, and the digits are dropped.** True for
+`Q3..Q12`, `V3..V12`, `Kp3..Kp12` — every variable the fourteen-organ
+theorems quantify over.
+
+VeriTrial's formal gate has a *theorem fidelity* check that refuses any
+exported theorem QED reads as being about variables the statement never
+names. It exists because a bare `ka` parses as the implicit product `k * a`,
+which would make the prover certify a theorem about parameters the model
+never had. **It fires on exactly this collapse** — "is parsed by QED as
+involving `['Q', 'V']`, which the statement never names".
+
+It is green **only by luck**. The six-organ Jacobian identity is exported
+with a bare `ka`, and the resulting `k`/`a` split happens to make the
+parsed-name set agree with the statement's names, while the `Q3`/`V3`
+collapse sits in the same file undetected. Rename the parameter to
+`ka_rate` and the Fin 14 gate fails on it.
+
+**So the Fin 14 gate certifies that the lemmas PROVE, and does not certify
+that each lemma is a theorem about the variables it appears to name.** Two
+different claims; only the first is established. Recorded as **G8 (OPEN)** in
+`VeriTrial/docs/gap_closure_plan.md`, with the fix specified as a QED
+mission (`qed-digit-suffixed-identifiers`).
+
+The change that exposed this — rename the exported Jacobian parameter to
+`ka_rate`, update the spec — was measured and **breaks the Fin 14 gate**, so
+it is deliberately **not** in the tree. An unverified change that breaks a
+passing gate is worse than the gap it was meant to close. This is also the
+one place where a mission's own green was **not** backed by a verification of
+its change; see "A green that had not been tested" below.
+
+## Two operational blockers that stopped every mission in the system
+
+### `mutation_killrate.py` left its target mutated when it was terminated
+
+The tool mutates its target **in place** and restores it in a `finally`
+block. Tether's process-tree reaper sends **SIGTERM** at the verification
+timeout; SIGTERM does not raise in Python, so `finally` never runs and the
+target is left mutated. The leftover was then reported as an out-of-scope
+write — indistinguishable from a sandbox escape — and left the tree dirty,
+which blocked the next mission. A second, worse symptom: killing the parent
+left the **grandchild mutation process running**, still rewriting the file
+minutes later, which is why the tree kept coming back dirty after every
+reset.
+
+Fixed (`f04e5e2`, later `b888535`): SIGTERM/SIGINT handlers that restore
+before exiting 128+signo, an `atexit` restore, and an entry-time repair that
+compares the target against `git HEAD` and refuses to guess without a
+committed version. SIGKILL cannot be trapped and is left documented rather
+than overclaimed. **Verified:** SIGTERM mid-run → exit 143, target
+byte-identical.
+
+### A tracked generated artefact was blocking the whole tri-repo system
+
+`QED/output.lean` is written by `pipeline.run()` on every successful proof —
+a runtime artefact whose content is whichever proof ran last — and it is
+**tracked**. So any test run left QED dirty, and because Tether's dirty
+check spans **workspace repos**, a dirty QED aborted *every* mission that
+declares QED as a sibling. Three consecutive missions aborted with "Working
+tree is dirty" while `is_dirty()` returned False for the project they were
+pointed at, because the dirt was in the sibling.
+
+Fixed by snapshotting the artefact's bytes around each test and restoring
+them in a `finally` — of *content*, not modification time, because the
+sandbox's manifest diff fingerprints small files by sha256. `traces.json`
+has the same shape and was already gitignored, so the precedent was in the
+repo already. **Verified:** a full 358-test run leaves `output.lean`
+byte-identical and the tree clean.
+
+## A green that had not been tested
+
+`veritrial-formal-gate` (session `3d361b9f7aa5`) reported **success** with
+12/12 verification commands passing. Its own uncommitted change — the
+`ka_rate` rename — was **never verified**: the Fin 14 command in its
+verification set passed against the *pre-change* tree, and applying the
+change makes that command fail. Reproduced directly: a clean room built from
+the mission's checkpoint **with** the patch fails the Fin 14 gate; the same
+room **without** it passes.
+
+The general lesson, recorded because it is the same shape as the hollow
+greens in the earlier passes: a mission that leaves its deliverable
+uncommitted has its verification run against code that does not contain the
+deliverable. The review layer sees the change (it reads the captured diff),
+but the *commands* do not. The fix is not to relax anything; it is that a
+change which breaks a passing gate must not be merged, and the defect it
+exposed belongs in the plane that owns it — QED's parser, not VeriTrial's
+export.
+
+## The model changed mid-session, for a reason that is not a preference
+
+`opencode/space-bunny-free` began returning **HTTP 429 "Rate limit
+exceeded"** from the opencode CLI. Every affected mission then failed in its
+**planning step** — before doing any work — so there was no agent output to
+grade. `opencode/beam-free` was tried next and rate-limited the same way.
+The pin is now **`opencode/minimax-m3.1-flash-free`**.
+
+The pin lives in four coupled places and all four move together, because
+`test_opencode_command_is_identical_wherever_it_is_pinned` requires every
+mission pin to equal the adapter default: the adapter default, the 55
+mission pins, the three repos' `tether.yaml` files, and the docs/tests that
+assert the preset shape.
+
+## Gate-by-gate results this pass
+
+| phase | mission | result | strength |
+|---|---|---|---|
+| 1 | `dogfood-44-quantitative-gates` | **success** | strong: auto-probes `synthesized`, sandbox `[]` |
+| 1 | `dogfood-45-reviewer-untracked` | **success** | strong: mutation `kill_rate 1.0` (2/2, `target_source: changed`), auto-probes `synthesized` |
+| 1 | `dogfood-48-doc-truth-salvage` | work landed | the docs now describe per-entry salvage; its own gates were broken and were repaired by the agent |
+| 1 | `dogfood-43`, `dogfood-46` | success | **hollow** — `changed_files: 0`; 46 also measured `mutation: 0` and no review |
+| 2 | `qed-01`, `qed-02`, `qed-03`, `qed-05` | **success** | qed-02 mutation `kill_rate 0.875` |
+| 2 | `qed-fin14-export` | **success** | Fin 6 **and** Fin 14 certified: 8/8 gates, 6 theorem axiom sets exactly `[propext, Classical.choice, Quot.sound]` |
+| 3 | `veritrial-sdirk2-lstability` | **success** | the L-stability fix, with the stability function pinned |
+| 3 | `veritrial-sdirk2-adaptive` | **success** | the adaptive controller on top of it |
+| 3 | `veritrial-fin14-sad-benchmark` | **success** | 1000-patient SAD on both networks; measured Cmax delta **−23.89 %** (median, pooled) against a ±25 % band |
+| 3 | `veritrial-jax-policy-premise` | **success** | a darwin-only test now asserts its own premise and skips with a reason |
+| 3 | `veritrial-pbpk-verification` | **success** | 10 files, all gates pass |
+| 3 | `veritrial-formal-gate` | success, **but see "A green that had not been tested"** | 12/12 commands; its change was not verified and breaks Fin 14, so it is not merged |
+| 3 | `qed-veritrial-formal-pipeline` | **success** | verification-only by design |
+| 4 | `tri-repo-full-stack-gate` | **success** | 13/13, review approve, sandbox `[]`, Fin 6 **9 lemmas** + Fin 14 **25 lemmas**, mutation 0.9667 |
+
+## Honest limitations
+
+- **The mutation kill rate is 0.9667, not 1.0000.** One survivor, in
+  `export_pbpk_to_qed.py`. The gate's own floor is 0.8 and it passes; a
+  stricter bar is not met and is not claimed.
+- **The Fin 14 fidelity gap is OPEN (G8).** Provability is certified;
+  fidelity is not, and the masking mechanism is now documented.
+- **`Dockerfile` at the repo root is unbuilt.** No Docker on the machine it
+  was written on. Its assertions are individually verified natively (the
+  pinned `lake` exits 0; the JAX CPU/x64 check passes with the same env
+  vars), but "the image builds" is unproven. The repo root is also not a git
+  repository, so that file has no version history.
+- **`veritrial-formal-gate`'s change is not merged**, for the reason above.
+- **A mission whose deliverable is uncommitted is verified against code that
+  does not contain it.** That is a property of the clean-room design, and it
+  is not a new observation — but it was not previously connected to a case
+  where the unverified change turned out to break a passing gate.
+- Two budgets were raised (`max_wall_seconds` only, for two missions that
+  ran out of time): 5400→10800 and 3600→7200. No `fail_below`, no
+  verification command, no probe and no `max_attempts` was changed, because a
+  mission killed for time has not been graded at all.
