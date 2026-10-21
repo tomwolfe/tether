@@ -2,7 +2,7 @@
   "repos": [
     {
       "repo": "tether",
-      "head": "2575d94c44bb2e6b3ac10ba670cdbd322a72a07b",
+      "head": "b888535151bee649075520be77816a53727b981f",
       "dirty": false,
       "sorry_free": "n/a",
       "lean_files": {},
@@ -10,7 +10,7 @@
     },
     {
       "repo": "QED",
-      "head": "34ae123b1334678c95e5ec0874fdd347a73d7173",
+      "head": "b8d3507db83bebdcbbd7a23cc2bbeb2a40b1e59a",
       "dirty": true,
       "sorry_free": true,
       "lean_files": {
@@ -23,7 +23,7 @@
     },
     {
       "repo": "VeriTrial",
-      "head": "cf88dcbb36d651243d2dd74e3268bb9ef205c912",
+      "head": "4e2518fd1ef04691508f0e9455538dafcc0b6a64",
       "dirty": true,
       "sorry_free": true,
       "lean_files": {
@@ -31,5 +31,5 @@
       }
     }
   ],
-  "merkle_root": "7fd2ba1a07da7d569d03a3c1536e57f9d380f70ac95c3a96042e006bfa6d905a"
+  "merkle_root": "db390cdae7db1ce7135c7ea6083c71bd17d5a1acf740c43ec738738925c326cd"
 }
