@@ -59,6 +59,14 @@ class MutationSpec(BaseModel):
     # so the meta-check is never vacuous. Ignored whenever changed-file
     # targets exist. Same .py/sandbox filtering applies.
     baseline_targets: Optional[List[str]] = None
+    # Which set the mutation tier mutates: "changed" (the default -- the
+    # .py files this attempt changed) or "baseline" (the declared
+    # ``baseline_targets`` regression net). A verify-only mission ships no
+    # code change of its own, so "changed" would mutate whatever the tree
+    # happened to carry -- files the mission's ladder has no teeth on --
+    # while the declared regression net is the set the ladder exercises.
+    # Default "changed" keeps every existing mission byte-identical.
+    target_source: str = "changed"
     # Documented equivalent-mutant suppressions as ``"<file>:<site>"``
     # (e.g. ``"src/a.py:142:8"``), each with its justification in a YAML
     # comment beside it. Matching mutants are marked ``skipped`` (excluded

@@ -169,12 +169,12 @@ def load_mission(path: str | Path) -> MissionContract:
             raise MissionError("'verification.mutation' must be a mapping")
         unknown = set(raw_mutation) - {
             "enabled", "operators", "max_mutants", "fail_below",
-            "baseline_targets", "equivalent"}
+            "baseline_targets", "target_source", "equivalent"}
         if unknown:
             raise MissionError(
                 "'verification.mutation' accepts only 'enabled', "
                 "'operators', 'max_mutants', 'fail_below', "
-                "'baseline_targets', and 'equivalent'; got: "
+                "'baseline_targets', 'target_source', and 'equivalent'; got: "
                 + ", ".join(sorted(unknown)))
         enabled = raw_mutation.get("enabled")
         if "enabled" in raw_mutation and not isinstance(enabled, bool):
@@ -216,6 +216,13 @@ def load_mission(path: str | Path) -> MissionContract:
                 raise MissionError(
                     "'verification.mutation.baseline_targets' must be a "
                     "list of strings")
+        target_source = raw_mutation.get("target_source")
+        if target_source is not None:
+            if not isinstance(target_source, str) or \
+                    target_source not in ("changed", "baseline"):
+                raise MissionError(
+                    "'verification.mutation.target_source' must be "
+                    "'changed' or 'baseline'")
         equivalent = raw_mutation.get("equivalent")
         if equivalent is not None:
             if not isinstance(equivalent, list) or not all(
@@ -228,6 +235,8 @@ def load_mission(path: str | Path) -> MissionContract:
             mutation_kwargs["operators"] = operators
         if baseline_targets is not None:
             mutation_kwargs["baseline_targets"] = baseline_targets
+        if target_source is not None:
+            mutation_kwargs["target_source"] = target_source
         if equivalent is not None:
             mutation_kwargs["equivalent"] = equivalent
         if max_mutants is not None:

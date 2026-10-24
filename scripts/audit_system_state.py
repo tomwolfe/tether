@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unified ledger: audit tether/QED/VeriTrial repos into SYSTEM_STATE.json.
+"""Unified ledger: audit tether/QED/VeriTrial/DRIFT repos into SYSTEM_STATE.json.
 
 Two modes:
 
@@ -30,7 +30,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPOS = ["tether", "QED", "VeriTrial"]
+#: The four repositories the ledger covers.  DRIFT joined the ledger
+#: with the quad-repo gate: it is a workspace repo of the quad-repo
+#: mission and a sibling of the other three, and a ledger that claims
+#: to describe the stack while omitting a quarter of it is not a
+#: ledger.  DRIFT ships no Lean, so its ``sorry_free`` is "n/a" --
+#: the same honest value tether carries, not a claim about nothing.
+REPOS = ["tether", "QED", "VeriTrial", "DRIFT"]
 
 #: The repo whose checkout contains this script and therefore SYSTEM_STATE.json.
 LEDGER_HOST = "tether"
@@ -63,7 +69,7 @@ def _comparable(rows: list[dict]) -> list[dict]:
 
     ``merkle_root`` consequently means "the state of everything that *can* be
     named" -- every head, dirty flag, sorry_free verdict and Lean digest of all
-    three repos, minus the one field that is structurally unnameable. It still
+    the repos, minus the one field that is structurally unnameable. It still
     moves on any real change to any repo; it just stops being self-invalidating.
     """
     out = []
@@ -275,11 +281,11 @@ def verify() -> int:
     return 1
 
 class WorkspaceNotFoundError(RuntimeError):
-    """No ancestor directory contains all three workspace repos."""
+    """No ancestor directory contains all the workspace repos."""
 
 
 def _find_workspace_root(start: Path | None = None) -> Path:
-    """Walk up from ``start`` until a dir containing all three repos.
+    """Walk up from ``start`` until a dir containing all the repos.
 
     Fail-closed: raises :class:`WorkspaceNotFoundError` instead of guessing.
     """

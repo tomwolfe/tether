@@ -1,0 +1,591 @@
+mission:
+  name: quad-repo-full-stack-gate
+  goal: |
+    Verify integrated QED-VeriTrial-DRIFT-Tether stack in clean-room isolation.
+
+    This is the tri-repo gate (QED, VeriTrial, Tether) with DRIFT added as
+    the fourth repository: the PD/metabolic engine whose invariants are
+    certified through QED in its own mission (drift-formal-gate) and whose
+    own code is exercised here.
+
+    The DRIFT FORMAL LAYER is deliberately NOT in this ladder: the Lean
+    certification of DRIFT's invariants is 22 QED proofs, and the mutation
+    tier re-runs the whole ladder once per mutant, so putting the proofs
+    here would multiply a 15-minute verification by the number of mutants
+    and make the gate unaffordable.  The layering is deliberate: the
+    DRIFT FORMAL GATE certifies the algebra, and the QUAD-REPO GATE
+    certifies that the four repositories work together.
+
+    This mission orchestrates cross-repo verification across the three
+    repositories that compose the regulatory-grade in-silico platform:
+
+      1. QED: Lean 4 agentic theorem-proving pipeline (symbolic Real analysis)
+      2. VeriTrial: PBPK clinical trial simulation engine (native JAX solver)
+      3. Tether: Orchestration and verification control plane
+
+    The gate runs the hardened full-stack checks:
+      - Self-contained N-state export (VeriTrialExport.lean, Fin N over the
+        compartment network, CompartmentalMatrix instance + mass-dissipation
+        certificate, universal tactic scripts). For the current model this is
+        Fin 6; see the export_pbpk_to_qed context note before reading it as
+        N-agnostic.
+      - Formal gate: every exported lemma verifies through QED (no sorry),
+        including the direct-lean-compiled isomorphism (lake env is bypassed:
+        it SIGTRAPs) and #print axioms assertion
+      - De-clamped fixed-step/SDIRK solvers under the dynamic Metzler dt bound
+      - Merkle provenance chain (tether session + QED proofs + benchmarks)
+context:
+  - "QED lakefile.lean declares mathlib4 from leanprover-community/mathlib4"
+  - "QED agentic_pipeline.py invokes the pinned toolchain's lean directly with an explicit LEAN_PATH (lake env is bypassed: it SIGTRAPs under this Lake/Lean combination)"
+  - "QED Compartmental.lean: domain-agnostic compartmental engine over arbitrary [Fintype n] (Metzler, mass dissipation/conservation, orthant invariance, SDIRK2 M-matrix stage); zero domain leakage"
+  - "VeriTrial export_pbpk_to_qed.py --lean-out emits the N-generic AST<->Lean isomorphism file instantiating CompartmentalMatrix over Fin N. The N-generic machinery is real, but for a model defining make_pbpk_ode the live path takes N = n_states or len(DEFAULT_ORGAN_NETWORK) = 6 (DEFAULT_ORGAN_NETWORK is the 6-organ gut/liver/central/peripheral/effect/elim set), NOT the Jacobian-derived N further down. The Jacobian-derived N is dead for that model shape, and command 1 passes no --fin-n, so the Lean artifact this gate rebuilds and asserts axioms over is Fin 6. _network_for_fin accepts just 6 or 14; Fin 14 is no longer an unproven path -- the gate now certifies it too, via a dedicated export+verify pair whose lemma set (11 Metzler + 11 boundary inflow + column sum + parametric sum + dissipation = 25 lemmas) measured green: no sorry, axioms exactly [propext, Classical.choice, Quot.sound]. That pair deliberately passes no --lean-out, so it certifies the Fin 14 lemma SET only and leaves ../QED/VeriTrialExport.lean at Fin 6 for rebuild_qed_oleans.py and the axiom assertions."
+  - "VeriTrial formal_verification.py computes lean_code_sha256 at the PRODUCER (the attempt dict carries result[\"lean_code\"]'s digest, since check_qed_proofs strips the raw source before the attempt is built) and _write_trail consumes it into the per-lemma hash map. An earlier revision claimed this was structurally always {} because the digest was computed over a key the attempt never carried; that was fixed in VeriTrial 94f4848 and the bullet no longer holds. The Lean FILE digests that feed the Merkle chain are a separate mechanism: validation/__init__.py hashes QED/Compartmental.lean and QED/VeriTrialExport.lean directly."
+  - "VeriTrial fixed_step.calculate_max_stable_dt derives the dt bound from matrix invariants"
+  - "Cross-repo QED is located as sibling of VeriTrial (co-located monorepo layout)"
+  - "DRIFT is the fourth repository: the PD/metabolic engine. Its invariants are certified through QED in its own mission (drift-formal-gate); here its exporter (fail-closed on a changed model) and its unit suites are exercised, so a mutant of the five components is killed by a suite that actually reaches it."
+  - "DRIFT's export reads the source with the ast module and REFUSES to certify a model that no longer implements the equation it certifies; the statement language has no decimal literal, so the exported identities carry integer-scaled constants." 
+workspace_repos:
+  - "../QED"
+  - "../VeriTrial"
+  - "../DRIFT"
+  # Tether itself is the control plane under test here: without it as a
+  # workspace repo the clean-room suite has no copy of tests/test_cleanroom.py
+  # or tools/verify_veritrial_equations.py, and the two tether-side
+  # regression commands below could only ever fail with "file or directory
+  # not found" -- a green gate would have been unreachable by construction.
+  - "../tether"
+constraints:
+  - "DO NOT create any git commits. Leave every change in the working tree, uncommitted. This mission runs with git_state_guard: true, which compares the repo HEAD against a checkpoint taken at session start; a commit made during the session is reported as 'history was rewritten' and the mission fails with verification skipped -- even when the work is correct and the tests pass. The guard is strict on purpose, so the fix is to not commit."
+  - "Do NOT introduce sorry axioms in any QED output"
+  - "Do NOT modify existing test expectations without justification"
+  - "Keep all changes backward compatible with existing simulations"
+  - "Cross-repo orchestration via clean_room_copy with sibling repos"
+  - "Every exported lemma MUST verify; a single failure fails the whole mission"
+  - "No jnp.maximum concentration clamping; non-negativity via dt bound only"
+git_state_guard: true
+verification:
+  clean_room: true
+  clean_room_copy:
+    - "../QED"
+    - "../VeriTrial"
+    - "../DRIFT"
+    - "../tether"
+  mutation:
+    enabled: true
+    fail_below: 0.8
+    max_mutants: 6
+    # WHICH SET GETS MUTATED, made explicit -- because "changed" is the
+    # wrong set for THIS mission, and the comment block below already says
+    # why the baseline list exists.
+    #
+    # A verify-only mission ships no code change of its own, so the
+    # changed-file set is whatever the four repositories happen to carry.
+    # Measured on this tree (2026-10-21, at the four heads the ledger
+    # records): 17 changed .py files -> 102 sampled mutants, and THREE of
+    # those files are imported by NO command in this ladder:
+    #   QED/test_pipeline.py                            (QED's own pytest suite)
+    #   QED/scripts/check_digit_suffix_identifiers.py  (the digit-suffix gate)
+    #   DRIFT/scripts/run_veritrial_drift_integration.py (the integration run)
+    # Their 18 mutants cannot be killed by anything in here, so the changed
+    # path's kill rate is capped at 84/102 = 0.824 before a single mutant of
+    # a file this ladder DOES exercise is counted -- and the QED parser
+    # (reached only through try/except-guarded helpers that fall back to a
+    # regex) can push it under the 0.8 floor by itself. That measures the
+    # TREE, not the GATE.
+    #
+    # The baseline_targets list below is the regression net this gate is
+    # actually about, and every one of its 12 files is reached by a command
+    # in this ladder: the VeriTrial export, gate, model and PD sources by
+    # commands 1, 3, 4, 5, 6 and 12; the tether ledger script by command 9;
+    # the five DRIFT components and both DRIFT scripts by commands 14 and 15
+    # (tests/test_formal_export.py imports verify_drift_lemmas). So the
+    # mutation tier measures the gate.
+    #
+    # The knob is new in the control plane (MutationSpec.target_source) and
+    # DEFAULTS to "changed", so every other mission is byte-identical; this
+    # mission opts in explicitly, and the audit trail names the set that was
+    # actually used (target_source: baseline).
+    target_source: baseline
+    # Regression net for verify-only runs: when the agent changes nothing,
+    # mutate the gate-critical bridge scripts instead of passing vacuously.
+    # Each mutant re-runs the full 15-command suite, and the Lean
+    # export/rebuild/formal-gate trio dominates its wall time, hence the cap.
+    #
+    # That cost is now MEASURED, and the two halves come from two different
+    # environments, so they are labelled rather than fused into one number
+    # pretending to be a single observation:
+    #
+    #   Lean + merkle half, commands 1-6, IN A CLEAN ROOM (rehearsal
+    #   2026-10-21, room built by the harness's own materialize_clean_room
+    #   with all four repos' working trees + QED's .lake): 464.8 s
+    #     = export 1.1 + olean rebuild 11.1 (elan direct lean, no lake env)
+    #     + Fin 6 formal gate 89.2 + Fin 14 export 0.8 + Fin 14 formal gate
+    #     205.5 + merkle 157.1
+    #   Pure-Python half, commands 7-15, IN THE SAME ROOM: 162.9 s, 9/9
+    #     exit 0.
+    #
+    # So 627.7 s per full pass, measured end to end in one room: 15/15
+    # commands exit 0, the Fin 6 gate reports "all 9 lemmas verified by
+    # QED (no sorry)" with the five isomorphism theorems depending on
+    # exactly [propext, Classical.choice, Quot.sound], the Fin 14 gate
+    # reports "all 25 lemmas verified by QED (no sorry)", the room's
+    # VeriTrialExport.lean is Fin 6 (78 `Fin 6`, zero `Fin 14`), and
+    # PROVENANCE_MERKLE=b4f05ff4f79773b7a102dc5493dca880fc51496d0c4cf43532761a382f8eee8c
+    #
+    # The earlier 474 s figure was the sum of two measurements from two
+    # environments and understated the real per-mutant cost by 25%; the
+    # 627.7 s above is one measurement of the whole ladder.
+    #
+    # verification.timeout_seconds is a PER-COMMAND bound
+    # (verification.py::_run_one), not a wall-clock budget for the tier, and
+    # this mission declares no budget.max_wall_seconds, so the mutation cost
+    # cannot fail the gate -- it is recorded here because the two SIGTERMs this
+    # file already documents were budget events and the next reader should
+    # start from a number rather than a fear.
+    #
+    # MUTANT COUNT: target_source is "baseline" (declared above), so the
+    # tier mutates exactly the 12 curated files below, 6 mutants each =
+    # 72 sampled.  The changed-file path is NOT used: measured 2026-10-21
+    # it is 17 dirty .py files = 102 mutants, and three of those files are
+    # reached by no command in this ladder (QED/test_pipeline.py,
+    # QED/scripts/check_digit_suffix_identifiers.py,
+    # DRIFT/scripts/run_veritrial_drift_integration.py), capping that path
+    # below the floor for reasons that say nothing about the gate.
+    #
+    # The baseline kill rate was MEASURED offline with the harness's own
+    # sampler (same per-path sha256 seed, same MUTATION_OPERATORS, same
+    # max_mutants: 6) against the commands that reach each file:
+    #   * the 5 VeriTrial/Tether targets: 29/30 killed (0.9667), the one
+    #     survivor being a dead Dataset wrapper line in the export script;
+    #   * the 7 DRIFT targets: 42/42 killed (1.0000) on 2026-10-22,
+    #     replayed through the DRIFT commands in the ladder;
+    #   * the tether ledger target: 12/12 killed (see its note below).
+    # Combined: 71/72 = 0.9861, above the unchanged 0.8 floor.
+    #
+    # Nothing here was moved to make that go away: fail_below is still
+    # 0.8, max_mutants is still 6, equivalent: is still empty. The
+    # survivor is recorded, not suppressed.
+    #
+    # Nothing here was moved to make that go away: fail_below is still
+    # 0.8, max_mutants is still 6, equivalent: is still empty. The fix is
+    # in the CODE and in the ladder (see GLOBAL_MINIMUM_REPORT.md, Pass
+    # 5), not in this file's thresholds.
+    #
+    # 17 targets x max_mutants 6 = 102 sampled. The "21 of them scored"
+    # figure below is STALE and is kept only as history: it described a run
+    # whose equivalent: entries still matched their sites. As of VeriTrial
+    # db6d1ad (2026-10-02) 16 of the 19 entries have DRIFTED off their
+    # constructs, so none of them suppress anything and the honest count is
+    # skipped: 0 -- all mutants are scored. See the equivalent: block
+    # below. Nothing is being suppressed, and that is why a kill_rate of
+    # 1.0 would not be bought with equivalences.
+    baseline_targets:
+      - "../VeriTrial/scripts/export_pbpk_to_qed.py"
+      - "../VeriTrial/scripts/verify_formal_gate.py"
+      - "../VeriTrial/src/insilico_trial/pbpk/model.py"
+      - "../VeriTrial/src/insilico_trial/pd/__init__.py"
+      # ADDED 2026-10-05, and the reason is a coverage hole rather than a
+      # preference. --check (scripts/audit_system_state.py) was removed from the
+      # verification ladder in b8b906a because it cannot work inside a clean
+      # room. That left the ledger code reachable ONLY through its own test
+      # suite, and never through the mutation tier: a verify-only run falls back
+      # to this list, and this list did not include it. So the gate would keep
+      # reporting a mutation kill_rate that says nothing about the code that
+      # actually decides whether the ledger is trustworthy.
+      #
+      # Its mutants ARE killed here: the battery below runs
+      # tests/test_audit_system_state.py both in the wide command and as its own
+      # command, so a mutant that changes --check's verdict fails the suite
+      # rather than being credited to something that cannot see it. Scored
+      # offline through this harness's own sampler (same per-path sha256 seed,
+      # same MUTATION_OPERATORS, same max_mutants: 6) against that suite:
+      # 12/12 killed, 0 survived, 0 equivalent-suppressed.
+      #
+      # COST, stated rather than discovered: 5 targets x 6 = 30 sampled instead
+      # of 24, and each mutant re-runs the full ladder (~402 s measured), so
+      # roughly +40 min of verification. verification.timeout_seconds is a
+      # PER-COMMAND bound and no budget.max_wall_seconds is declared, so this
+      # cannot fail the gate on time -- it is written down because the two
+      # SIGTERMs this file records were both budget events.
+      - "scripts/audit_system_state.py"
+      # DRIFT: the five components whose algebra the PD/metabolic
+      # certificate is about, plus the two scripts that carry it.  A
+      # mutant that changes the Hill equation, the saturable flux, the
+      # bridge's scaling or the Milstein step must be caught by the ladder
+      # below: the exporter FAILS CLOSED when the source stops
+      # implementing the certified equation, and the unit suites pin the
+      # numerics.  The paths are room-relative (the room root is the
+      # tether checkout and DRIFT is its sibling), which is the same rule
+      # the VeriTrial targets above follow.
+      - "../DRIFT/drift/binding.py"
+      - "../DRIFT/drift/signaling.py"
+      - "../DRIFT/drift/metabolic.py"
+      - "../DRIFT/drift/engine.py"
+      - "../DRIFT/drift/topology.py"
+      - "../DRIFT/scripts/export_drift_to_qed.py"
+      - "../DRIFT/scripts/verify_drift_lemmas.py"
+    # Documented equivalent mutants (each proven behavior-preserving; line
+    # drift fails closed by missing the match and running the mutant).
+    # Export (scripts/export_pbpk_to_qed.py):
+    # - 132:62 include_ode default flip: the True branch is `pass` (no-op);
+    #   outputs byte-identical (fast test asserts equality).
+    # - 186:69 parametric default flip: EVERY call site passes `parametric`
+    #   explicitly (build_lemmas at 240, the tests at 398), so the default is
+    #   never read and the mutation is unobservable.
+    # - 692:8 break_return in _sym_diff: the symbolic Jacobian path is
+    #   unreachable for a `make_pbpk_ode` model (compute_jacobian returns from
+    #   the analytic fast path first), so the branch is dead under the gate.
+    # - 379:61 expand flip in the dissipation lemma: expanded terms are
+    #   computed but unused (only "CL * C_p > 0" is emitted).
+    # - 767:61 expand flip in emit_lean_export: the liver perfusion string is
+    #   expansion-invariant (verified identical).
+    # Gate (scripts/verify_formal_gate.py):
+    # - 50:43 include_ode default flip: same no-op branch as export.
+    # - 190:22 changed=False->True: fixpoint identical (bounded idempotent loop).
+    # - 225:30 changed=True->False: `changed` only guards an early `break` in
+    #   a loop already bounded to 20 passes; suppressing the flag adds no-op
+    #   passes that cannot alter the fixed point.
+    # - 329:34, 340:36 missing_ok flip on temp files that always exist.
+    # - 388:16, 388:23, 390:16, 390:23 subsumed numeric-identity returns:
+    #   any input reaching them also matches the later whole-lemma pattern.
+    # - 509:4 `return None`->None in _elan_bin_dir.
+    # - 813:45 missing_ok flip masked by the surrounding try/except-pass.
+    # PD (src/insilico_trial/pd/__init__.py): no equivalent mutants remain.
+    # The two Add->Sub sites this file carried here as "documented
+    # equivalent" are the opposite -- real controls that the suite already
+    # kills -- so they are MEASURED now instead of suppressed. Hand-run
+    # 2026-09-28 against the command that runs test_pd.py (command 11 in the
+    # current ladder; it was command 8 then), each exits 1:
+    # - 13:43 `emax * C^h / (ec50^h + C^h)`: Add->Sub flips the denominator
+    #   to ec50^h - C^h; killed by test_pd.py::test_emax_is_half_maximal_at_ec50
+    # - 62:17 `baseline_inr + emax_effect(...)`: Add->Sub; killed by
+    #   test_pd.py::test_inr_effect_is_baseline_plus_emax_delta
+    # Suppressing them cost the battery two kills it had already earned and
+    # contradicted this section's own heading. (The mutation spec is read at
+    # session start, so the run that carries this edit is still the one that
+    # reports them skipped; the battery below applies to the next run.)
+    # Tether (src/tether/cleanroom.py):
+    # - 254:56 exist_ok flip on the sibling-room mkdir: the target is always
+    #   freshly created in the materialization path, so exist_ok is vacuous.
+    # Equivalence suppressions DELETEd 2026-10-04. Audit of the 19 entries:
+    # 16 had drifted off their described constructs (e.g. 132:62 no longer
+    # the include_ode default) and the remaining 3 anchored sites
+    # (fixed_step.py:188:4, 220:4, cleanroom.py:254:56) name files that are
+    # not baseline_targets, so no entry could fire. Every entry was either
+    # drifted (fail-closed: mutant runs) or non-sampleable (inert). Per the
+    # global-minimum directive -- re-prove at the current site or delete --
+    # the whole block is removed. kill_rate is measured over all scored
+    # mutants with skipped: 0, unchanged.
+    equivalent: []
+  commands:
+    # THE LEDGER CHECK IS DELIBERATELY NOT IN THIS LADDER.
+    #
+    # It was added in 9b74ca6 (last), moved to first in b9a8859, and is now
+    # removed. Three attempts, each fixed by reasoning and broken by measurement:
+    #
+    # 1. LAST -- red on a fully green run. Command 1 rewrites the ROOM's
+    #    QED/VeriTrialExport.lean to Fin 6 (this mission's documented LEDGER
+    #    DUALITY), so by a late command the live Lean digest legitimately
+    #    differs from the committed one. 13/13 green, then command 14 red.
+    #    (That ladder had 13 commands; this one has 15, and the argument is
+    #    unchanged -- the check cannot live in the room at all.)
+    # 2. FIRST -- fixes the green pass, breaks the mutation tier, and that is
+    #    the one that matters. run_mutation_testing re-runs this whole ladder
+    #    once per mutant in the SAME already-rewritten room: it restores only
+    #    the mutated file's own bytes, and the orchestrator re-materializes per
+    #    ATTEMPT, not per mutant. Measured on a staged room -- fresh room exit
+    #    0; after the export rewrite exit 1; and with NO mutation applied at
+    #    all, still exit 1. So from mutant 1 onward this check is red before
+    #    any mutation exists, and summarize() attributes the kill to the first
+    #    failing command. Every mutant scores killed by a check that never
+    #    examined it: kill_rate 1.0 over the 0.8 floor, MEASURING NOTHING.
+    #    That is the inverse of the trap this file records twice ("mutated X
+    #    but only ran Y") -- here the suite kills all mutants for a reason
+    #    unrelated to any of them.
+    #
+    # The fix proposed by run 4f90c3fc7b5b's agent -- shelve the room's edits
+    # around the check via `git stash create` -- does restore idempotence (three
+    # consecutive passes green, measured) but reverts VeriTrialExport.lean and
+    # never puts it back, so commands 2-4 below rebuild and certify Fin 14 while
+    # the gate believes it certified Fin 6. Both exit 0. A green gate on the
+    # wrong artifact is worse than a red one, so that was not shipped either.
+    #
+    # WHY IT CANNOT LIVE HERE AT ALL. The check compares the COMMITTED ledger
+    # against live state, and a clean room is dirty by construction --
+    # materialize_clean_room extracts `git archive <checkpoint>` and then applies
+    # session_dir/patch.diff on top -- while the mutation tier writes mutants
+    # into it. There is no position in this ladder and no wrapping that makes
+    # "committed == live" a meaningful question inside the room.
+    #
+    # RUN IT OUTSIDE THE LADDER instead, against the HOST tree, before a run:
+    #
+    #     python3 scripts/audit_system_state.py --check
+    #
+    # It is read-only, exits non-zero on drift, and since it is not a ladder
+    # command it cannot be credited with a kill. Re-verify after any run that
+    # changes a repo head, a .lean file, or a sorry-freedom verdict.
+    - "python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --lean-out ../QED/VeriTrialExport.lean --out /tmp/pbpk_lemmas.txt"
+    - "python3 ../VeriTrial/scripts/rebuild_qed_oleans.py"
+    # --fin-n is REQUIRED, not defaulted: the emitted lemma set is a function
+    # of the organ network (one Metzler and one inflow invariant per perfused
+    # tissue), so the gate refuses to certify a file against an assumed network.
+    # The export above uses the default six-organ network, hence 6.
+    #
+    # The Fin 6 artifact exists ONLY inside the clean room. The host checkout's
+    # QED/VeriTrialExport.lean is Fin 14 -- committed at QED 8207365, "Regenerate
+    # the Fin 14 export with the saturable transport theorems" -- precisely
+    # because the Fin 14 pair below deliberately passes no --lean-out. Harmless
+    # here: clean_room is true, so this command rewrites the ROOM's copy at Fin 6
+    # (measured 2026-10-02: 78 `Fin 6`, zero `Fin 14`, `CompartmentalMatrix
+    # (Fin 6)` + veritrial_mass_dissipation + veritrial_dili_block, no sorry)
+    # before rebuild_qed_oleans.py and the axiom assertions read it -- and
+    # command 6's PROVENANCE_MERKLE hashes that same room copy. Recorded because
+    # the host ledger does NOT agree: scripts/audit_system_state.py hashes the
+    # host's Fin 14 file into SYSTEM_STATE.json, so that ledger's merkle_root
+    # and this gate's PROVENANCE_MERKLE cover different Lean bytes by
+    # construction. Neither is wrong; they are two different ledgers, and they
+    # are NOT expected to be equal -- asserting that they match would be the bug.
+    #
+    # That last clause is now ENFORCED, not aspirational. Until 2026-10-04 this
+    # ledger recorded only head/dirty/sorry_free, so its merkle_root could not
+    # move when a theorem file changed, and the sentence above was an
+    # unverifiable claim. audit_system_state.py now emits a per-file SHA-256 map
+    # (`lean_files`) over exactly the surface it already enumerated for the
+    # sorry scan -- including the sibling QED export, keyed
+    # `QED/VeriTrialExport.lean` so a reader can see it is a borrowed cross-repo
+    # artifact. Pinned by tests/test_audit_system_state.py::
+    # test_lean_files_are_hashed_into_the_merkle.
+    - "python3 ../VeriTrial/scripts/verify_formal_gate.py /tmp/pbpk_lemmas.txt --fin-n 6 --strict"
+    # Fin 14 lemma SET, certified in its own right (11 Metzler + 11 boundary
+    # inflow + column sum + parametric sum + dissipation = 25 lemmas, no sorry,
+    # axioms exactly [propext, Classical.choice, Quot.sound]).
+    #
+    # --lean-out is deliberately ABSENT on this pair. The Lean artifact
+    # ../QED/VeriTrialExport.lean must stay Fin 6: rebuild_qed_oleans.py and the
+    # #print axioms assertions above are pinned to it. These two commands prove
+    # only that the Fin 14 lemma set verifies -- they do not re-certify, or
+    # re-export, the Lean file at the other N.
+    - "python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --out /tmp/pbpk_lemmas_14.txt --fin-n 14 --parametric --saturable"
+    - "python3 ../VeriTrial/scripts/verify_formal_gate.py /tmp/pbpk_lemmas_14.txt --fin-n 14 --strict --saturable"
+    - "python3 -c \"import sys, os; os.chdir(os.path.join(os.getcwd(), '../VeriTrial')); sys.path.insert(0, 'src'); from insilico_trial.validation import run_all_validations, build_regulatory_provenance; run_all_validations(); print('PROVENANCE_MERKLE=' + build_regulatory_provenance()['merkle_root'])\""
+    # Control-plane teeth battery. Added 2026-10-04 after this gate FAILED at
+    # kill_rate 0.43 (13/30, 17 survivors) -- and the failure was the gate
+    # working correctly, not a flake.
+    #
+    # `mutation.target_source` is `changed`, so editing ANY tether file makes
+    # it a mutation target. The battery below then scored mutants in
+    # src/tether/orchestrator.py and in two test files using a 12-command suite
+    # that runs neither: every one of those 17 survivors was a construct no
+    # command in this ladder executes. This is the same trap this file already
+    # records twice above ("the gate mutated X but only ran Y, so mutants that
+    # Y's own suite kills were reported as SURVIVING -- the gate was
+    # structurally understating its own kill rate"), and the same remedy:
+    # measure the teeth the battery claims, then run those suites.
+    #
+    # MEASURED, not asserted. Scored offline with the harness's own
+    # deterministic sampler (same per-path seed, same operator set, same
+    # max_mutants=6) against exactly this command, over the five changed
+    # .py files of that run:
+    #   src/tether/orchestrator.py            6/6 killed
+    #   scripts/audit_system_state.py         6/6 killed
+    #   tests/test_mutation.py                6/6 killed
+    #   tests/test_adapters_describe.py       6/6 killed
+    #   tests/test_audit_system_state.py      6/6 killed
+    #   ----------------------------------------------  30/30 = 1.0000
+    #
+    # Each suite is load-bearing, and dropping one shows it:
+    #   without test_git_state_guard.py  -> orchestrator 5/6, survivor
+    #     580:4 break_return in _snapshot_hook_integrity (returns None
+    #     instead of the (hooks, hooksPath, extra, submodules) tuple). One of
+    #     its callers wraps the sibling loop in `except Exception: pass`, so
+    #     the guard's own baseline silently degrades to nothing -- a fail-open
+    #     in the safety layer, which is precisely why it is worth a suite.
+    # Pure-Python, ~57 s measured on the host at these heads, so the teeth are
+    # cheap relative to the ~369 s the Lean and merkle half already costs per
+    # mutant (commands 1-6; the "trio" proper is 1-3).
+    - "env PYTHONPATH=src python3 -m pytest tests/test_mutation.py tests/test_adapters_describe.py tests/test_core.py tests/test_safety.py tests/test_review_gate.py tests/test_git_state_guard.py tests/test_docs.py tests/test_audit_system_state.py -q -p no:cacheprovider"
+    # Tether-side regression net: the mission mutates changed tether files, so
+    # the clean-room suite must exercise them (sibling .git preservation,
+    # .lake/symlink carries, gitlink pointers); otherwise those mutants are
+    # unkillable by construction.
+    #
+    # Room-relative, NOT `../tether/...`. The room root IS the tether checkout
+    # (project_dir is `.`), and mutation targets are written relative to it --
+    # so `../tether/tools/verify_veritrial_equations.py` executed the
+    # *sibling* copy that nothing mutates, and every mutant in it survived by
+    # construction: kill rate 0/6. PYTHONPATH=src still defeats the host
+    # editable install, which would otherwise shadow the room's sources.
+    - "env PYTHONPATH=src python3 -m pytest tests/test_cleanroom.py tests/test_multirepo_capture.py -q -p no:cacheprovider"
+    # ... and the same reasoning applied to the OTHER changed tether file. When
+    # the pending `lean_files` ledger work (scripts/audit_system_state.py) is
+    # in the tree, orchestrator._mutation_targets prefers changed-file targets
+    # and only falls back to baseline_targets when none survive -- so the
+    # mutation tier stops aiming at the VeriTrial bridge scripts and starts
+    # aiming at the audit script and its test instead. Nothing else in this
+    # battery imports either file: AST-walking the import graph from all three
+    # tether-side entry points yields zero references, and neither VeriTrial
+    # bridge command mentions SYSTEM_STATE. Every mutant of them therefore
+    # survives by construction.
+    #
+    # MEASURED 2026-10-04, not asserted. Scored through the gate's own sampler
+    # (same per-path seed, same operator set, max_mutants=6 => 6 per file, 12
+    # sampled) against the battery:
+    #   without this command -> killed  0/12, kill_rate 0.0   (fails fail_below)
+    #   with this command    -> killed 12/12, kill_rate 1.0
+    # A green command can only add ways to kill a mutant, never remove one, so
+    # this leaves the baseline_targets path (24/24 measured green at session
+    # 985fa1a6) untouched.
+    #
+    # THE "12 sampled" IN THAT PARAGRAPH IS A TWO-FILE SNAPSHOT AND NO LONGER
+    # DESCRIBES THIS TREE. It was true when the only changed .py files were
+    # scripts/audit_system_state.py and its test. _mutation_targets takes
+    # EVERY changed .py file with no global cap (verification.py::
+    # run_mutation_testing loops all targets, max_mutants applies per file), so
+    # the sample grew to 5 files x 6 = 30 as the tree did. Reading 12/12 as the
+    # current expectation is how the next run silently drops to 13/30 -- see
+    # the next command for the measurement against the real 30.
+    - "env PYTHONPATH=src python3 -m pytest tests/test_audit_system_state.py -q -p no:cacheprovider"
+    # SUPERSEDED 2026-10-04: an earlier revision of this file added a SEPARATE
+    # 3-suite battery here (test_mutation + test_adapters_describe +
+    # test_core) and recorded an "honest 0.900" on the theory that
+    # orchestrator.py:185:8 and :580:4 were unkillable -- pre-existing code
+    # "outside the changed region". That theory was an ASSERTION, not a
+    # measurement, and it is false. Scoring the same sampler over the same
+    # changed set with tests/test_git_state_guard.py added kills BOTH:
+    #   orchestrator.py 185:8  break_return in _run_credibility_probe's
+    #     `except: return False, repr(e)`
+    #   orchestrator.py 580:4  break_return in _snapshot_hook_integrity's
+    #     digest return
+    # The single measured battery at the top of this list replaces it, so the
+    # duplicate 3-suite command is gone rather than left to re-run ~12 s per
+    # mutant for teeth the wider battery already provides. equivalent: remains
+    # empty -- 30/30 is scored, not suppressed.
+    - "env PYTHONPATH=../VeriTrial/src python3 -m pytest ../VeriTrial/src/insilico_trial/tests/test_mission_regressions.py -q -p no:cacheprovider"
+    - "python3 tools/verify_veritrial_equations.py --source-root ../VeriTrial"
+    # Mutation-teeth battery for the baseline_targets above. The gate mutated
+    # export_pbpk_to_qed.py / verify_formal_gate.py / pd but only ran
+    # test_mission_regressions.py, so mutants that these files' own suites kill
+    # were reported as SURVIVING -- the gate was structurally understating its
+    # own kill rate (0.77 against a 0.8 floor, purely from suite selection).
+    # These two suites are pure-Python (~3 s), so measuring the teeth they
+    # claim is cheap.
+    - "env PYTHONPATH=../VeriTrial/src python3 -m pytest ../VeriTrial/src/insilico_trial/tests/test_bridge_mutation_fast.py ../VeriTrial/src/insilico_trial/tests/test_pd.py -q -p no:cacheprovider"
+    # "De-clamped fixed-step/SDIRK solvers under the dynamic Metzler dt bound"
+    # is a named gate, but nothing above ran fixed_step.py or solvers.py -- so a
+    # constant dt bound or a silent jnp.maximum clamp would have passed the
+    # whole gate while contradicting the mission goal. These 96 collected
+    # tests (69 test functions across test_fixed_step.py and test_solvers.py,
+    # some of them parameterised) are the only thing in the tree that pins
+    # it: the bound is the Jacobian diagonal minimum, it tracks the N-state
+    # network instead of a constant, an over-bound dt raises rather than
+    # clamps, and concentrations stay non-negative.
+    #
+    # Teeth MEASURED, not asserted. The gate never mutates these two files --
+    # they are not in baseline_targets -- so the pair was scored by hand on
+    # 2026-09-28 through the gate's own sampler (same per-path seed, same
+    # operator set, same max_mutants=6) with the command below as the battery:
+    #   KILLED    52:12  break_return  test_solver_equivalence_warfarin
+    #   KILLED   344:14  arithmetic    test_fixed_step_batch_shape
+    #   survived 134:4   break_return  provably equivalent: the trailing
+    #                                 `return None` of a `-> None` function
+    #   survived 344:18  arithmetic    n_steps coverage gap
+    #   survived 376:14  arithmetic    n_steps coverage gap
+    #   survived 376:19  arithmetic    n_steps coverage gap
+    # The two invariants this gate line names were killed by hand as well:
+    #   * `return float(min(positive))` -> `return 0.01`
+    #       kills test_dt_bound_is_the_jacobian_diagonal_minimum
+    #   * the `raise ValueError` in assert_dt_stable -> `bound = dt`
+    #       kills test_dt_violating_jacobian_bound_fails_closed
+    #         ("DID NOT RAISE <class 'ValueError'>")
+    #
+    # fixed_step.py is deliberately NOT a baseline target yet, and the sample
+    # above is why: adding it today lands at 21/30 = 0.70 against the 0.8
+    # floor, because the four survivors are a real gap -- no test pins
+    # n_steps in solve_pbpk_batch / solve_pbpk_batch_9state -- not
+    # equivalence. The tests come first; adding the target now would fail the
+    # gate for the right reason and read as a flaky regression.
+    #
+    # `os.chdir` is load-bearing, not boilerplate: several of these tests load
+    # `configs/drug_warfarin.yaml` relative to the cwd (the same trap that made a
+    # reviewer of the 20260928-1045 session report a spurious
+    # FileNotFoundError). PYTHONPATH is resolved by the interpreter at startup
+    # from the room root, so it still selects the room's insilico_trial even
+    # though the process later moves into ../VeriTrial. ~5 s.
+    - "env PYTHONPATH=../VeriTrial/src python3 -c \"import os, sys, pytest; os.chdir(os.path.join(os.getcwd(), '../VeriTrial')); sys.exit(pytest.main(['-q', '-p', 'no:cacheprovider', 'src/insilico_trial/tests/test_fixed_step.py', 'src/insilico_trial/tests/test_solvers.py']))\""
+    # DRIFT: the fourth repository.  The export is FAIL-CLOSED: if the
+    # Hill equation, the saturable flux, the bridge's scaling or the
+    # Milstein step no longer match the source, the export fails and this
+    # gate fails with it.  It is cheap (no prover involved), so it can run
+    # on every mutant of the mutation tier.
+    - "env PYTHONPATH=../DRIFT python3 ../DRIFT/scripts/export_drift_to_qed.py --out /tmp/drift_lemmas_quad.txt --parametric"
+    # ... and DRIFT's own suites, so a mutant of drift/binding.py,
+    # drift/signaling.py, drift/metabolic.py, drift/engine.py or
+    # drift/topology.py is killed by a suite that actually exercises it.
+    # os.chdir is load-bearing: DRIFT's pytest configuration and its
+    # relative data paths live in the DRIFT checkout.
+    - "env PYTHONPATH=../DRIFT python3 -c \"import os, sys, pytest; os.chdir(os.path.join(os.getcwd(), '../DRIFT')); sys.exit(pytest.main(['-q', '-p', 'no:cacheprovider', 'tests/']))\""
+    # HISTORY, kept because the miss was real and it is the reason the ledger
+    # exists at all. GLOBAL_MINIMUM_REPORT.md carried three merkle roots and
+    # carefully explained that each was measured against a different tree
+    # state -- and the committed ledger still went stale behind that
+    # explanation, holding 52f21c3c for several commits after both its
+    # recorded head and the live head had moved. Regenerating gave a0338737:
+    # a different root, no error, no failed assertion, because the write path
+    # silently overwrote the file and NOTHING COMPARED it. Accounting for
+    # roots in prose is not the same as asserting them.
+    #
+    # THE ANSWER IS NOT HERE, and the reasoning this block used to carry is
+    # exactly what measurement overturned. `--check` is indeed read-only, and
+    # that used to read as "so it can live in a verification ladder without
+    # dirtying the tree it inspects". It is read-only AND it compares the
+    # COMMITTED ledger against live state, and a clean room is dirty by
+    # construction -- so inside the room the comparison has no truth value to
+    # report. Placed last it went red on a fully green run; placed first it
+    # scored every mutant killed before any mutant existed. Three placements,
+    # each argued in prose and each broken by measurement; the verdict is
+    # recorded at the HEAD of this ladder, under "WHY IT CANNOT LIVE HERE AT
+    # ALL", and that governs. Run it against the HOST tree, outside the ladder:
+    #
+    #     python3 scripts/audit_system_state.py --check
+    #
+    # One exemption there is structural and worth carrying over to this file,
+    # since it is a property of the ledger rather than of its placement: the
+    # ledger host's own head cannot be contained in the file that records it,
+    # so that single field is the one thing `--check` cannot compare against
+    # the live tree. It is marked in the schema (ledger_host: true) so the
+    # exemption is data a verifier can read rather than prose it has to trust.
+  timeout_seconds: 3600
+review:
+  enabled: true
+  required: true
+  adapter: command
+  retry_on_rejection: true
+recovery:
+  max_attempts: 1
+adapter: opencode
+adapters:
+  command:
+    command: ["opencode", "run", "--auto", "-m", "opencode/beam-free", "{prompt}"]
+    timeout_seconds: 5400
+  opencode:
+    command: ["opencode", "run", "--auto", "-m", "opencode/beam-free", "{prompt}"]
+    # Must be >= verification.timeout_seconds (3600). Per-adapter settings are
+    # deep-merged with precedence mission-file > project config, so THIS value
+    # wins over tether.yaml's command_timeout_seconds -- the 1800 recorded here
+    # is what actually SIGTERM'd the agent mid-run on 2026-09-29 (usage.exit_code
+    # -15 at elapsed 1800.055 s) even though all 9 verification commands had
+    # already exited 0. It is a harness budget, not a correctness signal.
+    #
+    # Raised 3600 -> 5400 on 2026-10-02 for the SAME failure a second time:
+    # session fd39f002423f was SIGTERM'd at usage.elapsed_seconds 3600.04 with
+    # all 11 verification commands already exited 0, and the retry finished its
+    # agent phase in 576.7 s. So the ceiling was not "nearly enough" -- the
+    # agent phase is simply variable, and pinning it to a round number that the
+    # verification ladder also uses guarantees a coin flip.
+    #
+    # Only the adapter's own value moves. command_timeout_seconds stays 3600 in
+    # tether.yaml because the adapter reads THIS setting first
+    # (adapters/command.py: `timeout_seconds` else `default_timeout`), so the
+    # global is untouched and no gate is loosened: this bounds how long the
+    # MODEL may think, not what verification is allowed to accept.
+    timeout_seconds: 5400

@@ -2,8 +2,8 @@
   "repos": [
     {
       "repo": "tether",
-      "head": "89426aa51faece1c91c4188714173306bc539768",
-      "dirty": false,
+      "head": "49616d08e430d8e2df192632c54cc61b113482b4",
+      "dirty": true,
       "sorry_free": "n/a",
       "lean_files": {},
       "ledger_host": true
@@ -11,7 +11,7 @@
     {
       "repo": "QED",
       "head": "fce0e966fe4e5c1d2c3f87a28fc01f7b43f935da",
-      "dirty": false,
+      "dirty": true,
       "sorry_free": true,
       "lean_files": {
         "Compartmental.lean": "5d1e846f851c192df0500b322a7bc9ec651f27befe4a81d6482195fc03942ad7",
@@ -24,12 +24,19 @@
     {
       "repo": "VeriTrial",
       "head": "037bbc48bf20a4b0da42043012c3dd83a291f24a",
-      "dirty": false,
+      "dirty": true,
       "sorry_free": true,
       "lean_files": {
         "QED/VeriTrialExport.lean": "1560a468f655b639b5a51b1b7b4b3d3ec1c7b5275080fd6d64e82b9e74085232"
       }
+    },
+    {
+      "repo": "DRIFT",
+      "head": "370221bbcced4f0faaf981c90f7f2c5585f3f754",
+      "dirty": true,
+      "sorry_free": "n/a",
+      "lean_files": {}
     }
   ],
-  "merkle_root": "73c9c5549c84a1a941966bb93861bd5f60bb9a797d81cba902086290ee7565d1"
+  "merkle_root": "427891ed29ee398a81647819d3cbd293ff202e6944ddd9bb2a29e212283074c6"
 }

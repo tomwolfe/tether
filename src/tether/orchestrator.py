@@ -1248,6 +1248,16 @@ class Orchestrator:
         ``baseline_targets`` (verify-only missions), the baseline list is
         filtered identically and used instead so the meta-check is never
         vacuous; the ``mutation`` audit event records which source applied.
+
+        ``spec.target_source`` makes the choice explicit. "changed" (the
+        default) is the historical behaviour above. "baseline" mutates the
+        mission's DECLARED ``baseline_targets`` list even when the attempt
+        changed files — the case a verify-only mission needs: it ships no
+        code change, so "changed" would mutate whatever the tree happened to
+        carry (often files the mission's own ladder never exercises, which
+        makes the kill rate a measure of the tree rather than of the gate).
+        The declared list gets the same treatment the changed list gets:
+        the same ``.py``/sandbox filter and the same room-spelling rewrite.
         """
         allowed = list(getattr(mission, "allowed_paths", None) or [])
         forbidden = list(getattr(mission, "forbidden_paths", None) or [])
@@ -1260,6 +1270,18 @@ class Orchestrator:
                 return False
             return sandbox_write_violation(posix, allowed, forbidden) is None
 
+        target_source = (getattr(spec, "target_source", "changed")
+                         if spec is not None else "changed")
+        if target_source == "baseline":
+            baseline = list(getattr(spec, "baseline_targets", None) or [])
+            targets = [Path(r).as_posix() for r in sorted(baseline) if _ok(r)]
+            targets = self._drop_workspace_prefix_duplicates(
+                targets, list(getattr(mission, "workspace_repos", None) or []))
+            if not targets:
+                log.warning("mutation target_source is 'baseline' but the "
+                            "mission declares no usable baseline_targets; "
+                            "no mutant will run")
+            return targets
         targets = [Path(r).as_posix() for r in sorted(changed) if _ok(r)]
         # Sibling-prefixed spellings are rewritable only when the mission
         # actually declares the sibling as a workspace repo; without the list
@@ -1276,6 +1298,22 @@ class Orchestrator:
             log.warning("mutation targets fall back to baseline_targets "
                         "(agent changed nothing mutatable)")
         return targets
+
+    def _mutation_source(self, spec: MutationSpec, changed_targets: list[str],
+                         targets: list[str]) -> str:
+        """Which target set the mutation tier actually used.
+
+        "changed" -- the attempt's changed files supplied the targets;
+        "baseline" -- the mission's declared ``baseline_targets`` did (either
+        because nothing changed, or because the mission asked for it
+        explicitly with ``target_source: baseline``); "none" -- no target
+        was readable, so no mutant ran.
+        """
+        if getattr(spec, "target_source", "changed") == "baseline":
+            return "baseline" if targets else "none"
+        if changed_targets:
+            return "changed"
+        return "baseline" if targets else "none"
 
     def _run_mutation_check(
         self, audit: AuditTrail, mission: Any, spec: MutationSpec,
@@ -1319,8 +1357,7 @@ class Orchestrator:
         mutants: list[MutantResult] = []
         changed_targets = self._mutation_targets(mission, changed)
         targets = self._mutation_targets(mission, changed, spec)
-        source = ("changed" if changed_targets else
-                  ("baseline" if targets else "none"))
+        source = self._mutation_source(spec, changed_targets, targets)
         summary = run_mutation_testing(
             spec, targets, target,
             run_suite, timeout_seconds=timeout, collect_results=mutants)

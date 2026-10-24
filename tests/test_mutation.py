@@ -605,6 +605,83 @@ def test_mutation_baseline_targets_when_nothing_changed(tmp_path):
     assert orch._mutation_targets(mission, []) == []
 
 
+def test_mutation_target_source_baseline_uses_the_declared_net(tmp_path):
+    """`target_source: baseline` mutates the DECLARED net, changed or not.
+
+    A verify-only mission ships no code change of its own, so the
+    changed-file set is whatever the tree happened to carry -- often files
+    the mission's own ladder never exercises, which makes the kill rate a
+    measure of the tree rather than of the gate. The declared
+    `baseline_targets` are the files the ladder has teeth on, so the
+    mission must be able to say "mutate these" and have it mean that.
+    """
+    from tether.models import MutationSpec, TetherConfig
+    from tether.orchestrator import Orchestrator
+    from tether.adapters.mock import MockAdapter
+
+    room = tmp_path / "tether"
+    room.mkdir()
+    (room / "scripts").mkdir()
+    (room / "scripts" / "audit_system_state.py").write_text(
+        "v = 1\n", encoding="utf-8")
+    sibling = tmp_path / "VeriTrial" / "scripts"
+    sibling.mkdir(parents=True)
+    (sibling / "export.py").write_text("v = 1\n", encoding="utf-8")
+
+    orch = Orchestrator(MockAdapter(), TetherConfig(), room)
+    mission = type("M", (), {"allowed_paths": None, "forbidden_paths": None,
+                             "workspace_repos": ["../VeriTrial"]})()
+
+    spec = MutationSpec(enabled=True, target_source="baseline",
+                         baseline_targets=["../VeriTrial/scripts/export.py",
+                                           "scripts/audit_system_state.py"])
+    # The changed files are IGNORED: the declared net IS the target set.
+    assert orch._mutation_targets(mission, ["src/other.py"], spec) == [
+        "../VeriTrial/scripts/export.py", "scripts/audit_system_state.py"]
+
+    # The default is unchanged: changed files still win.
+    default_spec = MutationSpec(
+        enabled=True, baseline_targets=["../VeriTrial/scripts/export.py"])
+    assert orch._mutation_targets(mission, ["src/other.py"], default_spec) == \
+        ["src/other.py"]
+
+
+def test_mutation_source_reports_the_target_set_actually_used(tmp_path):
+    """The audit trail must name the set that was mutated, not the default."""
+    from tether.models import MutationSpec, TetherConfig
+    from tether.orchestrator import Orchestrator
+    from tether.adapters.mock import MockAdapter
+
+    orch = Orchestrator(MockAdapter(), TetherConfig(), tmp_path)
+    changed_spec = MutationSpec(enabled=True)
+    baseline_spec = MutationSpec(enabled=True, target_source="baseline")
+    assert orch._mutation_source(changed_spec, ["a.py"], ["a.py"]) == "changed"
+    assert orch._mutation_source(changed_spec, [], ["a.py"]) == "baseline"
+    assert orch._mutation_source(changed_spec, [], []) == "none"
+    assert orch._mutation_source(baseline_spec, ["a.py"], ["b.py"]) == "baseline"
+    assert orch._mutation_source(baseline_spec, [], []) == "none"
+
+
+def test_mutation_target_source_parsed_and_validated(tmp_path):
+    text = ("mission:\n  name: m\n  goal: g\nverification:\n"
+            "  mutation:\n"
+            "    enabled: true\n"
+            "    target_source: baseline\n"
+            "    baseline_targets:\n"
+            "      - ../VeriTrial/scripts/a.py\n")
+    spec = _write_mission(tmp_path, text).verification.mutation
+    assert spec is not None
+    assert spec.target_source == "baseline"
+
+    bad = ("mission:\n  name: m\n  goal: g\nverification:\n"
+           "  mutation:\n"
+           "    enabled: true\n"
+           "    target_source: everything\n")
+    (tmp_path / "bad").mkdir()
+    with pytest.raises(MissionError):
+        _write_mission(tmp_path / "bad", bad)
+
+
 def test_sibling_prefixed_changed_file_is_respelled_not_dropped(tmp_path):
     """A change living ONLY in a sibling repo must stay a mutation target.
 

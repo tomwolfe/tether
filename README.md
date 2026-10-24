@@ -193,9 +193,13 @@ verification:
     operators: [negate_compare, flip_bool]   # default: all built-ins
     max_mutants: 20                          # per-file cap, deterministic seeded selection
     fail_below: 0.5                          # kill-rate gate; omit for advisory-only mode
+    baseline_targets: [src/net.py]           # regression net for verify-only missions
+    target_source: baseline                  # "changed" (default) or "baseline"
 ```
 
 A mutant the suite still passes has **survived** — hard evidence the declared verification is gameable; one that makes it fail is **killed**. The aggregate lands in `report["mutation"]` (`total`, `killed`, `survived`, `skipped`, `kill_rate`, per-file counts) with per-mutant detail in the session's `verification/mutation.json`, and `tether sessions stats` aggregates kill rates across sessions. With `fail_below` set, a `kill_rate` below the gate fails the attempt and recovery proceeds normally; when `fail_below` is unset mutation testing is **advisory only** and never fails an attempt. Either way the surfaced summary spells out the measured kill rate as a percentage (with killed/total counts), the configured threshold (`fail_below` or "advisory"), and the surviving mutant identifiers (`file:site [operator]`, capped display) so operators can act without re-reading the raw JSON.
+
+Which files get mutated is normally the set this attempt changed. A **verify-only** mission ships no code change of its own, so its changed set is whatever the tree happened to carry — often files the mission's own ladder never exercises, which turns the kill rate into a measure of the tree rather than of the gate. `target_source: baseline` mutates the declared `baseline_targets` list instead (the same `.py`/sandbox filter and the same room-spelling rewrite apply, and the audit trail names the set that was actually used); the default `changed` leaves every other mission byte-identical.
 
 ### Clean-room verification
 

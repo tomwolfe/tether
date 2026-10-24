@@ -115,5 +115,5 @@ recovery:
 
 adapters:
   opencode:
-    command: ["opencode", "run", "--auto", "-m", "opencode/minimax-m3.1-flash-free", "{prompt}"]
+    command: ["opencode", "run", "--auto", "-m", "opencode/beam-free", "{prompt}"]
     timeout_seconds: 1800
