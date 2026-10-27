@@ -1,0 +1,108 @@
+mission:
+  name: quad-repo-full-stack-gate
+  goal: |
+    Verify the integrated QED + VeriTrial + DRIFT stack in clean-room
+    isolation, with the Tether control plane as the room root.
+
+    This is the quad-repo successor to tri-repo-full-stack-gate. It adds two
+    things the tri-repo gate could not measure:
+
+      1. QED parses digit-suffixed identifiers as distinct variables
+         (``Q3``/``Q4`` do not collapse to ``Q``).
+      2. VeriTrial exports a real dense C(t) (mg/L) and DRIFT consumes it as a
+         time-varying concentration, including a VeriTrial -> DRIFT bridge,
+         a vectorized Hill occupancy path, and four formally exported DRIFT
+         lemmas with an axiom pin.
+
+    The gate fails closed: every command must exit 0, the structural evidence
+    file must report QED success, sorry-free output and the exact axiom set
+    [propext, Classical.choice, Quot.sound] for Fin 6, Fin 14 and DRIFT.
+context:
+  - "QED/parser.py: a trailing digit is part of an identifier; `2a` remains implicit multiplication."
+  - "VeriTrial/src/insilico_trial/pbpk/model.py: get_concentration_interpolator(times, concs) returns a jnp.interp C(t) in mg/L. DEFAULT_ORGAN_NETWORK stays the 6-state Fin 6 network; STANDARD_14 is not promoted."
+  - "VeriTrial/src/insilico_trial/trial/engine.py: TrialEngine.to_drift_input(patient_id) returns t_eval, C_p and the interpolator from the dense solver profile."
+  - "DRIFT/drift/engine.py: run() accepts float, Callable C(t), or ndarray trace; the audit log records the concentration source."
+  - "DRIFT/drift/workbench.py: Workbench.from_veritrial samples C(t) onto the simulation grid (picklable across spawn workers) and configures run_monte_carlo."
+  - "DRIFT/scripts/export_drift_to_qed.py emits hill_nonneg, hill_le_one, hill_mono, hill_limits; verify_drift_axioms.py pins the axioms."
+  - "The clean room is materialized from git archive, so repo-local .venv directories are intentionally absent; the system python3 already carries the JAX/COBRA dependencies. Commands therefore use python3, not .venv/bin/python."
+workspace_repos:
+  - "../QED"
+  - "../VeriTrial"
+  - "../DRIFT"
+constraints:
+  - "DO NOT create any git commits. Leave every change uncommitted. git_state_guard checks the workspace HEADs against the session checkpoint."
+  - "Do not weaken, delete or skip a verification command to go green."
+  - "Do not introduce sorry or sorryAx in any QED/Lean output."
+  - "Keep DRIFT's float concentration path backward compatible."
+  - "Keep DEFAULT_ORGAN_NETWORK at Fin 6; do not promote STANDARD_14."
+git_state_guard: true
+verification:
+  clean_room: true
+  clean_room_copy:
+    - "../QED"
+    - "../VeriTrial"
+    - "../DRIFT"
+  commands:
+    # --- Phase 1: QED parser + engine ---------------------------------
+    - "python3 tools/run_in_repo.py ../QED python3 run_tests.py"
+    - "python3 tools/run_in_repo.py ../QED python3 -m pytest test_pipeline.py -v -p no:cacheprovider"
+    - "python3 tools/run_in_repo.py ../QED lake build"
+    # --- Phase 2: VeriTrial PBPK export + tests ------------------------
+    - "env PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --out /tmp/pbpk_lemmas.txt"
+    - "env PYTHONPATH=../VeriTrial/src python3 ../QED/verify_pbpk_lemmas.py /tmp/pbpk_lemmas.txt"
+    - "python3 tools/run_in_repo.py ../VeriTrial env PYTHONPATH=src python3 -m pytest src/insilico_trial/tests/test_pbpk.py src/insilico_trial/tests/test_solvers.py src/insilico_trial/tests/test_engine.py -q -p no:cacheprovider"
+    # --- Phase 3: DRIFT time-varying bridge + formal export -----------
+    - "python3 tools/run_in_repo.py ../DRIFT python3 -m pytest tests/test_engines.py tests/test_simulation_engine.py -q -p no:cacheprovider"
+    - "python3 tools/run_in_repo.py ../DRIFT python3 scripts/scientific_validation.py"
+    - "python3 ../DRIFT/scripts/export_drift_to_qed.py --out /tmp/drift_lemmas.txt"
+    - "python3 ../QED/verify_pbpk_lemmas.py /tmp/drift_lemmas.txt"
+    - "env PYTHONPATH=../DRIFT python3 ../DRIFT/scripts/verify_drift_axioms.py --qed-dir ../QED"
+    - "python3 tools/run_in_repo.py ../DRIFT env PYTHONPATH=. python3 scripts/verify_time_varying_bridge.py"
+    # --- Phase 4: Fin 6 / Fin 14 axiom pins ---------------------------
+    - "env PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --lean-out ../QED/VeriTrialExport.lean --out /tmp/pbpk_lemmas_fin6.txt"
+    - "python3 ../VeriTrial/scripts/rebuild_qed_oleans.py --qed-dir ../QED"
+    - "env QED_TRACE=/tmp/fin6_traces.json PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/verify_formal_gate.py /tmp/pbpk_lemmas_fin6.txt --fin-n 6 --strict"
+    - "env PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --out /tmp/pbpk_lemmas_14.txt --fin-n 14 --parametric --saturable"
+    - "env QED_TRACE=/tmp/fin14_traces.json PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/verify_formal_gate.py /tmp/pbpk_lemmas_14.txt --fin-n 14 --strict --saturable"
+    - "python3 tools/collect_quad_repo_evidence.py"
+  timeout_seconds: 1200
+  assertions:
+    - path: "quad_repo_evidence.json"
+      contains: "\"qed_traces_success\": true"
+    - path: "quad_repo_evidence.json"
+      contains: "\"output_lean_sorry_free\": true"
+    - path: "quad_repo_evidence.json"
+      matches: "\"drift_axioms\": \\[\\s*\"Classical\\.choice\",\\s*\"Quot\\.sound\",\\s*\"propext\"\\s*\\]"
+    - path: "quad_repo_evidence.json"
+      matches: "\"fin6_axioms\": \\[\\s*\"Classical\\.choice\",\\s*\"Quot\\.sound\",\\s*\"propext\"\\s*\\]"
+    - path: "quad_repo_evidence.json"
+      matches: "\"fin14_axioms\": \\[\\s*\"Classical\\.choice\",\\s*\"Quot\\.sound\",\\s*\"propext\"\\s*\\]"
+  mutation:
+    enabled: true
+    fail_below: 0.8
+    max_mutants: 1
+    # Verify-only runs fall back here; a changed-file run mutates every
+    # changed .py file. max_mutants is per file (verification.py).
+    baseline_targets:
+      - "../QED/parser.py"
+      - "../VeriTrial/scripts/export_pbpk_to_qed.py"
+      - "../VeriTrial/scripts/verify_formal_gate.py"
+      - "../VeriTrial/src/insilico_trial/pbpk/model.py"
+      - "../VeriTrial/src/insilico_trial/trial/engine.py"
+      - "../DRIFT/drift/binding.py"
+      - "../DRIFT/drift/engine.py"
+      - "../DRIFT/drift/workbench.py"
+      - "../DRIFT/scripts/export_drift_to_qed.py"
+    equivalent: []
+review:
+  enabled: true
+  required: true
+  adapter: opencode
+  retry_on_rejection: true
+recovery:
+  max_attempts: 1
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "--auto", "-m", "opencode/deepseek-v4.1-flash-free", "{prompt}"]
+    timeout_seconds: 5400

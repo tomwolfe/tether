@@ -1,0 +1,22 @@
+{
+  "drift_axioms": [
+    "Classical.choice",
+    "Quot.sound",
+    "propext"
+  ],
+  "drift_verified": true,
+  "fin14_axioms": [
+    "Classical.choice",
+    "Quot.sound",
+    "propext"
+  ],
+  "fin14_verified": true,
+  "fin6_axioms": [
+    "Classical.choice",
+    "Quot.sound",
+    "propext"
+  ],
+  "fin6_verified": true,
+  "output_lean_sorry_free": true,
+  "qed_traces_success": true
+}

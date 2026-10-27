@@ -1,0 +1,50 @@
+mission:
+  name: qed-digit-suffixed-identifiers
+  goal: |
+    Fix QED G8: a digit suffix is part of an identifier, not an implicit
+    product. Before this change `(Q3/Vc) = 0` parsed as `(Q*3)/Vc`, so the
+    distinct organ flows Q3 and Q4 collided with Q and with each other.
+
+    Required behavior:
+      1. `parse_equation("(Q3/Vc) = 0")` yields free variables ['Q3','Vc'].
+      2. `parse_equation("(Q3/Vc) + (Q4/Vc) = 0")` yields ['Q3','Q4','Vc'].
+      3. Digit prefixes remain implicit multiplication: `2a` -> `2 * a`.
+      4. Parenthesised digit adjacency remains multiplication:
+         `(a+b)2` -> `(a+b) * 2`.
+    Change only QED/parser.py and QED/test_pipeline.py.
+context:
+  - "normalize_implicit_multiplication_expression applied a letter->digit split, which shredded trailing suffixes."
+  - "The tokenizer already accepts digits after the first letter (identifier pattern [a-zA-Z]\\w*)."
+  - "The PBPK Fin 14 export names flows like Q3/Q4; colliding them with Q silently changes the model."
+constraints:
+  - "DO NOT create any git commits. Leave changes uncommitted."
+  - "Do not change ASTNode hierarchy or public parser signatures."
+  - "All existing test expectations must still pass; the old `a2 -> a * 2` case is superseded by the digit-suffix contract and updated with that justification."
+git_state_guard: true
+verification:
+  clean_room: true
+  commands:
+    - "python3 -c \"import subprocess,sys; sys.exit(subprocess.call([sys.executable,'-c','from parser import parse_equation; eq,v=parse_equation(\\\"(Q3/Vc) + (Q4/Vc) = 0\\\"); assert v==[\\\"Q3\\\",\\\"Q4\\\",\\\"Vc\\\"], v'],cwd='.'))\""
+    - "python3 -m pytest test_pipeline.py -q -p no:cacheprovider"
+    - "python3 -c \"import shutil,subprocess,sys; lake=shutil.which('lake'); sys.exit(subprocess.call([lake,'build']) if lake else 127)\""
+  timeout_seconds: 1800
+  assertions:
+    - path: "parser.py"
+      contains: "digit suffix belongs to the identifier"
+    - path: "test_pipeline.py"
+      contains: "test_digit_suffixed_identifiers_are_distinct_variables"
+  mutation:
+    enabled: true
+    operators:
+      - negate_compare
+      - flip_bool
+      - arithmetic
+    max_mutants: 6
+    fail_below: 0.8
+recovery:
+  max_attempts: 3
+adapter: opencode
+adapters:
+  opencode:
+    command: ["opencode", "run", "--auto", "-m", "opencode/deepseek-v4.1-flash-free", "{prompt}"]
+    timeout_seconds: 3600
