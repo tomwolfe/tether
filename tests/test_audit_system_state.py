@@ -38,7 +38,7 @@ def _init_repo(path: Path) -> None:
 def test_find_workspace_root_from_nested_script(tmp_path):
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         (ws / r).mkdir(parents=True)
     nested = ws / "tether" / "scripts" / "audit_system_state.py"
     assert nested.parent in list(nested.resolve().parents)
@@ -115,7 +115,7 @@ def test_non_qed_sorry_free_is_na_when_no_lean(tmp_path):
 def test_main_end_to_end_writes_sorted_merkle(tmp_path, monkeypatch, capsys):
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     (ws / "QED" / "A.lean").write_text("def x : Nat := 1\n")
     monkeypatch.setattr(mod, "ROOT", ws)
@@ -137,7 +137,7 @@ def test_main_end_to_end_writes_sorted_merkle(tmp_path, monkeypatch, capsys):
 def test_audit_repo_records_head_and_merkle_determinism(tmp_path, monkeypatch):
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     monkeypatch.setattr(mod, "ROOT", ws)
     first = [mod.audit_repo(r) for r in mod.REPOS]
@@ -164,7 +164,7 @@ def test_lean_files_are_hashed_into_the_merkle(tmp_path, monkeypatch):
 
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     lean = ws / "QED" / "VeriTrialExport.lean"
     lean.write_text("theorem t : True := trivial\n")
@@ -189,7 +189,7 @@ def test_veritrial_sibling_lean_export_is_keyed_as_borrowed(tmp_path, monkeypatc
     """
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     (ws / "QED" / "VeriTrialExport.lean").write_text("theorem t : True := trivial\n")
     monkeypatch.setattr(mod, "ROOT", ws)
@@ -201,7 +201,7 @@ def test_lean_free_repo_records_empty_digests_not_a_missing_key(tmp_path, monkey
     """A repo shipping no Lean gets ``{}``, so the key is always present."""
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     monkeypatch.setattr(mod, "ROOT", ws)
     rec = mod.audit_repo("tether")
@@ -213,7 +213,7 @@ def test_lean_digests_skip_vendored_trees(tmp_path, monkeypatch):
     """.lake / .venv / output Lean must not enter the verified surface."""
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     for vendored in (".lake/packages/mathlib/X.lean", ".venv/Y.lean",
                      "output/Z.lean"):
@@ -239,7 +239,7 @@ def test_unreadable_lean_file_is_recorded_not_silently_dropped(tmp_path, monkeyp
 
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     good = ws / "QED" / "Good.lean"
     good.write_text("theorem g : True := trivial\n")
@@ -287,7 +287,7 @@ def _write_ledger(mod, ws) -> None:
 def test_check_passes_on_a_freshly_written_ledger(tmp_path, monkeypatch):
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     monkeypatch.setattr(mod, "ROOT", ws)
     _write_ledger(mod, ws)
@@ -303,7 +303,7 @@ def test_check_is_read_only(tmp_path, monkeypatch):
     """
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     monkeypatch.setattr(mod, "ROOT", ws)
     _write_ledger(mod, ws)
@@ -316,7 +316,7 @@ def test_check_fails_when_a_sibling_head_moves(tmp_path, monkeypatch):
     """The regression this closes: a moved head used to be undetectable."""
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     monkeypatch.setattr(mod, "ROOT", ws)
     _write_ledger(mod, ws)
@@ -340,7 +340,7 @@ def test_check_fails_when_lean_content_changes_without_a_commit(tmp_path, monkey
     """
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     (ws / "QED" / "T.lean").write_text("theorem t : True := trivial\n")
     monkeypatch.setattr(mod, "ROOT", ws)
@@ -356,7 +356,7 @@ def test_check_fails_on_a_tampered_merkle_root(tmp_path, monkeypatch):
     """A hand-edited root must not be able to pass as a real measurement."""
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     monkeypatch.setattr(mod, "ROOT", ws)
     _write_ledger(mod, ws)
@@ -370,7 +370,7 @@ def test_check_fails_on_a_tampered_merkle_root(tmp_path, monkeypatch):
 def test_missing_ledger_fails_loudly(tmp_path, monkeypatch):
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     monkeypatch.setattr(mod, "ROOT", ws)
     assert mod.verify() == 1
@@ -379,7 +379,7 @@ def test_missing_ledger_fails_loudly(tmp_path, monkeypatch):
 def test_malformed_ledger_fails_loudly(tmp_path, monkeypatch):
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     monkeypatch.setattr(mod, "ROOT", ws)
     (ws / "tether" / "SYSTEM_STATE.json").write_text("{not json")
@@ -397,7 +397,7 @@ def test_ledger_host_row_is_exempt_from_head_comparison(tmp_path, monkeypatch):
     """
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     monkeypatch.setattr(mod, "ROOT", ws)
     _write_ledger(mod, ws)
@@ -418,7 +418,7 @@ def test_ledger_host_marker_is_recorded_for_the_host_only(tmp_path, monkeypatch)
     """The exemption is data in the schema, not prose a reader must trust."""
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     monkeypatch.setattr(mod, "ROOT", ws)
     rows = {r["repo"]: r for r in mod._compute()["repos"]}
@@ -436,7 +436,7 @@ def test_merkle_root_excludes_the_self_referential_head_only(tmp_path, monkeypat
     """
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     (ws / "QED" / "T.lean").write_text("theorem t : True := trivial\n")
     monkeypatch.setattr(mod, "ROOT", ws)
@@ -453,7 +453,7 @@ def test_merkle_root_still_moves_when_a_sibling_head_moves(tmp_path, monkeypatch
     """Excluding the host head must not blunt the root's sensitivity."""
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     monkeypatch.setattr(mod, "ROOT", ws)
     before = mod._compute()["merkle_root"]
@@ -481,7 +481,7 @@ def test_diff_reports_tether_dirty_even_though_its_head_is_exempt(tmp_path, monk
     """
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     monkeypatch.setattr(mod, "ROOT", ws)
     _write_ledger(mod, ws)
@@ -505,7 +505,7 @@ def test_check_catches_an_uncommitted_edit_in_a_sibling_repo(tmp_path, monkeypat
     """
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     monkeypatch.setattr(mod, "ROOT", ws)
     _write_ledger(mod, ws)
@@ -519,7 +519,7 @@ def test_diff_reports_sibling_dirty_by_name(tmp_path, monkeypatch):
     """Same pin as the host case, for a sibling row."""
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     monkeypatch.setattr(mod, "ROOT", ws)
     _write_ledger(mod, ws)
@@ -546,7 +546,7 @@ def test_ledger_only_modification_does_not_count_as_dirty(tmp_path, monkeypatch)
     """
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     monkeypatch.setattr(mod, "ROOT", ws)
     _write_ledger(mod, ws)
@@ -643,7 +643,7 @@ def test_extra_row_for_a_nonexistent_repo_is_drift(tmp_path, monkeypatch):
     """
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     monkeypatch.setattr(mod, "ROOT", ws)
     _write_ledger(mod, ws)
@@ -666,7 +666,7 @@ def test_ledger_host_cannot_be_planted_on_a_sibling_to_exempt_its_head(
     """
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     monkeypatch.setattr(mod, "ROOT", ws)
     _write_ledger(mod, ws)
@@ -687,7 +687,7 @@ def test_duplicate_row_is_drift(tmp_path, monkeypatch):
     """
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     monkeypatch.setattr(mod, "ROOT", ws)
     _write_ledger(mod, ws)
@@ -715,7 +715,7 @@ def test_malformed_ledger_fails_closed_without_crashing(tmp_path, monkeypatch, r
     """
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     monkeypatch.setattr(mod, "ROOT", ws)
     (ws / "tether" / "SYSTEM_STATE.json").write_text(raw)
@@ -731,7 +731,7 @@ def test_valid_ledger_still_passes_after_the_hardening(tmp_path, monkeypatch):
     """
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     (ws / "QED" / "T.lean").write_text("theorem t : True := trivial\n")
     monkeypatch.setattr(mod, "ROOT", ws)
@@ -756,7 +756,7 @@ def test_check_detects_a_caller_that_perturbs_the_tree_mid_check(
 
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     monkeypatch.setattr(mod, "ROOT", ws)
     _write_ledger(mod, ws)
@@ -838,7 +838,7 @@ def test_perturbation_is_reported_even_when_the_ledger_is_also_stale(
     """
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     monkeypatch.setattr(mod, "ROOT", ws)
     _write_ledger(mod, ws)
@@ -898,7 +898,7 @@ def test_clean_run_reports_no_perturbation(tmp_path, monkeypatch):
     """
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     monkeypatch.setattr(mod, "ROOT", ws)
     _write_ledger(mod, ws)
@@ -914,7 +914,7 @@ def test_write_then_check_agrees_with_the_committed_file(tmp_path, monkeypatch):
     """
     mod = _load()
     ws = tmp_path / "ws"
-    for r in ("tether", "QED", "VeriTrial"):
+    for r in ("tether", "QED", "VeriTrial", "DRIFT"):
         _init_repo(ws / r)
     (ws / "QED" / "T.lean").write_text("theorem t : True := trivial\n")
     monkeypatch.setattr(mod, "ROOT", ws)

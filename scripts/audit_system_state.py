@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unified ledger: audit tether/QED/VeriTrial repos into SYSTEM_STATE.json.
+"""Unified ledger: audit tether/QED/VeriTrial/DRIFT repos into SYSTEM_STATE.json.
 
 Two modes:
 
@@ -30,7 +30,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPOS = ["tether", "QED", "VeriTrial"]
+REPOS = ["tether", "QED", "VeriTrial", "DRIFT"]
 
 #: The repo whose checkout contains this script and therefore SYSTEM_STATE.json.
 LEDGER_HOST = "tether"
