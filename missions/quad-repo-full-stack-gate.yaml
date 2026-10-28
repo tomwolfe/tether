@@ -58,6 +58,17 @@ verification:
     - "python3 ../QED/verify_pbpk_lemmas.py /tmp/drift_lemmas.txt"
     - "env PYTHONPATH=../DRIFT python3 ../DRIFT/scripts/verify_drift_axioms.py --qed-dir ../QED"
     - "python3 tools/run_in_repo.py ../DRIFT env PYTHONPATH=. python3 scripts/verify_time_varying_bridge.py"
+    # --- Tether control-plane teeth ----------------------------------
+    # The mutation tier mutates changed tether files too. The equation gate
+    # below pins tools/verify_veritrial_equations.py (a Div->Mult mutant at
+    # its verify_pd call site crashes with TypeError, exit 1), and the
+    # adapter-contract probe pins OpencodeAdapter.is_available (a
+    # break_return mutant on the missing-binary branch returns None instead
+    # of (False, msg) and fails the assertion). Without these two commands
+    # both mutants survive by construction: nothing else in this ladder
+    # imports either file.
+    - "python3 tools/verify_veritrial_equations.py --source-root ../VeriTrial"
+    - "env PYTHONPATH=src python3 -c \"from unittest.mock import patch; from tether.adapters.experimental import OpencodeAdapter; a=OpencodeAdapter(); assert a.is_available()==(True, ''); print('adapter available:', a.is_available()); blocked=patch('tether.adapters.experimental.shutil_which', return_value=None); blocked.start(); r=a.is_available(); blocked.stop(); assert r[0] is False and 'opencode' in r[1], r; print('missing-binary contract:', r)\""
     # --- Phase 4: Fin 6 / Fin 14 axiom pins ---------------------------
     - "env PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --lean-out ../QED/VeriTrialExport.lean --out /tmp/pbpk_lemmas_fin6.txt"
     - "python3 ../VeriTrial/scripts/rebuild_qed_oleans.py --qed-dir ../QED"

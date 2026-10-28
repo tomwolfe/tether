@@ -99,7 +99,7 @@ git_state_guard: true
 adapter: opencode
 adapters:
   opencode:
-    command: ["opencode", "run", "--auto", "-m", "opencode/minimax-m3.1-flash-free", "{prompt}"]
+    command: ["opencode", "run", "--auto", "-m", "opencode-go/muse-spark-1.3-contributor", "{prompt}"]
     timeout_seconds: 2700
 
 allowed_paths:

@@ -170,7 +170,7 @@ def verify_export(path: Path) -> None:
 
 def verify_formal_gate(path: Path) -> None:
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    _contains_source(_function(tree, "_independent_column_sums"), ("changed = False", "if not changed:"))
+    _contains_source(_function(tree, "_independent_column_sums"), ("organ_indices(network)", "_resolve_index", "unsupported organ network size"))
     _contains_source(_function(tree, "_detect_mathlib_env"), ("if os.environ.get('HAS_MATHLIB') or os.environ.get('MATHLIB'):", "return True"))
 
 
