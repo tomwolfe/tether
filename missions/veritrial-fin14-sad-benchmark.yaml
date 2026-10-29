@@ -41,6 +41,11 @@ verification:
       assert len(DEFAULT_ORGAN_NETWORK)==6 and len(STANDARD_14_ORGAN_NETWORK)==14;
       print('networks intact')"
     - "env PYTHONPATH=src python3 -m pytest src/insilico_trial/tests/test_population.py -q -p no:cacheprovider"
+    # Organ-network teeth: the agent's comparison stack (validation +
+    # per-cohort tests + CLI script) is pinned here, so mutants in it are
+    # scored against the suites that exercise them rather than surviving
+    # behind a battery that never imports them.
+    - "env PYTHONPATH=src python3 -m pytest src/insilico_trial/tests/test_organ_network_cmax.py -q -p no:cacheprovider"
     - >-
       env PYTHONPATH=src python3 -c "import sys; sys.path.insert(0,'src');
       from insilico_trial.tests.test_sad_benchmark import test_fin14_vs_fin6_cmax;
