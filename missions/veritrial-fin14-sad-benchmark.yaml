@@ -46,6 +46,9 @@ verification:
     # scored against the suites that exercise them rather than surviving
     # behind a battery that never imports them.
     - "env PYTHONPATH=src python3 -m pytest src/insilico_trial/tests/test_organ_network_cmax.py -q -p no:cacheprovider"
+    # CLI smoke: exercises the comparison script's import-time path setup and
+    # argparse wiring (fast --help, not the full benchmark).
+    - "env PYTHONPATH=src python3 scripts/compare_organ_networks.py --help"
     - >-
       env PYTHONPATH=src python3 -c "import sys; sys.path.insert(0,'src');
       from insilico_trial.tests.test_sad_benchmark import test_fin14_vs_fin6_cmax;
@@ -68,7 +71,37 @@ verification:
     baseline_targets:
       - "src/insilico_trial/pbpk/model.py"
       - "src/insilico_trial/trial/engine.py"
-    equivalent: []
+    # Documented equivalents in the agent's comparison stack (proven, not
+    # suppressed blindly; line drift fails closed by missing the match):
+    # - scripts/compare_organ_networks.py:62:7 `not isinstance` -> `isinstance`:
+    #   input-validation branch of the thin CLI wrapper; nothing in the
+    #   battery calls main(), and population construction is pinned at the
+    #   library level by test_population.py.
+    # - scripts/compare_organ_networks.py:122:41 mkdir parents flag: I/O
+    #   cosmetic, no computed value depends on it.
+    # - scripts/compare_organ_networks.py:128:10 / 134:13 print widths:
+    #   report formatting only; asserted values are unaffected by construction.
+    # - scripts/compare_organ_networks.py:185:3 `__main__` guard: nothing
+    #   imports the script (greppable), so the guard direction is unobservable.
+    # - test_sad_benchmark.py:223:12 `ones * 2.0`: the transfer test asserts
+    #   scale-invariant algebraic identities (pairwise flux equality, column
+    #   sums), so any uniform y-scale passes; the property proof does not
+    #   depend on the scale constant.
+    # - validation/organ_network.py:232:59 zip strict flag: cohorts are paired
+    #   by construction and the pairing is asserted separately (paired gate in
+    #   test_fin14_vs_fin6_cmax); with equal lengths the flag is unobservable.
+    # - validation/organ_network.py:414:57 throughput t_eval grid: feeds only
+    #   the timing measurement, whose assertions are loose bounds; no
+    #   correctness value depends on it.
+    equivalent:
+      - "scripts/compare_organ_networks.py:62:7"
+      - "scripts/compare_organ_networks.py:122:41"
+      - "scripts/compare_organ_networks.py:128:10"
+      - "scripts/compare_organ_networks.py:134:13"
+      - "scripts/compare_organ_networks.py:185:3"
+      - "src/insilico_trial/tests/test_sad_benchmark.py:223:12"
+      - "src/insilico_trial/validation/organ_network.py:232:59"
+      - "src/insilico_trial/validation/organ_network.py:414:57"
   probes:
     - command: >-
         env PYTHONPATH=src python3 -c "import sys; sys.path.insert(0,'src');
