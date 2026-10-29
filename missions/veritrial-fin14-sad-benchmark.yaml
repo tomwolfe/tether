@@ -68,6 +68,21 @@ verification:
       print('measured Cmax median_delta=%+.3f mean_delta=%+.3f ref70_delta=%+.3f' % (MEDIAN_DELTA, MEAN_DELTA, REF70_DELTA));
       assert abs(MEDIAN_DELTA)<=0.15, MEDIAN_DELTA; assert abs(MEAN_DELTA)<=0.10, MEAN_DELTA;
       assert abs(REF70_DELTA)<=0.20, REF70_DELTA; print('deltas pinned')"
+    # Fresh-benchmark command (NOT import constants: the reviewer must see a
+    # real 1000-patient same-seed run in THIS command's stdout, with N,
+    # pairing, deltas and mass balances printed, then asserted fail-closed).
+    - >-
+      env PYTHONPATH=src python3 -c "import sys; sys.path.insert(0,'src');
+      from insilico_trial.tests.test_sad_benchmark import _run_full_benchmark, N_POPULATION, N_ENROLLED, SEED, CMAX_MEDIAN_TOLERANCE, CMAX_MEAN_TOLERANCE, REF70_CMAX_TOLERANCE;
+      b=_run_full_benchmark(); c=b['comparison'];
+      print('fresh benchmark N_pop=%d N_enrolled=%d paired=%s seed=%d' % (c['n_subjects_in_population'], c['n_enrolled'], c['paired'], SEED));
+      assert c['n_subjects_in_population']==N_POPULATION==1000 and c['n_enrolled']==N_ENROLLED==40 and c['paired'];
+      med=c['overall']['relative_delta_cmax_median']; mean=c['overall']['relative_delta_cmax_mean']; r70=b['ref70_delta'];
+      mb_d=b['mass_balance']['DEFAULT']; mb_14=b['mass_balance']['STANDARD_14'];
+      print('fresh median_delta=%+.3f mean_delta=%+.3f ref70_delta=%+.3f' % (med, mean, r70));
+      print('fresh mass_balance DEFAULT=%.2e STANDARD_14=%.2e' % (mb_d, mb_14));
+      assert abs(med)<=CMAX_MEDIAN_TOLERANCE and abs(mean)<=CMAX_MEAN_TOLERANCE and abs(r70)<=REF70_CMAX_TOLERANCE;
+      assert mb_d<1e-9 and mb_14<1e-9; print('fresh benchmark pinned')"
   timeout_seconds: 3600
   mutation:
     enabled: true
