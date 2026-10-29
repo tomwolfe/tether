@@ -33,17 +33,17 @@ verification:
     - "../DRIFT"
   commands:
     - >-
-      .venv/bin/python -c "import sys; sys.path.insert(0,'src');
+      env PYTHONPATH=src python3 -c "import sys; sys.path.insert(0,'src');
       from insilico_trial.pbpk.model import _reference_physiology, organ_indices, DEFAULT_ORGAN_NETWORK, STANDARD_14_ORGAN_NETWORK;
       print('physiology import ok')"
-    - ".venv/bin/python -m pytest src/insilico_trial/tests/test_physiology_credibility.py -q -p no:cacheprovider"
+    - "env PYTHONPATH=src python3 -m pytest src/insilico_trial/tests/test_physiology_credibility.py -q -p no:cacheprovider"
   timeout_seconds: 3600
   mutation:
     enabled: true
     fail_below: 0.8
   probes:
     - command: >-
-        .venv/bin/python -c "import sys; sys.path.insert(0,'src');
+        env PYTHONPATH=src python3 -c "import sys; sys.path.insert(0,'src');
         from insilico_trial.tests.test_physiology_credibility import T12_FIN6, T12_FIN14;
         assert 20<=T12_FIN6<=80, T12_FIN6; assert 20<=T12_FIN14<=80, T12_FIN14;
         print('t12 pinned')"
