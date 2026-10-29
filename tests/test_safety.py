@@ -1738,7 +1738,7 @@ def test_enforce_mode_detects_gitignored_writes_that_warn_mode_misses():
     assert TetherConfig(sandbox_mode="enforce").sandbox_mode == "enforce"
 
 
-def test_every_mission_pinning_an_opencode_command_also_auto_approves():
+def test_every_mission_pinning_an_opencode_command_uses_the_tty_wrapper():
     # The gap that made the previous fix a no-op for the gate. 43 mission
     # files pin `adapters.opencode.command` in the MISSION, and mission config
     # outranks both the project tether.yaml and the built-in adapter default --
@@ -1746,19 +1746,27 @@ def test_every_mission_pinning_an_opencode_command_also_auto_approves():
     # The gate went green once and red again with the same
     # "no valid review verdict found", because its refusal was still being
     # issued. Every mission that pins the command must pin the same one.
+    #
+    # TTY-wrapper contract: missions no longer pin `["opencode", "run", ...]`
+    # at all -- they pin `["python3", "scripts/opencode_tty.py", <model>,
+    # "{prompt}"]`, because raw `opencode run` drops the message without a PTY
+    # and drops non-ASCII prompts when non-interactive. A mission pinning the
+    # raw shape would silently opt out of that hardening (exact-shape equality
+    # with the adapter default is pinned by
+    # test_opencode_command_is_identical_wherever_it_is_pinned), so the raw
+    # shape fails here and the wrapper shape is what counts toward `pinned`.
     missions = Path(__file__).resolve().parent.parent / "missions"
     pinned = 0
     for path in sorted(missions.glob("*.yaml")):
         text = path.read_text(encoding="utf-8")
-        if 'command: ["opencode", "run"' not in text:
+        assert 'command: ["opencode", "run"' not in text, (
+            f"{path.name} pins a raw `opencode run` command, bypassing "
+            f"scripts/opencode_tty.py: without the PTY wrapper the CLI drops "
+            f"messages and non-ASCII prompts when non-interactive")
+        if "scripts/opencode_tty.py" not in text:
             continue
         pinned += 1
-        assert '"--auto"' in text, (
-            f"{path.name} pins an opencode command without --auto, so it "
-            f"overrides the project config and the adapter default and the "
-            f"model-side permission layer goes back to auto-rejecting "
-            f"in-scope sibling reads")
-    assert pinned > 1, "expected several missions to pin the command"
+    assert pinned > 1, "expected several missions to pin the TTY-wrapper command"
 
 
 def test_opencode_command_is_identical_wherever_it_is_pinned():
