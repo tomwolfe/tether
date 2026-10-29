@@ -1688,21 +1688,20 @@ def test_auto_rollback_config_resolution(tmp_path):
 
 
 def test_opencode_preset_auto_approves_in_scope_reads():
-    # Without this, every multi-repo mission keeps losing its review layer to
-    # a refusal that has nothing to do with the change under review.
+    # Without a PTY wrapper, every multi-repo mission keeps losing its review
+    # layer to a refusal that has nothing to do with the change under review:
+    # `opencode run` drops the message without a PTY and drops non-ASCII
+    # prompts when non-interactive. scripts/opencode_tty.py holds both
+    # (PTY via `script`, ASCII sanitization).
     from tether.adapters.experimental import OpencodeAdapter
 
     cmd = OpencodeAdapter().settings["command"]
-    assert "--auto" in cmd
-    # The pinned model must survive the change; only permission handling moved.
-    # The model was changed deliberately (space-bunny-free -> beam-free ->
-    # minimax-m3.1-flash-free) when the earlier models started returning HTTP
-    # 429 rate-limit errors and every gate mission failed in its planning step
-    # before doing any work. This pin exists to catch an ACCIDENTAL model
-    # change, so it has to move with a deliberate one -- and it must still name
-    # a model, so that a preset that quietly drops the `-m` pin entirely is
-    # caught here.
-    assert "-m" in cmd and "opencode/minimax-m3.1-flash-free" in cmd
+    assert cmd[0:2] == ["python3", "scripts/opencode_tty.py"]
+    # The pinned model must survive the change; only the invocation moved.
+    # This pin exists to catch an ACCIDENTAL model change, so it has to move
+    # with a deliberate one -- and it must still name a model, so that a
+    # preset that quietly drops the pin entirely is caught here.
+    assert "opencode-go/muse-spark-1.3-contributor" in cmd
     assert cmd[-1] == "{prompt}"
 
 

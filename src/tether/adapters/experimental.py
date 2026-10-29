@@ -40,17 +40,17 @@ class OpencodeAdapter(CommandAdapter):
     def __init__(self, settings: Optional[Dict[str, Any]] = None,
                  default_timeout: int = 1800) -> None:
         merged: Dict[str, Any] = {"command": [
-            # `--auto` stops the opencode CLI auto-rejecting in-scope reads.
-            # Run non-interactively it otherwise refuses anything outside the
-            # project directory, which for a multi-repo mission means the
-            # reviewer cannot look at the sibling repositories the mission is
-            # scoped to -- observed three times as "no valid review verdict
-            # found in reviewer output" on a run whose other eight gates were
-            # green. Telling the model to use a different tool is not
-            # enforcement and does not hold; this is. The safety given up at
-            # the model layer is held by the project's own write sandbox, so a
-            # project using this preset should set `sandbox_mode: enforce`.
-            "opencode", "run", "--auto", "-m", "opencode-go/muse-spark-1.3-contributor",
+            # TTY wrapper (global-minimum contract): `opencode run` drops the
+            # positional message without a PTY and drops prompts containing
+            # non-ASCII characters when non-interactive, which made the review
+            # gate flaky. scripts/opencode_tty.py runs the CLI under
+            # `script -q /dev/null` (PTY) and sanitizes the prompt to ASCII
+            # first. The model pin is preserved: every agent step must use
+            # opencode-go/muse-spark-1.3-contributor. The `--auto` pairing
+            # note below still applies -- the wrapper passes no --auto, and
+            # the safety that gives up at the model layer is held by the
+            # project's own write sandbox (`sandbox_mode: enforce`).
+            "python3", "scripts/opencode_tty.py", "opencode-go/muse-spark-1.3-contributor",
             "{prompt}",
         ]}
         merged.update(settings or {})

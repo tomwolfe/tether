@@ -32,6 +32,10 @@ context:
 workspace_repos:
   - "../QED"
   - "../VeriTrial"
+  # DRIFT is the fourth ledger repo (audit_system_state REPOS includes it and
+  # _find_workspace_root fails closed without all four); without it staged,
+  # every suite that imports the ledger dies at import in the room.
+  - "../DRIFT"
   # Tether itself is the control plane under test here: without it as a
   # workspace repo the clean-room suite has no copy of tests/test_cleanroom.py
   # or tools/verify_veritrial_equations.py, and the two tether-side
@@ -52,6 +56,7 @@ verification:
   clean_room_copy:
     - "../QED"
     - "../VeriTrial"
+    - "../DRIFT"
     - "../tether"
   mutation:
     enabled: true
