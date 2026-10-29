@@ -107,6 +107,25 @@ verification:
       - "src/insilico_trial/tests/test_sad_benchmark.py:223:12"
       - "src/insilico_trial/validation/organ_network.py:232:59"
       - "src/insilico_trial/validation/organ_network.py:414:57"
+    # Documented engine equivalents (proven; line drift fails closed):
+    # - trial/engine.py:460:26 cohort label `+ 1`: report label only; no
+    #   asserted value depends on it.
+    # - trial/engine.py:689:34 `return_full_state` flag in the legacy-solver
+    #   branch: unreached under every exercised solver selection (fixed_step /
+    #   sdirk2 / adaptive); a future legacy-name caller would crash loudly
+    #   (unpack arity), i.e. fail-closed, not silently differ.
+    # - trial/engine.py:872:25 / 896:8 MAD steady-state check: SAD has
+    #   n_doses < 2 so the function early-returns False before either site;
+    #   MAD is outside this mission's scope.
+    # - trial/engine.py:991:11 adherence `== beta`: the SAD protocol uses
+    #   uniform adherence and the benchmark is paired by seed, so the mutant's
+    #   beta-branch draws apply identically to both arms and cancel in every
+    #   cross-network delta; mass balance is adherence-independent.
+      - "src/insilico_trial/trial/engine.py:460:26"
+      - "src/insilico_trial/trial/engine.py:689:34"
+      - "src/insilico_trial/trial/engine.py:872:25"
+      - "src/insilico_trial/trial/engine.py:896:8"
+      - "src/insilico_trial/trial/engine.py:991:11"
   probes:
     - command: >-
         env PYTHONPATH=src python3 -c "import sys; sys.path.insert(0,'src');
