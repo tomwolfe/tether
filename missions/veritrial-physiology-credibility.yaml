@@ -1,0 +1,77 @@
+# Mission: veritrial-physiology-credibility
+#
+# Fail-closed physiology credibility: probes that the PBPK reference
+# physiology is physiological on BOTH networks. Fin6 t1/2 ~42h is inside
+# 20-80h; Fin14 t1/2 ~637h FAILS and must be fixed in code, not in this file.
+
+mission:
+  name: veritrial-physiology-credibility
+  goal: |
+    Prove the PBPK reference physiology credible on both Fin6 and Fin14:
+    elimination t1/2 within 20-80h on BOTH networks, apparent Vd within
+    0.5x-2x of typical_v_f, central Q >2.0 L/h, sum of perfused Q equal to
+    CO*0.85 within +/-10%, Kp anchoring scaling within [0.2,5].
+
+tasks:
+  - Probe t1/2 20-80h on Fin6 and Fin14 (warfarin)
+  - Probe Vd apparent within 0.5x-2x typical_v_f
+  - Probe central Q >2.0 L/h and sum(Q_perfused) == CO*0.85 +/-10%
+  - Probe Kp anchoring scaling in [0.2,5]
+
+context_files:
+  - src/insilico_trial/pbpk/model.py
+  - src/insilico_trial/trial/engine.py
+  - configs/drug_warfarin.yaml
+
+verification:
+  clean_room: true
+  clean_room_copy:
+    - "../QED"
+    - "../DRIFT"
+  workspace_repos:
+    - "../QED"
+    - "../DRIFT"
+  commands:
+    - >-
+      .venv/bin/python -c "import sys; sys.path.insert(0,'src');
+      from insilico_trial.pbpk.model import _reference_physiology, organ_indices, DEFAULT_ORGAN_NETWORK, STANDARD_14_ORGAN_NETWORK;
+      print('physiology import ok')"
+    - ".venv/bin/python -m pytest src/insilico_trial/tests/test_physiology_credibility.py -q -p no:cacheprovider"
+  timeout_seconds: 3600
+  mutation:
+    enabled: true
+    fail_below: 0.8
+  probes:
+    - command: >-
+        .venv/bin/python -c "import sys; sys.path.insert(0,'src');
+        from insilico_trial.tests.test_physiology_credibility import T12_FIN6, T12_FIN14;
+        assert 20<=T12_FIN6<=80, T12_FIN6; assert 20<=T12_FIN14<=80, T12_FIN14;
+        print('t12 pinned')"
+      contains: "t12 pinned"
+
+constraints:
+  - "DO NOT create any git commits. Leave every change in the working tree, uncommitted."
+  - "Do NOT edit docs to make gates pass. All fixes must be in code."
+  - "Fin14 t1/2 ~637h is a FAIL; fix the physiology, not the probe"
+
+git_state_guard: true
+
+review:
+  enabled: true
+  required: true
+  adapter: opencode
+  retry_on_rejection: true
+
+recovery:
+  max_attempts: 1
+
+budget:
+  max_sends: 12
+  max_wall_seconds: 10800
+adapter: opencode
+
+allowed_paths:
+  - "**"
+forbidden_paths:
+  - ".git/**"
+  - ".tether/**"

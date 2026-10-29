@@ -1,126 +1,86 @@
 # Mission: veritrial-fin14-sad-benchmark
 #
-# WHY THIS EXISTS (closes the G3 N-scaling gap)
-#
-# VeriTrial/docs/gap_closure_plan.md records for G3:
-#   "N-scaling: DEFAULT_ORGAN_NETWORK ... is the validated 6-state fast path
-#    used by the demo and by `make validate`; STANDARD_14_ORGAN_NETWORK adds
-#    kidney, lung, brain, heart, muscle, adipose, bone, skin, spleen and
-#    pancreas as perfused tissues and is selected per-protocol via
-#    TrialEngine._organ_network (organ_network == 'STANDARD_14'). Both networks
-#    are exercised by the same tests, so the 14-state model is scaffolded and
-#    certified, not hypothetical."
-#
-# "Scaffolded and certified" is the honest scope today. What is NOT yet
-# demonstrated is that the 14-organ model survives the FULL 1000-patient SAD
-# benchmark -- the same run the 6-state model passes -- and that the two
-# networks agree on the quantity a regulator would actually compare: Cmax.
-# The prompt's claim that the 14-organ path is "certified" was found to be
-# narrow in exactly this way: an isomorphism file for Fin 14 was never
-# emitted, and the two networks' Cmax were never compared.
-#
-# SCOPE OF THE CLAIM: this mission runs the 14-organ network through the
-# existing SAD benchmark and compares Cmax between the two networks. It does
-# NOT promote STANDARD_14_ORGAN_NETWORK to the default -- the six-organ model
-# stays the default, because changing it would invalidate the Fin 6 export,
-# the J[5][2]/J[5][5] pins and the exported lemmas.
+# Fail-closed calibration: 1000-patient SAD Fin14 vs Fin6, same seed,
+# drug_warfarin. Old +/-25% bound DELETED: a -23.9% median delta passing by
+# 1.1pp is NOT a pass.
 
 mission:
   name: veritrial-fin14-sad-benchmark
   goal: |
-    Run STANDARD_14_ORGAN_NETWORK through the full 1000-patient SAD benchmark,
-    compare Cmax against the validated 6-state DEFAULT, pin the agreement with
-    a test, and document the measured delta.
+    Run a 1000-patient SAD benchmark on STANDARD_14_ORGAN_NETWORK vs the
+    validated 6-state DEFAULT with the SAME random seed and drug_warfarin,
+    and pin cross-network Cmax agreement: Cmax median delta within +/-15%,
+    mean within +/-10%, 70kg reference adult within +/-20%.
+    Mass balance <1e-9 on BOTH networks. Saturable metabolism is a transfer,
+    not a sink (test_saturable_is_a_transfer_not_a_sink).
 
-    TASK 1 - RUN THE FULL SAD BENCHMARK ON THE 14-ORGAN NETWORK
-    The demo path is `python -m insilico_trial.cli demo --patients 1000
-    --duration-days 7`. The 14-organ network is selected per-protocol via
-    TrialEngine._organ_network with organ_network == "STANDARD_14". Find the
-    supported way to run that same benchmark on the 14-organ network and RUN
-    IT FOR REAL at 1000 patients. If the CLI cannot currently select it for
-    the full run, add the selection -- but do not change what the DEFAULT
-    selection means.
-    The run must actually complete. A 100-patient "demo-small" is not the
-    benchmark and must not be reported as if it were.
-
-    TASK 2 - COMPARE Cmax, AND PIN IT
-    Compute Cmax for the same protocol on both networks. They will NOT be
-    identical -- the 14-organ model adds perfused tissues that change
-    distribution -- so the tolerance must be a PHYSIOLOGICAL one, justified
-    and stated, not a number chosen to make the test pass.
-    Add a test that asserts DEFAULT vs 14 Cmax agree within that tolerance.
-    Record the MEASURED delta (the actual relative difference) in the test's
-    docstring and in the docs, so the number is visible and not hidden behind
-    a loose bound. If the measured delta is large enough that "within
-    physiological tolerance" would be a false claim, say THAT instead of
-    widening the tolerance.
-
-    TASK 3 - DO NOT BREAK THE VALIDATED 6-STATE MODEL
-    The six-organ model remains the default and must keep passing everything
-    it passes today: the 216-test suite, the benchmark harness, and the
-    formal gate. Nothing in this mission may change the default network, the
-    6-state physiology, or the exported Fin 6 lemmas.
-
-    TASK 4 - DOCUMENT THE DELTA
-    Update the G3 "N-scaling" section of docs/gap_closure_plan.md with: the
-    measured Cmax delta between DEFAULT and STANDARD_14, the tolerance and
-    WHY that tolerance is physiological, the benchmark size that was actually
-    run, and the throughput on each network. If the 14-organ run is slower,
-    say by how much -- that is a real cost of the wider model and belongs in
-    the same place as the accuracy delta.
+tasks:
+  - Run 1000-patient SAD on Fin6 and Fin14, same seed, drug_warfarin
+  - Assert Cmax median delta <=15%, mean <=10%, 70kg ref adult <=20%
+  - Assert mass balance <1e-9 on both networks
+  - Add test_saturable_is_a_transfer_not_a_sink
 
 context_files:
   - src/insilico_trial/pbpk/model.py
   - src/insilico_trial/trial/engine.py
   - src/insilico_trial/tests/test_population.py
-  - docs/gap_closure_plan.md
-  - Makefile
-
-constraints:
-  - "DO NOT create any git commits. Leave every change in the working tree, uncommitted. This mission runs with git_state_guard: true, which compares the repo HEAD against a checkpoint taken at session start; a commit made during the session is reported as 'history was rewritten' and the mission fails with verification skipped -- even when the work is correct and the tests pass. The guard is strict on purpose, so the fix is to not commit."
-  - "do not change DEFAULT_ORGAN_NETWORK or promote STANDARD_14_ORGAN_NETWORK to the default"
-  - "do not change the validated 6-state model's physiology"
-  - "do not weaken any existing test or threshold"
-  - "the benchmark must be the real 1000-patient run, not a reduced stand-in"
+  - configs/drug_warfarin.yaml
 
 verification:
+  clean_room: true
+  clean_room_copy:
+    - "../QED"
+    - "../DRIFT"
+  workspace_repos:
+    - "../QED"
+    - "../DRIFT"
   commands:
-    # The whole suite, with the project default addopts (-x --tb=short -q).
-    - ".venv/bin/python -m pytest src/insilico_trial/tests/ -q"
-    # The 14-organ network is selected and IS the 14-organ network.
     - >-
       .venv/bin/python -c "import sys; sys.path.insert(0,'src');
       from insilico_trial.pbpk.model import DEFAULT_ORGAN_NETWORK, STANDARD_14_ORGAN_NETWORK;
-      assert len(DEFAULT_ORGAN_NETWORK)==6, 'the default network must stay 6-state';
-      assert len(STANDARD_14_ORGAN_NETWORK)==14, 'the wide network must stay 14-state';
-      assert DEFAULT_ORGAN_NETWORK==('gut','liver','central','peripheral','effect','elim');
-      print('default unchanged, wide network intact')"
-    # Cmax is compared between the two networks by a real test.
+      assert len(DEFAULT_ORGAN_NETWORK)==6 and len(STANDARD_14_ORGAN_NETWORK)==14;
+      print('networks intact')"
+    - ".venv/bin/python -m pytest src/insilico_trial/tests/test_population.py -q -p no:cacheprovider"
     - >-
-      .venv/bin/python -c "import re, pathlib;
-      tst=pathlib.Path('src/insilico_trial/tests').rglob('*.py');
-      blob='\n'.join(p.read_text() for p in tst);
-      assert re.search(r'Cmax', blob), 'no Cmax comparison test found';
-      assert re.search(r'STANDARD_14', blob), 'no test references the 14-organ network';
-      print('a Cmax comparison exists')"
-    # The docs record the measured delta.
-    - >-
-      .venv/bin/python -c "import pathlib, re;
-      doc=pathlib.Path('docs/gap_closure_plan.md').read_text();
-      assert re.search(r'Cmax', doc), 'gap_closure_plan.md does not mention Cmax';
-      assert re.search(r'1000', doc), 'gap_closure_plan.md does not record the benchmark size';
-      print('docs record the Cmax comparison and the benchmark size')"
+      .venv/bin/python -c "import sys; sys.path.insert(0,'src');
+      from insilico_trial.tests.test_sad_benchmark import test_fin14_vs_fin6_cmax;
+      test_fin14_vs_fin6_cmax(); print('sad benchmark probes pass')"
   timeout_seconds: 3600
+  mutation:
+    enabled: true
+    fail_below: 0.8
+  probes:
+    - command: >-
+        .venv/bin/python -c "import sys; sys.path.insert(0,'src');
+        from insilico_trial.tests.test_sad_benchmark import MEDIAN_DELTA, MEAN_DELTA, REF70_DELTA;
+        assert abs(MEDIAN_DELTA)<=0.15, MEDIAN_DELTA; assert abs(MEAN_DELTA)<=0.10, MEAN_DELTA;
+        assert abs(REF70_DELTA)<=0.20, REF70_DELTA; print('deltas pinned')"
+      contains: "deltas pinned"
 
-recovery:
-  max_attempts: 3
+constraints:
+  - "DO NOT create any git commits. Leave every change in the working tree, uncommitted."
+  - "do not change DEFAULT_ORGAN_NETWORK or promote STANDARD_14_ORGAN_NETWORK to the default"
+  - "the benchmark must be the real 1000-patient run, not a reduced stand-in"
+  - "old +/-25% bound is DELETED; -23.9% median is NOT a pass"
+
+git_state_guard: true
 
 review:
   enabled: true
+  required: true
   adapter: opencode
+  retry_on_rejection: true
+
+recovery:
+  max_attempts: 1
 
 budget:
-  max_sends: 24
+  max_sends: 12
   max_wall_seconds: 10800
 adapter: opencode
-git_state_guard: true
+
+allowed_paths:
+  - "**"
+forbidden_paths:
+  - ".git/**"
+  - ".tether/**"

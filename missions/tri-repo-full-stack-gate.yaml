@@ -466,7 +466,7 @@ recovery:
 adapter: opencode
 adapters:
   opencode:
-    command: ["opencode", "run", "--auto", "-m", "opencode-go/muse-spark-1.3-contributor", "{prompt}"]
+    command: ["python3", "scripts/opencode_tty.py", "opencode-go/muse-spark-1.3-contributor", "{prompt}"]
     # Must be >= verification.timeout_seconds (3600). Per-adapter settings are
     # deep-merged with precedence mission-file > project config, so THIS value
     # wins over tether.yaml's command_timeout_seconds -- the 1800 recorded here
@@ -487,3 +487,9 @@ adapters:
     # global is untouched and no gate is loosened: this bounds how long the
     # MODEL may think, not what verification is allowed to accept.
     timeout_seconds: 5400
+
+allowed_paths:
+  - "**"
+forbidden_paths:
+  - ".git/**"
+  - ".tether/**"

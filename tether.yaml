@@ -36,4 +36,4 @@ default_adapter: opencode
 # answerable from the audit record alone, and an inherited default is not.
 adapters:
   opencode:
-    command: ["opencode", "run", "--auto", "-m", "opencode-go/muse-spark-1.3-contributor", "{prompt}"]
+    command: ["python3", "scripts/opencode_tty.py", "opencode-go/muse-spark-1.3-contributor", "{prompt}"]
