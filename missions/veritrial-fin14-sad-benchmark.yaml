@@ -49,6 +49,11 @@ verification:
   mutation:
     enabled: true
     fail_below: 0.8
+    max_mutants: 6
+    baseline_targets:
+      - "src/insilico_trial/pbpk/model.py"
+      - "src/insilico_trial/trial/engine.py"
+    equivalent: []
   probes:
     - command: >-
         env PYTHONPATH=src python3 -c "import sys; sys.path.insert(0,'src');

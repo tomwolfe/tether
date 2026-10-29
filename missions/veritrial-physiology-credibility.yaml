@@ -41,10 +41,16 @@ verification:
   mutation:
     enabled: true
     fail_below: 0.8
+    max_mutants: 6
+    baseline_targets:
+      - "src/insilico_trial/pbpk/model.py"
+      - "src/insilico_trial/tests/test_physiology_credibility.py"
+    equivalent: []
   probes:
     - command: >-
         env PYTHONPATH=src python3 -c "import sys; sys.path.insert(0,'src');
         from insilico_trial.tests.test_physiology_credibility import T12_FIN6, T12_FIN14;
+        print('measured T12_FIN6=%.2f T12_FIN14=%.2f' % (T12_FIN6, T12_FIN14));
         assert 20<=T12_FIN6<=80, T12_FIN6; assert 20<=T12_FIN14<=80, T12_FIN14;
         print('t12 pinned')"
       contains: "t12 pinned"
