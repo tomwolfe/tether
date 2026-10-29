@@ -45,6 +45,16 @@ verification:
       env PYTHONPATH=src python3 -c "import sys; sys.path.insert(0,'src');
       from insilico_trial.tests.test_sad_benchmark import test_fin14_vs_fin6_cmax;
       test_fin14_vs_fin6_cmax(); print('sad benchmark probes pass')"
+    # Measured-values command (NOT a probe: probe results record pass/fail
+    # only, while command stdout tails reach the reviewer -- and the reviewer
+    # must see the actual Cmax deltas, not dot counts). Prints the median /
+    # mean / 70kg deltas, then asserts fail-closed (old +/-25% DELETED).
+    - >-
+      env PYTHONPATH=src python3 -c "import sys; sys.path.insert(0,'src');
+      from insilico_trial.tests.test_sad_benchmark import MEDIAN_DELTA, MEAN_DELTA, REF70_DELTA;
+      print('measured Cmax median_delta=%+.3f mean_delta=%+.3f ref70_delta=%+.3f' % (MEDIAN_DELTA, MEAN_DELTA, REF70_DELTA));
+      assert abs(MEDIAN_DELTA)<=0.15, MEDIAN_DELTA; assert abs(MEAN_DELTA)<=0.10, MEAN_DELTA;
+      assert abs(REF70_DELTA)<=0.20, REF70_DELTA; print('deltas pinned')"
   timeout_seconds: 3600
   mutation:
     enabled: true

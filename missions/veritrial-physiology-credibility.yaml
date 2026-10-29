@@ -41,6 +41,21 @@ verification:
     # (e.g. the saturable-branch condition, the 0.9x Metzler margin), so the
     # suites that pin those constructs run here too.
     - "env PYTHONPATH=src python3 -m pytest src/insilico_trial/tests/test_fixed_step.py src/insilico_trial/tests/test_solvers.py -q -p no:cacheprovider"
+    # Measured-values command (NOT a probe: probe results record pass/fail
+    # only, while command stdout tails reach the reviewer -- and the reviewer
+    # must see the actual T12/Vd/Q/Kp numbers, not dot counts). Prints every
+    # criterion value for both networks, then asserts fail-closed.
+    - >-
+      env PYTHONPATH=src python3 -c "import sys; sys.path.insert(0,'src');
+      from insilico_trial.tests.test_physiology_credibility import T12_FIN6, T12_FIN14, _reference_adult_pk, _network_physiology;
+      from insilico_trial.pbpk.model import DEFAULT_ORGAN_NETWORK, STANDARD_14_ORGAN_NETWORK;
+      from insilico_trial.schemas import load_drug_config;
+      drug = load_drug_config('configs/drug_warfarin.yaml');
+      print('measured T12_FIN6=%.2f T12_FIN14=%.2f' % (T12_FIN6, T12_FIN14));
+      assert 20<=T12_FIN6<=80 and 20<=T12_FIN14<=80;
+      [print('measured %s half_life=%.2f vz_f=%.2f' % (l, pk['half_life'], pk['vz_f'])) or True for l, pk in (('Fin6', _reference_adult_pk(DEFAULT_ORGAN_NETWORK)), ('Fin14', _reference_adult_pk(STANDARD_14_ORGAN_NETWORK)))];
+      [print('measured %s q_central=%.1f q_perf=%.1f kp_scale=%.3f' % (l, ph['q_central'], ph['q_perf'], ph['kp_scale'])) or True for l, ph in (('Fin6', _network_physiology(DEFAULT_ORGAN_NETWORK)), ('Fin14', _network_physiology(STANDARD_14_ORGAN_NETWORK)))];
+      print('physiology values pinned')"
   timeout_seconds: 3600
   mutation:
     enabled: true
