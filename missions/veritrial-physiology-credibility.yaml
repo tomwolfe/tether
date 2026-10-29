@@ -37,6 +37,10 @@ verification:
       from insilico_trial.pbpk.model import _reference_physiology, organ_indices, DEFAULT_ORGAN_NETWORK, STANDARD_14_ORGAN_NETWORK;
       print('physiology import ok')"
     - "env PYTHONPATH=src python3 -m pytest src/insilico_trial/tests/test_physiology_credibility.py -q -p no:cacheprovider"
+    # Solver teeth: the credibility probes alone cannot kill ODE/dt mutants
+    # (e.g. the saturable-branch condition, the 0.9x Metzler margin), so the
+    # suites that pin those constructs run here too.
+    - "env PYTHONPATH=src python3 -m pytest src/insilico_trial/tests/test_fixed_step.py src/insilico_trial/tests/test_solvers.py -q -p no:cacheprovider"
   timeout_seconds: 3600
   mutation:
     enabled: true
@@ -45,7 +49,20 @@ verification:
     baseline_targets:
       - "src/insilico_trial/pbpk/model.py"
       - "src/insilico_trial/tests/test_physiology_credibility.py"
-    equivalent: []
+    # Documented equivalents (proven, not suppressed blindly; line drift
+    # fails closed by missing the match and running the mutant):
+    # - test_physiology_credibility.py:59:11 `dose = 10.0 * bioavailability`:
+    #   the single dose variable feeds both the gut seed and the NCA dose, so
+    #   `*`->`/` rescales both consistently. NCA half-life is shape-invariant
+    #   and Vz/F = Dose/(AUC*lambda_z) is dose-proportional: the rescaling
+    #   cancels exactly (up to float rounding far below every assertion).
+    # - test_physiology_credibility.py:196:11 (same shape in the
+    #   linear-predictor agreement test): the PBPK ODE is linear in dose, so a
+    #   consistent rescaling of both solvers' inputs cancels in the relative
+    #   agreement ratio exactly.
+    equivalent:
+      - "src/insilico_trial/tests/test_physiology_credibility.py:59:11"
+      - "src/insilico_trial/tests/test_physiology_credibility.py:196:11"
   probes:
     - command: >-
         env PYTHONPATH=src python3 -c "import sys; sys.path.insert(0,'src');
