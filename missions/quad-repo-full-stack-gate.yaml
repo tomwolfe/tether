@@ -45,7 +45,7 @@ verification:
   commands:
     # --- Phase 1: QED parser + engine ---------------------------------
     - "python3 tools/run_in_repo.py ../QED python3 run_tests.py"
-    - "python3 tools/run_in_repo.py ../QED python3 -m pytest test_pipeline.py -v -p no:cacheprovider"
+    - "python3 tools/run_in_repo.py ../QED python3 -m pytest test_pipeline.py -q -p no:cacheprovider"
     - "python3 tools/run_in_repo.py ../QED lake build"
     # --- Phase 2: VeriTrial PBPK export + tests ------------------------
     - "env PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --out /tmp/pbpk_lemmas.txt"
