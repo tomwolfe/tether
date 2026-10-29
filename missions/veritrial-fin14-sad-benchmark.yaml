@@ -46,6 +46,11 @@ verification:
     # scored against the suites that exercise them rather than surviving
     # behind a battery that never imports them.
     - "env PYTHONPATH=src python3 -m pytest src/insilico_trial/tests/test_organ_network_cmax.py -q -p no:cacheprovider"
+    # Shared solver/physiology teeth (mirrors veritrial-physiology-credibility):
+    # the delta/tolerance battery alone cannot kill ODE/dt/Kp mutants, so the
+    # suites that pin those constructs run here too.
+    - "env PYTHONPATH=src python3 -m pytest src/insilico_trial/tests/test_physiology_credibility.py -q -p no:cacheprovider"
+    - "env PYTHONPATH=src python3 -m pytest src/insilico_trial/tests/test_fixed_step.py src/insilico_trial/tests/test_solvers.py -q -p no:cacheprovider"
     # CLI smoke: exercises the comparison script's import-time path setup and
     # argparse wiring (fast --help, not the full benchmark).
     - "env PYTHONPATH=src python3 scripts/compare_organ_networks.py --help"
