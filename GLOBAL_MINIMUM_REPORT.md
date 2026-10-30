@@ -2204,12 +2204,12 @@ The report's `<meta name="merkle-root">` **matches**
 
 | repo | HEAD | dirty | sorry_free |
 |---|---|---|---|
-| tether | `e978987` (ledger host; the head the ledger records is its parent — the ledger cannot contain its own commit) | false | `n/a` (ships no Lean) |
-| QED | `fc9d3b7` (Fin 14 export + pancreas perfusion positivity proof) | false | **true** |
+| tether | `f7876ab` (ledger host; the head the ledger records is its parent — the ledger cannot contain its own commit) | false | `n/a` (ships no Lean) |
+| QED | `89bbcb5` (Fin 14 export + Int-arithmetic proof artifact) | false | **true** |
 | VeriTrial | `ef8052b` (CO-scale physiology + Fin14 Kp credibility + moxi IC50 recalibration) | false | **true** |
 | DRIFT | `db602b0` (deterministic bridge seed + import guard) | false | `n/a` (ships no Lean) |
 
-`SYSTEM_STATE.json` merkle root: `107c30100661b17c6ae93f7e5556cb8f8cad3754b26187327851f85aaf227876`
+`SYSTEM_STATE.json` merkle root: `a0eedef488215758693c81305e06371bce697d191a908766d06e7b06d45ac240`
 (all four rows `dirty: false`, no duplicate rows, `ledger_host` marked on
 tether, Lean digests hashed into the root, `audit_system_state.py --check`
 exit 0).
