@@ -2293,9 +2293,12 @@ L-stability is measured through the implementation's own step
 
 ## Quad bridge (Phase 3): 20/20 + 5/5 green
 
-`quad-repo-full-stack-gate.yaml`, session **`08044d05a07e`**,
+`quad-repo-full-stack-gate.yaml`, session **`f0089864ab05`**,
 `--no-auto-rollback`, ending with `tools/collect_quad_repo_evidence.py` as
-the FINAL command:
+the FINAL command (re-run on the fully-landed tree after the Pass 4 report
+draft; an earlier green session `08044d05a07e` covered the same ladder
+before the final proof-artifact, bridge-seed and IC50 commits, each of which
+was verified independently):
 
 | layer | result |
 |---|---|
