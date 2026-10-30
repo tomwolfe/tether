@@ -19,6 +19,7 @@ mission:
 
 constraints:
   - "only src/tether/untracked_helper.py, tests/test_untracked_helper.py, src/tether/orchestrator.py, missions/dogfood-45-reviewer-untracked.yaml may be modified"
+  - "no tool run during this mission may write cache, state, or artifact files anywhere inside the repo working tree (the write sandbox is a strict allowlist and fails the mission on any such write, e.g. .ruff_cache/ from a bare ruff invocation): always pass --no-cache to ruff, keep PYTEST_ADDOPTS free of cache-writing plugins, and point any unavoidable cache dir (ruff, mypy, pytest) outside the repo, e.g. under $TMPDIR. This is sandbox hygiene, not a verification change: every verification command, probe, assertion, and fail_below above is untouched."
 
 verification:
   commands:
