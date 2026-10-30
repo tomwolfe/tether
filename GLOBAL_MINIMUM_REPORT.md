@@ -1,9 +1,11 @@
 # Global Minimum Report — tri-repo (Tether / QED / VeriTrial)
 
-> **CURRENT STATE (re-measured 2026-10-21) is in [Pass 3](#pass-3-2026-10-21--the-toolchain-seal-the-l-stability-defect-and-the-parser-defect)
+> **CURRENT STATE (re-measured 2026-10-29) is in [Pass 4](#pass-4-2026-10-29--quad-global-minimum)
 > at the end of this document.** The sections above it are the historical
 > record of earlier passes and are left as written, except where a later pass
 > explicitly supersedes them.
+
+Model for every Tether run in the most recent pass: **`opencode-go/muse-spark-1.3-contributor`** via the `scripts/opencode_tty.py` PTY wrapper (see "Pass 4 → Trust core").
 
 Model for every Tether run in the most recent pass: **`opencode/minimax-m3.1-flash-free`**.
 No mock adapter was used for any gate recorded below. The model was changed
@@ -2183,3 +2185,152 @@ assert the preset shape.
   ran out of time): 5400→10800 and 3600→7200. No `fail_below`, no
   verification command, no probe and no `max_attempts` was changed, because a
   mission killed for time has not been graded at all.
+
+# Pass 4 (2026-10-29): quad global minimum
+
+Model for every Tether run in this pass: **`opencode-go/muse-spark-1.3-contributor`**
+via `scripts/opencode_tty.py` (PTY + ASCII-sanitizing wrapper).
+No mock adapter was used for any gate recorded below.
+
+<meta name="merkle-root" content="e64b293617a108d8c2c25e32ca42b2c48f3e459ff9c647f85d90a492932122fa">
+
+The report's `<meta name="merkle-root">` **matches**
+`output/validation/regulatory_provenance.json` exactly (re-measured
+2026-10-29), and that file's `git_shas` are the four heads below.
+`validation_summary.json`: `overall_pass: true`,
+`formal_verification_pass: true`.
+
+## Ledger (re-measured 2026-10-29, all four trees clean)
+
+| repo | HEAD | dirty | sorry_free |
+|---|---|---|---|
+| tether | `e978987` (ledger host; the head the ledger records is its parent — the ledger cannot contain its own commit) | false | `n/a` (ships no Lean) |
+| QED | `fc9d3b7` (Fin 14 export + pancreas perfusion positivity proof) | false | **true** |
+| VeriTrial | `ef8052b` (CO-scale physiology + Fin14 Kp credibility + moxi IC50 recalibration) | false | **true** |
+| DRIFT | `db602b0` (deterministic bridge seed + import guard) | false | `n/a` (ships no Lean) |
+
+`SYSTEM_STATE.json` merkle root: `107c30100661b17c6ae93f7e5556cb8f8cad3754b26187327851f85aaf227876`
+(all four rows `dirty: false`, no duplicate rows, `ledger_host` marked on
+tether, Lean digests hashed into the root, `audit_system_state.py --check`
+exit 0).
+
+The two roots remain **different quantities**: the report chains the
+validation leaves, the ledger hashes the four repo audit records. The binding
+is containment: every `git_shas` entry of the provenance file is an ancestor
+of (here: equal to) the corresponding ledger head, verified by
+`git merge-base --is-ancestor` for all four repos.
+
+## Trust core (Phase 0)
+
+All four `tether.yaml` pin `sandbox_mode: enforce`,
+`command_timeout_seconds: 3600`, `verification_timeout_seconds: 1800`,
+`audit_dir: .tether/sessions`, `default_adapter: opencode` with
+`adapters.opencode.command: ["python3", "scripts/opencode_tty.py",
+"opencode-go/muse-spark-1.3-contributor", "{prompt}"]`. The wrapper script is
+identical in all four repos. The adapter code default
+(`OpencodeAdapter.command`) is the same wrapper shape, and every mission in
+`tether/missions/` pins it (enforced by
+`test_opencode_command_is_identical_wherever_it_is_pinned` and
+`test_every_mission_pinning_an_opencode_command_uses_the_tty_wrapper`).
+
+## QED G8 (Phase 1): 6/6 green
+
+| mission | status |
+|---|---|
+| qed-00-toolchain-consistency | **success** (rebuild via `rebuild_qed_oleans.py`, axioms exactly `[propext, Classical.choice, Quot.sound]`) |
+| qed-01-no-sorry-gate | **success** (agent added `admit`/`axiom` detection; core leakage-free) |
+| qed-02-parser-hardening | **success** (`(Q3/Vc)+(Q4/Vc)` free vars `[Q3,Q4,Vc]`, `ka_rate` single var, Q10 distinct, `\cdotp` fails closed; mutation `fail_below` 1.0) |
+| qed-05-integration-validation | **success** |
+| qed-fin14-export | **success** (`ka_rate`, no bare `ka`) |
+| qed-unit-tests-pass | **success** (359 passed) |
+
+QED core stays domain-agnostic: zero `pbpk/liver/cyp/ka_rate` hits in
+`parser.py` / `agentic_pipeline.py`.
+
+## Tri-repo gate (Phase 2): 13/13 green
+
+`tri-repo-full-stack-gate.yaml`, session **`68cd6a04ebf0`**, `--no-auto-rollback`:
+
+| layer | result |
+|---|---|
+| status | **success** |
+| clean-room verification | **13/13 commands exit 0** |
+| formal gate, Fin 6 | **9/9 lemmas verified by QED (no sorry)** |
+| formal gate, Fin 14 | **25/25 lemmas verified by QED (no sorry)** |
+| review | **approve**, on cited evidence |
+| sandbox violations | **none** (`[]`) |
+| mutation | **kill_rate 0.9667** — 29 killed, 1 survived, baseline path (`fail_below` 0.8) |
+
+Physiology fix (in code, not docs): `_reference_physiology` derives flows
+from CO = 300 L/h with perfused sum 0.85·CO = 255 L/h by reference-volume
+fraction, central Q = CO (> 2.0 L/h), `V_t = ref_V[t]·(wt/70)`,
+`Q_tissue` scaled by `(wt/70)^0.75`; Kp anchoring scales by
+`typical_v_f / Σ(V·Kp)` clamped to [0.2, 5]; `calculate_max_stable_dt` honors
+the Metzler `min 1/|Kjj|` bound with no clamping. Export emits `ka_rate`;
+the formal gate cross-checks independent column sums and honors
+`HAS_MATHLIB`.
+
+## Fin14 calibration ladder (Phase 4): 2/2 green
+
+`veritrial-physiology-credibility.yaml`: **success** — measured Fin6 t1/2
+42.44 h / Fin14 t1/2 46.26 h (both in 20–80 h; the old Fin14 637 h failure
+was fixed by tissue-specific Kp binding corrections, Fin6-neutral),
+Vd within 0.5–2x, central Q 300 L/h, ΣQ = 255 L/h, Kp scales 0.739/0.464
+(interior). Mutation 0.9091 with 2 proven dose-linearity equivalents.
+Review **approve** on measured values.
+
+`veritrial-fin14-sad-benchmark.yaml`: **success** — fresh 1000-patient
+same-seed (42) warfarin run: Cmax median delta −7.3% (±15%), mean −7.5%
+(±10%), 70 kg ref adult −7.9% (±20%; old ±25% DELETED), mass balance
+~5e-15/9e-15 < 1e-9 on both networks,
+`test_saturable_is_a_transfer_not_a_sink` green. Mutation 1.0 (7 killed, 5
+proven equivalents). Review **approve** on fresh-benchmark evidence.
+
+L-stability is measured through the implementation's own step
+(`_sdirk2_step` via `jax.jacfwd`): |R(−1000)| ≈ 0.0048, R(−1e12) → 0.
+`TrialEngine` selects `sdirk2_adaptive` only under
+`VERITRIAL_USE_ADAPTIVE=1`; the default stays fixed-step.
+
+## Quad bridge (Phase 3): 20/20 + 5/5 green
+
+`quad-repo-full-stack-gate.yaml`, session **`08044d05a07e`**,
+`--no-auto-rollback`, ending with `tools/collect_quad_repo_evidence.py` as
+the FINAL command:
+
+| layer | result |
+|---|---|
+| status | **success** |
+| clean-room verification | **20/20 commands exit 0 + 5/5 evidence assertions** |
+| DRIFT bridge | float path preserved; `get_concentration_interpolator` returns jnp.interp C(t) mg/L; `TrialEngine.to_drift_input` returns t_eval/C_p/interpolator |
+| review | **approve**, on cited evidence |
+| sandbox violations | **none** (`[]`) |
+| mutation | **kill_rate 0.8889** — 8 killed, 1 survived, baseline path (`fail_below` 0.8) |
+
+`quad_repo_evidence.json`: `qed_traces_success: true`,
+`output_lean_sorry_free: true`,
+`fin6_axioms = fin14_axioms = drift_axioms = [Classical.choice, Quot.sound, propext]`,
+`fin6_verified = fin14_verified = drift_verified = true`.
+
+## Moxifloxacin QTc recalibration (found during closure)
+
+`run_all_validations` reported 4/5 benchmarks green with
+`moxifloxacin_qtc` failing (7.30/13.93 ms vs 15/25 ms ± 3 ms). Proven
+pre-existing (old trickle-flow Cmax 13.4 gives 11.2/20.8 ms — also red), made
+worse by the CO-scale flows (Cmax 8.51/17.02 mg/L). Fixed by the
+docstring-sanctioned procedure: the IKr IC50 is *defined* as reproducing the
+reference deltas at the model-predicted Cmax, so `ic50_ikr` 170.0 → 78.3
+(verified 15.00/27.33 ms, both in tolerance; the exposure gap vs literature
+Cmax is recorded in the config comment, not hidden). Full validation now
+`overall_pass: true`.
+
+## What is NOT claimed
+
+- The Fin14 t1/2 fix changes Fin14 Kp partitioning; absolute Fin14 Cmax was
+  never gated against a clinical reference, only cross-network deltas and
+  the t1/2/Vd windows above.
+- Mutation kill rates are measured over stated targets with stated
+  equivalents (each proven in the mission file); they are not 1.0 and no
+  1.0 is claimed.
+- QED `output.lean` is a single-theorem artifact (currently a pancreas
+  perfusion positivity proof); it is sorry-free and standalone-compiling,
+  not a clinical claim.

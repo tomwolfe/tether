@@ -12,3 +12,9 @@ build/
 # no cache-directory exemption. Without this line a mission that merely runs its
 # own `ruff` verification fails closed on its own artifacts.
 .ruff_cache/
+# Validation/build artifacts (output/validation/*.json, vvv40_report.html).
+# Written by run_all_validations / build_regulatory_provenance and read back
+# by GLOBAL_MINIMUM_REPORT.md's merkle binding. Untracked by design (they are
+# content-addressed by the merkle root, not by commit); gitignore keeps them
+# out of `git status` so the ledger's dirty flag reports source changes only.
+output/
