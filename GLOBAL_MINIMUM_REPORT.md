@@ -2204,7 +2204,7 @@ The report's `<meta name="merkle-root">` **matches**
 
 | repo | HEAD | dirty | sorry_free |
 |---|---|---|---|
-| tether | `f7876ab` (ledger host; the head the ledger records is its parent — the ledger cannot contain its own commit) | false | `n/a` (ships no Lean) |
+| tether | ledger host — see the `tether` row of the committed `SYSTEM_STATE.json` (the host head is exempt from the merkle by construction; the ledger necessarily trails the report by its own commit) | false | `n/a` (ships no Lean) |
 | QED | `89bbcb5` (Fin 14 export + Int-arithmetic proof artifact) | false | **true** |
 | VeriTrial | `ef8052b` (CO-scale physiology + Fin14 Kp credibility + moxi IC50 recalibration) | false | **true** |
 | DRIFT | `db602b0` (deterministic bridge seed + import guard) | false | `n/a` (ships no Lean) |
