@@ -2,7 +2,7 @@
   "repos": [
     {
       "repo": "tether",
-      "head": "ec2c657f043d72d364208923e69b6553d8b4f48f",
+      "head": "ab9fea797939bb6e30687153fc8e8aca100921f8",
       "dirty": false,
       "sorry_free": "n/a",
       "lean_files": {},
@@ -10,7 +10,7 @@
     },
     {
       "repo": "QED",
-      "head": "fc9d3b74d340ffc3240a5837b9b5afd714cdaa33",
+      "head": "d85983b1e4dbed8eb7b3feaaf135f67cba1c6d87",
       "dirty": false,
       "sorry_free": true,
       "lean_files": {
@@ -18,7 +18,7 @@
         "QED.lean": "3f6d5ef1d675d8984cc366a4d4e6dd21677641a7e4d25f6f146c6375de279579",
         "VeriTrialExport.lean": "1560a468f655b639b5a51b1b7b4b3d3ec1c7b5275080fd6d64e82b9e74085232",
         "lakefile.lean": "7b583ce2d56e307aaefabdbf8bbc4c978d37da6e0093d709c9c5d37840195ef4",
-        "output.lean": "62ae9eeab537eb8d621903c1d1c0a069769d3b48ea93e2ab176336615664b06a"
+        "output.lean": "18a4e791e7ca980f4e6b5ee279fc2caa5e94596607562713d0d1d6a596ed428b"
       }
     },
     {
@@ -38,5 +38,5 @@
       "lean_files": {}
     }
   ],
-  "merkle_root": "f7366bf1b6bc616c7c42ee1d3a5eef3775c89b6a9beed65b9a943455881a9b6e"
+  "merkle_root": "064c1f29630377d7a675ee2b371581ecfd3a762aa9ea8ec03009af1d2c8efdac"
 }
