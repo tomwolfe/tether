@@ -2,7 +2,7 @@
   "repos": [
     {
       "repo": "tether",
-      "head": "0ed3672aed7c4e6d373683367cd1e6c89c472e28",
+      "head": "1b4bc703184bdd1f8a8c22a830f5c9e0071bb9bd",
       "dirty": false,
       "sorry_free": "n/a",
       "lean_files": {},
@@ -10,7 +10,7 @@
     },
     {
       "repo": "QED",
-      "head": "40b6772a38c71a40a1a1b173fe33ab42d98256d8",
+      "head": "fc9d3b74d340ffc3240a5837b9b5afd714cdaa33",
       "dirty": false,
       "sorry_free": true,
       "lean_files": {
@@ -18,7 +18,7 @@
         "QED.lean": "3f6d5ef1d675d8984cc366a4d4e6dd21677641a7e4d25f6f146c6375de279579",
         "VeriTrialExport.lean": "1560a468f655b639b5a51b1b7b4b3d3ec1c7b5275080fd6d64e82b9e74085232",
         "lakefile.lean": "7b583ce2d56e307aaefabdbf8bbc4c978d37da6e0093d709c9c5d37840195ef4",
-        "output.lean": "39d50197a76ae2a9a0497b7cbf04cc5c9ffd8c68fecd6eb268612fa4c9670ba9"
+        "output.lean": "62ae9eeab537eb8d621903c1d1c0a069769d3b48ea93e2ab176336615664b06a"
       }
     },
     {
@@ -32,11 +32,11 @@
     },
     {
       "repo": "DRIFT",
-      "head": "ba546a8829ed3f73fcd59a9e23662ca80a85f2bd",
+      "head": "db602b0818e1b6576f2720fc378c801159f7fe77",
       "dirty": false,
       "sorry_free": "n/a",
       "lean_files": {}
     }
   ],
-  "merkle_root": "aa27668e3c127ebc395d48d7abe319dc711f4bfc72ed8b6cc6b6f584529dec8e"
+  "merkle_root": "107c30100661b17c6ae93f7e5556cb8f8cad3754b26187327851f85aaf227876"
 }
