@@ -76,7 +76,12 @@ verification:
     - "env PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --out /tmp/pbpk_lemmas_14.txt --fin-n 14 --parametric --saturable"
     - "env QED_TRACE=/tmp/fin14_traces.json PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/verify_formal_gate.py /tmp/pbpk_lemmas_14.txt --fin-n 14 --strict --saturable"
     - "python3 tools/collect_quad_repo_evidence.py"
-  timeout_seconds: 1200
+  # Budget, not a gate: the full QED suite runs ~625 s warm but over 1200 s
+  # from a cold clean-room checkout (Mathlib oleans rebuilt from source), so
+  # the 1200 s pin SIGTERM'd a green suite (exit -15) in session 4a87e7eb.
+  # Aligned with the project default command_timeout_seconds: 3600. No
+  # command, probe, assertion, fail_below, or max_attempts changed.
+  timeout_seconds: 3600
   assertions:
     - path: "quad_repo_evidence.json"
       contains: "\"qed_traces_success\": true"
