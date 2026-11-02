@@ -13,11 +13,16 @@ deliberately during the pass — see "Pass 3 → The model changed mid-session".
 
 ## Ledger
 
+Re-measured 2026-11-02 (Pass 5 — quint global minimum; rows above this note are
+the Pass 1 historical record):
+
 | repo | HEAD | dirty | sorry_free |
 |---|---|---|---|
-| tether | `dceb0b3` (the head the ledger records; this report's own commit is its child) | false | `n/a` (ships no Lean) |
-| QED | `8207365` (Fin 14 export + saturable transports) | false | **true** |
-| VeriTrial | `d8ce652` (`tether.yaml`; formal-gate fail-closed fixes) | false | **true** |
+| tether | `fb62f34` (quint gate green: kill_rate 1.0, review APPROVE, sandbox []) | false | `n/a` (ships no Lean) |
+| QED | `615f624` (EmergentiaExport + conservative field lemmas, sorry-free) | false | **true** |
+| VeriTrial | `cc5d4ef` (unchanged this pass; re-verified in quint clean room) | false | **true** |
+| DRIFT | `db602b0` (unchanged this pass; re-verified in quint clean room) | false | **true** |
+| Emergentia | `9d33b60` (09 formal-export gate green: kill_rate 1.0, SPRING_R2>0.99) | false | **true** (via QED export, no sorry) |
 
 `SYSTEM_STATE.json` merkle root: `ab5c17c4cfbacf22ba0619422cfb2f4ca7f74e564afd77e7fbde74157a78be4c`
 V&V report `<meta name="merkle-root">`: `b8f304620450d4cdd92e16db86ec760a3b60d74f4323aafd88e444f577fcc294`
