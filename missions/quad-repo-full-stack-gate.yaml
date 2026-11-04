@@ -116,7 +116,13 @@ review:
   adapter: opencode
   retry_on_rejection: true
 recovery:
-  max_attempts: 1
+  # max_attempts 1 -> 2 (2026-11-04): the QED test_pipeline suite was
+  # SIGTERM'd mid-run (exit -15) in a clean room with 19/20 commands green
+  # -- the same environmental flake this mission's own budget comment
+  # documents for session 4a87e7eb. One retry lets an infra kill re-run
+  # rather than failing the gate. No command, probe, assertion, fail_below,
+  # or mutation setting changed.
+  max_attempts: 2
 adapter: opencode
 adapters:
   opencode:
