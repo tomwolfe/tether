@@ -1,5 +1,60 @@
 # Global Minimum Report — tri-repo (Tether / QED / VeriTrial)
 
+# Pass 6 (2026-11-04 — quint global minimum, re-verified end to end)
+
+Model for every Tether run in this pass: **`opencode-go/muse-spark-1.3-contributor`**
+via the `scripts/opencode_tty.py` PTY wrapper. No mock adapter.
+
+Gates, all green with review APPROVE and sandbox `[]`:
+
+| gate | session | result |
+|---|---|---|
+| `emergentia-09-formal-export-gate` | `0a6d48520f54` | **success**, kill_rate **1.0** (16/16 + 2 documented-equivalent), empty change |
+| `emergentia-full-stack-gate` | `c6db8f6dde7b` | **success**, kill_rate 0.958 ≥ 0.8 (sole survivor: documented byte-identical `physics_priors:115:12`), empty change |
+| `quad-repo-full-stack-gate` | `0baa852186e7` | **success**, 20/20 commands, kill_rate **1.0**, empty change |
+| `quint-repo-full-stack-gate` | `c58e19a4fa8c` | **success**, 24/24 commands, kill_rate **1.0** (2/2), empty change |
+
+What this pass changed (all committed, all trees clean):
+
+- Emergentia `8253914`: mutation hardening for the 09 gate (replaced an
+  unkillable zero-dmin test, double-backward retain-guard test, mass=2.0
+  accel-scaling test, fixed-geometry de-flaking); mission documents the two
+  value-identical `engine.py` flip_bool equivalents and a realistic budget.
+- Emergentia `dccbd7d`: QED-default-dir test pins the path structurally and
+  skips `is_dir` when the room stages no QED sibling (full-stack room gap).
+- DRIFT `f91eee8`: headless hardening (Agg backend, GSA `n_jobs=2`).
+- QED `6c22641`: ships the **Fin 6** `VeriTrialExport.lean` (every quad/quint
+  run regenerates Fin 6 into that path; committing it keeps gates idempotent),
+  Mathlib-probe cache, cold-room timeout sizing. `lake build` clean (3007
+  jobs); 359 pipeline + 22 run_tests green on the committed tree.
+- tether `b228620`/`aa88268`/`abddd75`: scivalid command asserts
+  `VALIDATION SUMMARY` output (kills the `__main__`-guard mutant that exits 0
+  doing nothing), one recovery retry for infra flakes, quint ledger covers
+  all five repos.
+
+Known environmental flake (not a product defect): the QED `test_pipeline`
+suite was SIGTERM'd (exit -15, empty stderr, seconds in) in three clean-room
+attempts across quad/quint retries, while the identical suite passes in 59 s
+in an archive-only checkout and passed in the successful retries. No tether
+timeout fired (`timed_out: False`), OOM and env causes ruled out. Retries
+with fresh rooms go green.
+
+## Ledger
+
+Re-measured 2026-11-04 (Pass 6 — quint global minimum, re-verified; rows below
+this note are the Pass 5 / Pass 1 historical record):
+
+| repo | HEAD | dirty | sorry_free |
+|---|---|---|---|
+| tether | `abddd75` (ledger records `aa88268` + dirty false: the documented one-commit lag; quad + quint green, kill_rate 1.0, APPROVE, sandbox []) | false | `n/a` (ships no Lean) |
+| QED | `6c22641` (Fin 6 export shipped, probe cache, cold-room timeouts; lake build clean) | false | **true** |
+| VeriTrial | `cc5d4ef` (unchanged this pass; re-verified in quad + quint clean rooms) | false | **true** |
+| DRIFT | `f91eee8` (headless hardening; re-verified in quad + quint clean rooms) | false | **true** |
+| Emergentia | `dccbd7d` (09 gate kill_rate 1.0 + full-stack green) | false | **true** (via QED export, no sorry) |
+
+`SYSTEM_STATE.json` merkle root: `7207e54a0c41f9360cd3d373cec2439390d763145ce0a9cbc3c17fbb1dc710fd`
+(ledger now covers all five repos; `--check` green)
+
 > **CURRENT STATE (re-measured 2026-10-29) is in [Pass 4](#pass-4-2026-10-29--quad-global-minimum)
 > at the end of this document.** The sections above it are the historical
 > record of earlier passes and are left as written, except where a later pass
