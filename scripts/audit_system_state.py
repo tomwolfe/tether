@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unified ledger: audit tether/QED/VeriTrial/DRIFT repos into SYSTEM_STATE.json.
+"""Unified ledger: audit tether/QED/VeriTrial/DRIFT/Emergentia into SYSTEM_STATE.json.
 
 Two modes:
 
@@ -30,7 +30,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPOS = ["tether", "QED", "VeriTrial", "DRIFT"]
+REPOS = ["tether", "QED", "VeriTrial", "DRIFT", "Emergentia"]
 
 #: The repo whose checkout contains this script and therefore SYSTEM_STATE.json.
 LEDGER_HOST = "tether"
@@ -63,7 +63,7 @@ def _comparable(rows: list[dict]) -> list[dict]:
 
     ``merkle_root`` consequently means "the state of everything that *can* be
     named" -- every head, dirty flag, sorry_free verdict and Lean digest of all
-    three repos, minus the one field that is structurally unnameable. It still
+    five repos, minus the one field that is structurally unnameable. It still
     moves on any real change to any repo; it just stops being self-invalidating.
     """
     out = []
@@ -279,7 +279,7 @@ class WorkspaceNotFoundError(RuntimeError):
 
 
 def _find_workspace_root(start: Path | None = None) -> Path:
-    """Walk up from ``start`` until a dir containing all three repos.
+    """Walk up from ``start`` until a dir containing all five repos.
 
     Fail-closed: raises :class:`WorkspaceNotFoundError` instead of guessing.
     """
@@ -375,14 +375,16 @@ def audit_repo(name: str) -> dict:
 def _lean_digests(repo: Path) -> dict[str, str]:
     """SHA-256 of every Lean file in this repo's verified surface.
 
-    WHY THIS EXISTS. The tri-repo gate's mission file documents a deliberate
-    LEDGER DUALITY: the host checkout's ``QED/VeriTrialExport.lean`` is Fin 14
-    (committed at QED 8207365), while the clean room's copy of that same path
-    is rewritten to Fin 6 for ``rebuild_qed_oleans.py`` and the ``#print
-    axioms`` assertions. Two ledgers therefore cover two different Lean
-    artifacts. That is only a coherent story if this ledger names WHICH Lean
-    bytes it covers -- otherwise "the host ledger hashes the Fin 14 file" is
-    an unverifiable claim, and a reader cannot tell the two ledgers apart.
+    WHY THIS EXISTS. The quad/quint gates rewrite the host checkout's
+    ``QED/VeriTrialExport.lean`` to the Fin 6 export on every run (the file
+    committed at QED 6c22641 is that Fin 6 output, so gates are idempotent
+    instead of dirtying the tree). An earlier revision of this docstring
+    described a host=Fin-14/room=Fin-6 duality from when the host file was a
+    stale Fin 14 export; the steady state since is Fin 6 in both places.
+    Either way, two ledgers can only both be coherent if this ledger names
+    WHICH Lean bytes it covers -- otherwise "the host ledger hashes the Fin 6
+    file" is an unverifiable claim, and a reader cannot tell the two ledgers
+    apart.
 
     It did not. This function's caller previously recorded only
     ``head``/``dirty``/``sorry_free``, and ``_lean_files`` -- which does

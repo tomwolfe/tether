@@ -2,7 +2,7 @@
   "repos": [
     {
       "repo": "tether",
-      "head": "fb62f34e9d2761b4e8d07009b7e7ca7ca03d4e5b",
+      "head": "b22862087c676615355cd0e37f20737c8f444bc4",
       "dirty": true,
       "sorry_free": "n/a",
       "lean_files": {},
@@ -10,14 +10,14 @@
     },
     {
       "repo": "QED",
-      "head": "615f6243e94512a919369e908ab2f233e9f0d0c4",
+      "head": "6c226412f77090a87f2f82790aa771bbf96c642c",
       "dirty": false,
       "sorry_free": true,
       "lean_files": {
         "Compartmental.lean": "5d1e846f851c192df0500b322a7bc9ec651f27befe4a81d6482195fc03942ad7",
         "EmergentiaExport.lean": "ad1415682b91935ce692b29c59990c225abf89a98792e54d972a8cfb72983b25",
         "QED.lean": "3f6d5ef1d675d8984cc366a4d4e6dd21677641a7e4d25f6f146c6375de279579",
-        "VeriTrialExport.lean": "1560a468f655b639b5a51b1b7b4b3d3ec1c7b5275080fd6d64e82b9e74085232",
+        "VeriTrialExport.lean": "52280a3b4c7f0bbe26f71584944f0e5eda02f202374366b50b769b59998e14c5",
         "lakefile.lean": "7b583ce2d56e307aaefabdbf8bbc4c978d37da6e0093d709c9c5d37840195ef4",
         "output.lean": "65800cbaa3d2b915aa46537db27b2c25755626ec69e019721c537bcc80fde202"
       }
@@ -28,16 +28,25 @@
       "dirty": false,
       "sorry_free": true,
       "lean_files": {
-        "QED/VeriTrialExport.lean": "1560a468f655b639b5a51b1b7b4b3d3ec1c7b5275080fd6d64e82b9e74085232"
+        "QED/VeriTrialExport.lean": "52280a3b4c7f0bbe26f71584944f0e5eda02f202374366b50b769b59998e14c5"
       }
     },
     {
       "repo": "DRIFT",
-      "head": "db602b0818e1b6576f2720fc378c801159f7fe77",
+      "head": "f91eee80930cfe7314f4244ce95dc8386f6fdeb3",
       "dirty": false,
       "sorry_free": "n/a",
       "lean_files": {}
+    },
+    {
+      "repo": "Emergentia",
+      "head": "dccbd7d72cb9beccf4194f35e9e76a7eee567450",
+      "dirty": false,
+      "sorry_free": true,
+      "lean_files": {
+        "QED/EmergentiaExport.lean": "ad1415682b91935ce692b29c59990c225abf89a98792e54d972a8cfb72983b25"
+      }
     }
   ],
-  "merkle_root": "cccff25b0790d4fd41f0fbc82cf0d8c4ce619b392e597d20130d1268d2ed6784"
+  "merkle_root": "8b0c380dee38e5efeb33ee1b6200bf4380d919d67f58f5204261cb5a7c86ba55"
 }
