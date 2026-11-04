@@ -53,7 +53,11 @@ verification:
     - "python3 tools/run_in_repo.py ../VeriTrial env PYTHONPATH=src python3 -m pytest src/insilico_trial/tests/test_pbpk.py src/insilico_trial/tests/test_solvers.py src/insilico_trial/tests/test_engine.py -q -p no:cacheprovider"
     # --- Phase 3: DRIFT time-varying bridge + formal export -----------
     - "python3 tools/run_in_repo.py ../DRIFT python3 -m pytest tests/test_engines.py tests/test_simulation_engine.py -q -p no:cacheprovider"
-    - "python3 tools/run_in_repo.py ../DRIFT python3 scripts/scientific_validation.py"
+    # The scivalid command asserts on stdout markers, not just exit 0: the
+    # __main__-guard mutant (negate_compare) exits 0 while doing nothing, so
+    # a bare run can never kill it. 'VALIDATION SUMMARY' proves the pipeline
+    # actually executed. (Mirrored from quint 2026-11-04.)
+    - "python3 -c \"import subprocess,sys; r=subprocess.run([sys.executable,'tools/run_in_repo.py','../DRIFT','python3','scripts/scientific_validation.py'],capture_output=True,text=True); assert r.returncode==0,r.stderr[-300:]; assert 'VALIDATION SUMMARY' in r.stdout,r.stdout[-300:]; print('SCIVALID-OK')\""
     - "python3 ../DRIFT/scripts/export_drift_to_qed.py --out /tmp/drift_lemmas.txt"
     - "python3 ../QED/verify_pbpk_lemmas.py /tmp/drift_lemmas.txt"
     - "env PYTHONPATH=../DRIFT python3 ../DRIFT/scripts/verify_drift_axioms.py --qed-dir ../QED"
