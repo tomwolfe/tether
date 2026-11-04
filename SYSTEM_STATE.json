@@ -2,7 +2,7 @@
   "repos": [
     {
       "repo": "tether",
-      "head": "aa88268ebb80f10830314a82fe543c2b30bc952a",
+      "head": "189e61039ba2073288ad3e045bab12d7367025ed",
       "dirty": false,
       "sorry_free": "n/a",
       "lean_files": {},
@@ -40,7 +40,7 @@
     },
     {
       "repo": "Emergentia",
-      "head": "dccbd7d72cb9beccf4194f35e9e76a7eee567450",
+      "head": "213ab3783e289aef22617e125811753c3c07efe1",
       "dirty": false,
       "sorry_free": true,
       "lean_files": {
@@ -48,5 +48,5 @@
       }
     }
   ],
-  "merkle_root": "7207e54a0c41f9360cd3d373cec2439390d763145ce0a9cbc3c17fbb1dc710fd"
+  "merkle_root": "a0ae212702f5bae714f18afe7b41c708ac3d3d1b9c75a3fdfa470bd96e4955e1"
 }

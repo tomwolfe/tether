@@ -9,6 +9,14 @@ Gates, all green with review APPROVE and sandbox `[]`:
 
 | gate | session | result |
 |---|---|---|
+| `emergentia-00-toolchain-consistency` | `b2d01b3293fd` | **success** (toolchain pins + install-time requirements, APPROVE) |
+| `emergentia-01-no-zai-gate` | `d3f11c03cc00` | **success** |
+| `emergentia-02-unit-checker-hardening` | `6200ae3113ef` | **success** (per-instance dimension tables fix class pollution, APPROVE) |
+| `emergentia-03-registry-consistency` | `6e786ba1bc95` | **success** |
+| `emergentia-04-physics-priors` | `4ff557aacb47` | **success** |
+| `emergentia-05-cleanroom-integrity` | `d9a1365498ee` | **success** (stale gravity probe 4→8 fixed; agent gaming reverted, APPROVE) |
+| `emergentia-06-mutation-strength` | `bbe88fd6427c` | **success**, kill_rate 0.979 (47/48 + 1 equivalent), APPROVE |
+| `emergentia-07-docs-truth-audit` | `c7ef0b5b9f34` | **success** (install line covers real imports, APPROVE) |
 | `emergentia-09-formal-export-gate` | `0a6d48520f54` | **success**, kill_rate **1.0** (16/16 + 2 documented-equivalent), empty change |
 | `emergentia-full-stack-gate` | `c6db8f6dde7b` | **success**, kill_rate 0.958 ≥ 0.8 (sole survivor: documented byte-identical `physics_priors:115:12`), empty change |
 | `quad-repo-full-stack-gate` | `0baa852186e7` | **success**, 20/20 commands, kill_rate **1.0**, empty change |
@@ -22,6 +30,21 @@ What this pass changed (all committed, all trees clean):
   value-identical `engine.py` flip_bool equivalents and a realistic budget.
 - Emergentia `dccbd7d`: QED-default-dir test pins the path structurally and
   skips `is_dir` when the room stages no QED sibling (full-stack room gap).
+- Emergentia `c90cb3a`: teeth for `preprocessing.py` (0.0000 → 1.0000):
+  differentiable-path return, SciPy branch, exact LOO-schedule pin, disabled
+  early-return, 4-D passthrough, and mid-spike fixtures that flip the LOO
+  ranking under the D==1 / D>1 edge-index mutants.
+- Emergentia `c675652` (mission 00): toolchain helper + executed tests +
+  install-time `tests/toolchain-requirements.txt` (reviewer-demanded).
+- Emergentia `4a2a9a8` (mission 02): per-instance `VARIABLE_DIMENSIONS` copy
+  fixes cross-instance class pollution (electric-mode keys leaking into
+  strict checkers), plus isolation regression tests.
+- Emergentia mission fixes (committed; committed mission edits are run
+  baseline, not sandbox violations): 05's stale gravity probe 4→8 (the old
+  value could only pass by weakening priors — reverted once as gaming),
+  06's missing `baseline_targets` (0/0 was unwinnable).
+- Emergentia docs: install line covers real imports (scikit-learn,
+  torchdiffeq).
 - DRIFT `f91eee8`: headless hardening (Agg backend, GSA `n_jobs=2`).
 - QED `6c22641`: ships the **Fin 6** `VeriTrialExport.lean` (every quad/quint
   run regenerates Fin 6 into that path; committing it keeps gates idempotent),
@@ -46,14 +69,14 @@ this note are the Pass 5 / Pass 1 historical record):
 
 | repo | HEAD | dirty | sorry_free |
 |---|---|---|---|
-| tether | `abddd75` (ledger records `aa88268` + dirty false: the documented one-commit lag; quad + quint green, kill_rate 1.0, APPROVE, sandbox []) | false | `n/a` (ships no Lean) |
+| tether | `189e610` (Pass 6 report; quad + quint green, kill_rate 1.0, APPROVE, sandbox []) | false | `n/a` (ships no Lean) |
 | QED | `6c22641` (Fin 6 export shipped, probe cache, cold-room timeouts; lake build clean) | false | **true** |
 | VeriTrial | `cc5d4ef` (unchanged this pass; re-verified in quad + quint clean rooms) | false | **true** |
 | DRIFT | `f91eee8` (headless hardening; re-verified in quad + quint clean rooms) | false | **true** |
-| Emergentia | `dccbd7d` (09 gate kill_rate 1.0 + full-stack green) | false | **true** (via QED export, no sorry) |
+| Emergentia | `213ab37` (all missions 00-07 + 09 + full-stack green; preprocessing 1.0) | false | **true** (via QED export, no sorry) |
 
-`SYSTEM_STATE.json` merkle root: `7207e54a0c41f9360cd3d373cec2439390d763145ce0a9cbc3c17fbb1dc710fd`
-(ledger now covers all five repos; `--check` green)
+`SYSTEM_STATE.json` merkle root: `a0ae212702f5bae714f18afe7b41c708ac3d3d1b9c75a3fdfa470bd96e4955e1`
+(ledger covers all five repos; `--check` green)
 
 > **CURRENT STATE (re-measured 2026-10-29) is in [Pass 4](#pass-4-2026-10-29--quad-global-minimum)
 > at the end of this document.** The sections above it are the historical
