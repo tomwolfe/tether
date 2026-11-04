@@ -55,6 +55,15 @@ What this pass changed (all committed, all trees clean):
   doing nothing), one recovery retry for infra flakes, quint ledger covers
   all five repos.
 
+Known gap (single aspirational bar unmet, recorded not gamed): mixed-potential
+(Harmonic+Gravity) R² at noise_std=0.01 is **0.8364** (3/3 seeded trials,
+bit-identical), below the 0.85/0.90 discovery bar. Doubling the training
+budget to 1000 epochs (parity with the single-law noise test) DIVERGES to
+R²=-2960, so more training is not the fix and was reverted; the committed
+test (>0.20) passes consistently. Every other discovery bar holds: per-law
+R²>0.90 clean, single-law R²>0.85 at noise, rotational symmetry <1e-4,
+Jacobian symmetry <1e-4, Hamiltonian drift <5e-4 over 400 steps.
+
 Known environmental flake (not a product defect): the QED `test_pipeline`
 suite was SIGTERM'd (exit -15, empty stderr, seconds in) in three clean-room
 attempts across quad/quint retries, while the identical suite passes in 59 s
