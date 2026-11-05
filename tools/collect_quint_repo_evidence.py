@@ -13,6 +13,14 @@ Required evidence:
     Quot.sound].
   * ``/tmp/drift_axioms.json`` and ``/tmp/emergentia_axioms.json`` report
     the same axiom set.
+  * The JSON lemma lists are pinned: DRIFT to hill_nonneg/hill_le_one/
+    hill_mono/hill_limits and Emergentia to the seven F(r) = -dV/dr
+    theorems (harmonic, lennard_jones, morse, gravity, buckingham,
+    yukawa, conservative_energy).
+  * ``../QED/EmergentiaExport.lean`` contains those seven theorems,
+    sorry-free, and ``/tmp/drift_lemmas.txt`` /
+    ``/tmp/emergentia_lemmas.txt`` contain the matching markers, tying
+    the JSON record to the isolated DRIFT/Emergentia builds.
 
 Exits non-zero if any requirement is missing or wrong.
 """
@@ -24,6 +32,18 @@ import sys
 from pathlib import Path
 
 EXPECTED = ["Classical.choice", "Quot.sound", "propext"]
+
+EXPECTED_DRIFT_LEMMAS = ["hill_le_one", "hill_limits", "hill_mono", "hill_nonneg"]
+
+EXPECTED_EMERGENTIA_LEMMAS = [
+    "emergentia_harmonic",
+    "emergentia_lennard_jones",
+    "emergentia_morse",
+    "emergentia_gravity",
+    "emergentia_buckingham",
+    "emergentia_yukawa",
+    "emergentia_conservative_energy",
+]
 
 
 def _load(path: Path) -> dict:
@@ -76,6 +96,59 @@ def main() -> int:
             failures.append(
                 f"{label} axioms/verification wrong: verified="
                 f"{payload.get('verified')} axioms={axioms}")
+        # Pin the certified lemma names so the gate cannot pass on a
+        # self-asserting JSON payload with the right axioms but the wrong
+        # (or missing) theorems.
+        if label == "drift":
+            lemmas = sorted(payload.get("lemmas") or [])
+            if lemmas != EXPECTED_DRIFT_LEMMAS:
+                failures.append(
+                    f"drift lemma set wrong: {lemmas} expected "
+                    f"{EXPECTED_DRIFT_LEMMAS}")
+                evidence["drift_verified"] = False
+        if label == "emergentia":
+            lemmas = sorted(payload.get("lemmas") or [])
+            if lemmas != sorted(EXPECTED_EMERGENTIA_LEMMAS):
+                failures.append(
+                    f"emergentia lemma set wrong: {lemmas} expected "
+                    f"{sorted(EXPECTED_EMERGENTIA_LEMMAS)}")
+                evidence["emergentia_verified"] = False
+
+    # Cross-check the Emergentia Lean export itself: the seven F(r) = -dV/dr
+    # force-balance theorems (Harmonic, LennardJones, Morse, Gravity,
+    # Buckingham, Yukawa) plus conservative energy must be present,
+    # sorry-free, and axiom-pinned. This ties the JSON record to the
+    # isolated Emergentia/DRIFT builds rather than trusting it alone.
+    emergentia_lean = qed / "EmergentiaExport.lean"
+    try:
+        emergentia_text = emergentia_lean.read_text(encoding="utf-8")
+    except OSError as exc:
+        emergentia_text = ""
+        failures.append(f"EmergentiaExport.lean unreadable: {exc}")
+    if emergentia_text:
+        if "sorry" in emergentia_text:
+            failures.append("EmergentiaExport.lean contains sorry")
+        for name in EXPECTED_EMERGENTIA_LEMMAS:
+            if name not in emergentia_text:
+                failures.append(
+                    f"EmergentiaExport.lean missing theorem {name}")
+
+    # The lemma text files prove the export steps ran in isolation.
+    for label, tmp_name, markers in (
+        ("drift", "/tmp/drift_lemmas.txt", EXPECTED_DRIFT_LEMMAS),
+        ("emergentia", "/tmp/emergentia_lemmas.txt",
+         ["harmonic", "lennard_jones", "morse", "gravity",
+          "buckingham", "yukawa", "conservative_energy"]),
+    ):
+        try:
+            body = Path(tmp_name).read_text(encoding="utf-8")
+        except OSError as exc:
+            failures.append(f"{label} lemmas text unreadable: {exc}")
+            continue
+        for marker in markers:
+            if marker not in body:
+                failures.append(
+                    f"{label} lemmas text missing {marker} ({tmp_name})")
 
     if not evidence["qed_traces_success"]:
         failures.append("QED traces.json does not report success")

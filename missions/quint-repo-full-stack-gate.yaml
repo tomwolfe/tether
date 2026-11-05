@@ -85,6 +85,13 @@ verification:
     - "env PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/export_pbpk_to_qed.py --out /tmp/pbpk_lemmas_14.txt --fin-n 14 --parametric --saturable"
     - "env QED_TRACE=/tmp/fin14_traces.json PYTHONPATH=../VeriTrial/src python3 ../VeriTrial/scripts/verify_formal_gate.py /tmp/pbpk_lemmas_14.txt --fin-n 14 --strict --saturable"
     - "python3 tools/collect_quint_repo_evidence.py"
+    # Fail-closed teeth for the collector itself: the lemma-name pins above
+    # added a new killable behavior (failure-branch `return 1`), and no
+    # other ladder command imports the module, so the break_return mutant
+    # (`return 1` -> `return None`, exit 0 on missing evidence) survives by
+    # construction without this. Added 2026-11-05 after a 0.0 changed-file
+    # run survived only on that guard.
+    - "env PYTHONPATH=src python3 -m pytest tests/test_collect_quint_evidence.py -q -p no:cacheprovider"
   # Budget, not a gate: the full QED suite runs ~625 s warm but over 1200 s
   # from a cold clean-room checkout (Mathlib oleans rebuilt from source), so
   # the 1200 s pin SIGTERM'd a green suite (exit -15) in session 4a87e7eb.
