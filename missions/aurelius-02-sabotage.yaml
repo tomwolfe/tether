@@ -1,0 +1,39 @@
+mission:
+  name: aurelius-02-sabotage
+  goal: |
+    Sabotage dMAE gate: seeded defect must fail closed (no ALL TOLERANCES MET, collector exit 1).
+  context: ["ProjectAurelius/benchmark_unified.py unified entrypoint.",
+    "Model: opencode-go/muse-spark-1.3-contributor via scripts/opencode_tty.py.",
+    "Runs with --project-dir tether."]
+  workspace_repos: ["../QED", "../ProjectAurelius"]
+  constraints: ["DO NOT commit. Leave changes uncommitted.",
+    "No new deps/network calls.", "Do not weaken/skip verification.",
+    "No sorry/sorryAx in QED/Lean output."]
+  git_state_guard: true
+  sandbox_mode: enforce
+  verification:
+    clean_room: true
+    clean_room_copy: ["../QED", "../ProjectAurelius"]
+    commands:
+      - "python3 tools/run_in_repo.py ../ProjectAurelius python3 benchmark_unified.py"
+      - "python3 tools/collect_sext_repo_evidence.py"
+    timeout_seconds: 1800
+    mutation:
+      enabled: true
+      fail_below: 1.0
+      max_mutants: 4
+      baseline_targets:
+        - "../ProjectAurelius/benchmark_unified.py"
+    auto_probes: {enabled: false}
+  review:
+    enabled: true
+    required: true
+    adapter: opencode
+  recovery: {max_attempts: 2}
+  budget: {max_wall_seconds: 3600, max_sends: 12}
+  adapter: opencode
+  adapters:
+    opencode: {command: ["python3", "scripts/opencode_tty.py",
+      "opencode-go/muse-spark-1.3-contributor", "{prompt}"], timeout_seconds: 5400}
+  allowed_paths: ["**"]
+  forbidden_paths: [".git/**", ".tether/**"]

@@ -2491,3 +2491,13 @@ Cmax is recorded in the config comment, not hidden). Full validation now
 - QED `output.lean` is a single-theorem artifact (currently a pancreas
   perfusion positivity proof); it is sorry-free and standalone-compiling,
   not a clinical claim.
+
+# Pass 8 (2026-11-05 — sext global minimum, Aurelius closed-loop gap closed)
+Model: opencode-go/muse-spark-1.3-contributor
+Gates: sext-aurelius-global success kill_rate 1.0 APPROVE, quint + quad regressions success
+What changed:
+- QED 7c49a92: ship AureliusExport.lean — EA calibration + Born solvation lemmas, axiom pin [propext, Classical.choice, Quot.sound]
+- ProjectAurelius 66d6b56: fix closed-loop GPR length-scale collapse — bounded warm-start (0.5,5.0) + self-gating revert, k=2.5 gate=32, closes monotonic gap
+- Root cause closed: RBF length_scale collapsed 3.44→1.30 at round 2 on 50-entry ECFP4 calibration, raising holdout MAE +0.027 eV over the 0.01 tolerance. Refit now warm-starts at the previous length within (0.5,5.0) bounds and reverts to the previous model on collapse; round 1 still learns (−0.027 eV), later rounds hold flat.
+- test_v12_improvements::test_loop_shows_monotonic_improvement passes; benchmark_unified.py ALL TOLERANCES MET; QED lake build clean; export verifies 13/13 checks, zero admits; mutation-kill guards added (tests/test_mutation_kills.py).
+Ledger merkle root: 2ba0d31dbefd354b9209e6fe4fbdf688d43ddaba7f52b9e13d9219029b3ebb3b

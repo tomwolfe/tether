@@ -2,7 +2,7 @@
   "repos": [
     {
       "repo": "tether",
-      "head": "e9b6c6f9743f6aed444d216619388936163c5e98",
+      "head": "4c87d262f0589eeb7af868d9fe898af84a88fb42",
       "dirty": false,
       "sorry_free": "n/a",
       "lean_files": {},
@@ -10,10 +10,11 @@
     },
     {
       "repo": "QED",
-      "head": "6c226412f77090a87f2f82790aa771bbf96c642c",
+      "head": "7c49a92b2d76ce926ac73b1076b7f9f6317deb35",
       "dirty": false,
       "sorry_free": true,
       "lean_files": {
+        "AureliusExport.lean": "2cb07905edb9166861367efb5f7a0342f21f1f874c4e550174067ef60074b223",
         "Compartmental.lean": "5d1e846f851c192df0500b322a7bc9ec651f27befe4a81d6482195fc03942ad7",
         "EmergentiaExport.lean": "ad1415682b91935ce692b29c59990c225abf89a98792e54d972a8cfb72983b25",
         "QED.lean": "3f6d5ef1d675d8984cc366a4d4e6dd21677641a7e4d25f6f146c6375de279579",
@@ -48,5 +49,5 @@
       }
     }
   ],
-  "merkle_root": "4221ede602961c579d987d7cf57f996a4f189c8d139fa827429413d38a3248c3"
+  "merkle_root": "2ba0d31dbefd354b9209e6fe4fbdf688d43ddaba7f52b9e13d9219029b3ebb3b"
 }

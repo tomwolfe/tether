@@ -1,0 +1,62 @@
+mission:
+  name: sext-aurelius-global
+  goal: |
+    Achieve ProjectAurelius global minimum: close monotonic closed-loop gap, keep unified benchmark green, formal export verified, mutation kill_rate 1.0, review APPROVE, sandbox [].
+    Bars:
+        - benchmark_unified.py ALL TOLERANCES MET, novel_scaffold_min 0.75 across 5 seeds
+        - test_v12_improvements::test_loop_shows_monotonic_improvement passes
+        - test_closed_loop_efficacy sabotage dMAE <0
+        - QED lake build clean, Aurelius export verifies no sorry, axioms pinned
+        - mutation kill_rate 1.0 on reduction.py + delta_correction.py + export_aurelius_to_qed.py
+        - NETWORK_LEAKAGE_SCAN clean
+context:
+    - "ProjectAurelius/src/aurelius/scoring/oracle/delta_correction.py: bounded RBF (0.5,5.0) warm-start, self-gating revert on length collapse"
+    - "Model: opencode-go/muse-spark-1.3-contributor via scripts/opencode_tty.py PTY wrapper, never mock"
+    - "Runs with --project-dir tether (control plane), clean-room copies all 5 sibling repos"
+workspace_repos:
+    - "../QED"
+    - "../VeriTrial"
+    - "../DRIFT"
+    - "../Emergentia"
+    - "../ProjectAurelius"
+constraints:
+    - "DO NOT create git commits. Leave changes uncommitted. git_state_guard true."
+    - "Do not weaken verification commands"
+    - "Do not introduce sorry"
+    - "Keep existing tests green"
+git_state_guard: true
+sandbox_mode: enforce
+verification:
+  clean_room: true
+  clean_room_copy: ["../QED", "../VeriTrial", "../DRIFT", "../Emergentia", "../ProjectAurelius"]
+  commands:
+        - "python3 tools/run_in_repo.py ../ProjectAurelius python3 -m pytest tests/test_philosophy_verification.py tests/test_delta_correction.py tests/test_wetlab_cycle.py tests/test_closed_loop_efficacy.py tests/test_v12_improvements.py -q"
+        - "python3 tools/run_in_repo.py ../ProjectAurelius python3 benchmarks/benchmark_unified.py"
+        - "python3 tools/run_in_repo.py ../QED lake build"
+        - "python3 ../ProjectAurelius/scripts/export_aurelius_to_qed.py --out /tmp/aurelius_lemmas.txt --lean-out ../QED/AureliusExport.lean"
+        - "python3 ../QED/verify_pbpk_lemmas.py /tmp/aurelius_lemmas.txt"
+        - "python3 tools/collect_sext_repo_evidence.py"
+  timeout_seconds: 3600
+  mutation:
+    enabled: true
+    fail_below: 1.0
+    max_mutants: 6
+    baseline_targets:
+            - "../ProjectAurelius/src/aurelius/scoring/oracle/reduction.py"
+            - "../ProjectAurelius/src/aurelius/scoring/oracle/delta_correction.py"
+            - "../ProjectAurelius/scripts/export_aurelius_to_qed.py"
+  auto_probes: {enabled: false}
+review:
+  enabled: true
+  required: true
+  adapter: opencode
+  retry_on_rejection: true
+recovery: {max_attempts: 2}
+budget: {max_wall_seconds: 7200, max_sends: 30}
+adapter: opencode
+adapters:
+  opencode:
+    command: ["python3", "scripts/opencode_tty.py", "opencode-go/muse-spark-1.3-contributor", "{prompt}"]
+    timeout_seconds: 5400
+allowed_paths: ["**"]
+forbidden_paths: [".git/**", ".tether/**"]
