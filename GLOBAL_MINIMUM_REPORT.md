@@ -1,5 +1,67 @@
 # Global Minimum Report — tri-repo (Tether / QED / VeriTrial)
 
+# Pass 7 (2026-11-05 — quint global minimum, mixed-potential gap closed)
+
+Model for every Tether run in this pass: **`opencode-go/muse-spark-1.3-contributor`**
+via the `scripts/opencode_tty.py` PTY wrapper. No mock adapter.
+
+Gates, all green with review APPROVE and sandbox `[]`:
+
+| gate | session | result |
+|---|---|---|
+| `emergentia-09-formal-export-gate` | `3394eeaac8e1` | **success**, kill_rate **1.0**, APPROVE |
+| `quint-emergentia-global` (new) | `c9fcac04535e` | **success**, kill_rate **1.0** (12/12), APPROVE |
+| `quad-repo-full-stack-gate` (regression) | `bc9352dc06f5` | **success**, APPROVE |
+| `quint-repo-full-stack-gate` (regression) | `b0e488732011` | **success**, kill_rate **1.0**, APPROVE |
+
+Mixed-potential gap CLOSED: Harmonic+Gravity R² at noise_std=0.01 is
+**0.9999 / 1.0000 / 0.9994** (seeds 42/43/44), above the 0.85 bar. The
+divergence-on-more-training failure mode is also gone: the NN learns
+(loss ~0.002 at 1000 epochs) and the symbolic stage now selects the
+generalizing law instead of overfitting into singular expressions.
+
+What this pass changed (all committed, all trees clean):
+
+- Emergentia `8f5d1a8`: conservative field auto-on for mode==mixed,
+  two-stage mixed training, LOO-CV bandwidth selection before training,
+  `enable_grad` scopes for conservative-field validation/distillation,
+  distill-from-field, `_select_generalizing` (extended-range penalty +
+  in-sample parsimony fast-path, the latter agent-authored in `462f9c6`
+  and adopted), ensemble-aware pairwise potential.
+- Emergentia `cf24ea7`: mutation teeth for the 09-gate survivors
+  (penalty exact-value/shape/nonfinite/raising branches, both selection
+  directions, conservativeness True + imaginary rejection, `_parse`
+  fail-closed), plus the `763:11` documented-equivalent and a budget-only
+  `max_wall_seconds` 5400 → 7200 raise.
+- Emergentia `6f7aee4`: adopted quint-gate agent teeth
+  (exporter `main`/`_check_identity` return-value pins).
+- Emergentia mission 09: documents the `763:11` remainder-guard
+  equivalent (steps=2000/chunk=50 ⇒ remainder always 0; train set never
+  contains n_chunks, so both spellings skip identically).
+- Emergentia `9d33b60`-era `>0.20` mixed test tightened to `>0.85`;
+  new `test_mixed_r2_085.py` (>0.85, 1000 epochs) and
+  `test_differentiable_pipeline.py` (shape, grad flow, mass scaling).
+- Emergentia `scripts/export_emergentia_to_qed.py`: `build_from_simulator()`
+  reconstructs each F/V pair with live simulator coefficients, derives
+  dV/dr via sympy (chain-rule-correct for Morse/Yukawa/Buckingham), and
+  asserts F + dV/dr == 0 before emitting; canonical spellings unchanged,
+  so QED proofs and `EmergentiaExport.lean` are byte-identical.
+- tether `64d3c5e`: new `missions/quint-emergentia-global.yaml`
+  (Emergentia+QED clean-room ladder, mutation `fail_below: 1.0` on the
+  formal targets); `4e7d777` ledger re-audit.
+- tether: `tests/test_collect_quint_evidence.py` + ladder command pin the
+  collector's fail-closed `return 1` (killed the 0.0 changed-file run's
+  sole survivor on `collect_quint_repo_evidence.py:166`).
+- Root `/Users/tom/Documents/apps/tether.yaml` created with the pinned
+  adapter command; root `missions/quint-emergentia-global.yaml` kept as
+  the monorepo-level record (runs use `--project-dir tether` since the
+  root itself is not a git repo and clean-room needs a checkpoint).
+
+`SYSTEM_STATE.json` merkle root: `4221ede602961c579d987d7cf57f996a4f189c8d139fa827429413d38a3248c3`
+(`--check` green; all five repos clean, sorry-free where applicable)
+
+
+
 # Pass 6 (2026-11-04 — quint global minimum, re-verified end to end)
 
 Model for every Tether run in this pass: **`opencode-go/muse-spark-1.3-contributor`**
