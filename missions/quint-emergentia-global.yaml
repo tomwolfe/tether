@@ -1,0 +1,80 @@
+mission:
+  name: quint-emergentia-global
+  goal: |
+    Achieve the Emergentia quint global minimum: close the mixed-potential
+    (Harmonic+Gravity) R^2 gap at noise 0.01 to above the 0.85 bar while
+    keeping every existing Emergentia gate green, the formal export
+    non-vacuous and sorry-free, and the Emergentia+QED stack verified.
+
+    Bars that must all hold on a clean-room re-run:
+      - Mixed CompositePotential(Harmonic+Gravity) R^2 > 0.85 at
+        noise_std=0.01, seed 42, nn_epochs=1000, conservative field on.
+      - SPRING_R2 (harmonic single-law probe) > 0.99.
+      - NETWORK_LEAKAGE_SCAN clean: no zai|glm-4|ZAI_API|socket|requests|urllib
+        in Emergentia sources.
+      - Emergentia formal export verifies through QED with no sorry and the
+        exact axiom set [propext, Classical.choice, Quot.sound].
+      - Mutation kill_rate 1.0 on the formal targets
+        (scripts/export_emergentia_to_qed.py, tests/test_export_matches_simulator.py).
+      - Review APPROVE, sandbox violations [].
+context:
+  - "Emergentia/emergentia/engine.py: DiscoveryPipeline auto-enables ConservativeForceField for mode==mixed; two-stage mixed training (500+500 epochs, Huber delta 0.5, early stopping patience 300, warmup 200); LOO-CV bandwidth selection via auto_smoother.optimize_bandwidth before training; _select_generalizing picks the template over singular GP overfits (extended-range penalty + in-sample parsimony fast-path)."
+  - "Emergentia/emergentia/preprocessing.py: _differentiable_smooth uses a fixed kernel_size from max_bandwidth with depthwise conv1d so bandwidth gradients flow."
+  - "Emergentia/scripts/export_emergentia_to_qed.py: build_from_simulator() reconstructs each F/V pair with the simulator's default coefficients, derives dV/dr via sympy, and asserts F + dV/dr == 0 before emitting; tests/test_export_matches_simulator.py pins every half against the simulator."
+  - "Model for every Tether run: opencode-go/muse-spark-1.3-contributor via scripts/opencode_tty.py PTY wrapper. Never use mock adapter."
+  - "Runs with --project-dir tether (the git-backed control plane), mirroring quint-repo-full-stack-gate path conventions."
+workspace_repos:
+  - "../QED"
+  - "../Emergentia"
+constraints:
+  - "DO NOT create any git commits. Leave every change uncommitted. git_state_guard checks the workspace HEADs against the session checkpoint."
+  - "Do not add new dependencies or network calls. No socket, requests, urllib, xmlrpc."
+  - "Do not weaken, delete or skip a verification command to go green."
+  - "Do not introduce sorry or sorryAx in any QED/Lean output."
+  - "Do not delete production logic to satisfy mutants; close gaps with tests or genuine fixes."
+  - "Keep existing tests green. Never edit outside allowed_paths."
+git_state_guard: true
+sandbox_mode: enforce
+verification:
+  clean_room: true
+  clean_room_copy:
+    - "../QED"
+    - "../Emergentia"
+  commands:
+    - "python3 tools/run_in_repo.py ../Emergentia python3 -m pytest tests/test_no_zai_leakage.py tests/test_physics_priors.py tests/test_registry_consistency.py tests/test_unit_checker.py tests/test_conservative_grad.py tests/test_export_matches_simulator.py tests/test_mixed_r2_085.py tests/test_differentiable_pipeline.py tests/test_mutation_teeth.py -q -p no:cacheprovider"
+    - "python3 tools/run_in_repo.py ../QED lake build"
+    - "python3 ../Emergentia/scripts/export_emergentia_to_qed.py --out /tmp/emergentia_lemmas.txt --lean-out ../QED/EmergentiaExport.lean"
+    - "env PYTHONPATH=../Emergentia python3 ../Emergentia/scripts/verify_emergentia_axioms.py --qed-dir ../QED"
+    - "env PYTHONPATH=../Emergentia python3 -c \"from emergentia.simulator import HarmonicPotential, PhysicsSim; from emergentia.engine import DiscoveryPipeline; import torch; device=torch.device('cpu'); sim=PhysicsSim(n=3,dim=2,potential=HarmonicPotential(),seed=42,device=device); r=DiscoveryPipeline(mode='harmonic',potential=sim.potential,device=device,seed=42).run(sim,nn_epochs=500,noise_std=0.0); assert r['r2']>0.99, r; print('SPRING_R2', r['r2'])\""
+    - "python3 -c \"import re,sys,pathlib; src=''.join(p.read_text() for p in list(pathlib.Path('../Emergentia/emergentia').rglob('*.py'))+list(pathlib.Path('../Emergentia/scripts').rglob('*.py'))); bad=[m for m in re.findall(r'zai|glm-4|ZAI_API|socket|requests|urllib',src,re.I)]; assert not bad, bad; print('NETWORK_LEAKAGE_SCAN CLEAN')\""
+  timeout_seconds: 3600
+  mutation:
+    enabled: true
+    fail_below: 1.0
+    max_mutants: 6
+    baseline_targets:
+      - "../Emergentia/scripts/export_emergentia_to_qed.py"
+      - "../Emergentia/tests/test_export_matches_simulator.py"
+    equivalent: []
+  auto_probes:
+    enabled: false
+review:
+  enabled: true
+  required: true
+  adapter: opencode
+  retry_on_rejection: true
+recovery:
+  max_attempts: 2
+budget:
+  max_wall_seconds: 7200
+  max_sends: 24
+adapter: opencode
+adapters:
+  opencode:
+    command: ["python3", "scripts/opencode_tty.py", "opencode-go/muse-spark-1.3-contributor", "{prompt}"]
+    timeout_seconds: 5400
+allowed_paths:
+  - "**"
+forbidden_paths:
+  - ".git/**"
+  - ".tether/**"
