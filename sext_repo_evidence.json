@@ -1,0 +1,23 @@
+{
+  "changed": [
+    " M missions/sext-aurelius-global.yaml",
+    " M tools/collect_sext_repo_evidence.py",
+    "?? sext_repo_evidence.json",
+    "QED: M AureliusExport.lean",
+    "QED: M output.lean",
+    "ProjectAurelius: D .DS_Store",
+    "ProjectAurelius: M pyproject.toml",
+    "ProjectAurelius: M scripts/export_aurelius_to_qed.py",
+    "ProjectAurelius: M src/aurelius/agent/mutation/engine.py",
+    "ProjectAurelius: M src/aurelius/scoring/oracle/delta_correction.py",
+    "ProjectAurelius: M src/aurelius/scoring/oracle/reduction.py",
+    "ProjectAurelius: M tests/test_delta_correction.py",
+    "ProjectAurelius: M tests/test_philosophy_verification.py",
+    "ProjectAurelius:?? QED/"
+  ],
+  "qed_build_ok": true,
+  "tolerances_met": true,
+  "sorry_free": true,
+  "axioms_pinned": true,
+  "failures": []
+}
