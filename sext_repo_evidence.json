@@ -1,23 +1,210 @@
 {
   "changed": [
-    " M missions/sext-aurelius-global.yaml",
+    " M SYSTEM_STATE.json",
+    " M sext_repo_evidence.json",
     " M tools/collect_sext_repo_evidence.py",
-    "?? sext_repo_evidence.json",
-    "QED: M AureliusExport.lean",
-    "QED: M output.lean",
-    "ProjectAurelius: D .DS_Store",
-    "ProjectAurelius: M pyproject.toml",
-    "ProjectAurelius: M scripts/export_aurelius_to_qed.py",
-    "ProjectAurelius: M src/aurelius/agent/mutation/engine.py",
-    "ProjectAurelius: M src/aurelius/scoring/oracle/delta_correction.py",
-    "ProjectAurelius: M src/aurelius/scoring/oracle/reduction.py",
-    "ProjectAurelius: M tests/test_delta_correction.py",
-    "ProjectAurelius: M tests/test_philosophy_verification.py",
-    "ProjectAurelius:?? QED/"
+    "?? collector_run.log",
+    "?? missions/aurelius-global-closure-v2.yaml",
+    "?? missions/aurelius-global-closure-v3.yaml",
+    "?? missions/aurelius-global-closure-v4.yaml",
+    "?? missions/aurelius-global-closure-v5.yaml",
+    "?? missions/aurelius-global-closure.yaml"
   ],
   "qed_build_ok": true,
   "tolerances_met": true,
   "sorry_free": true,
   "axioms_pinned": true,
+  "heads": {
+    "tether": "2c421f31322cf4035bb33034ca760dad753f81b9",
+    "QED": "4005eb90c4417b6dbca438ce245054b156e03eeb",
+    "ProjectAurelius": "339ec040400d4819172162a6df7f01a68928cfa9",
+    "DRIFT": "f91eee80930cfe7314f4244ce95dc8386f6fdeb3",
+    "Emergentia": "6f7aee45e72a452c049a37c885539e74d8c32fbb",
+    "VeriTrial": "cc5d4efe91fbc84894d19e9498775438637525d8"
+  },
+  "science": {
+    "cross_repo_tree": {
+      "DRIFT": "clean",
+      "Emergentia": "clean",
+      "VeriTrial": "clean",
+      "QED": "clean",
+      "ProjectAurelius": "clean",
+      "tether": "dirty"
+    },
+    "novelty_min_5seeds": 1.0,
+    "novelty_seeds": [
+      42,
+      123,
+      7,
+      2024,
+      99
+    ],
+    "rediscovery_seeded_exact": 0.7059,
+    "min_retrosynthetic_depth": 2,
+    "mixtures_tested": 10,
+    "mixtures_valid": 10,
+    "per_seed_table": [
+      {
+        "seed": 42,
+        "novel_scaffold_ratio": 1.0,
+        "rediscovery_exact_rate": 0.7059,
+        "score_gap": 35.51,
+        "n_duplicates_top50": 0,
+        "trivial_hits_top50": [],
+        "trivial_hits_count": 0,
+        "min_retrosynthetic_depth_top10": 2
+      },
+      {
+        "seed": 123,
+        "novel_scaffold_ratio": 1.0,
+        "rediscovery_exact_rate": 0.7059,
+        "score_gap": 36.36,
+        "n_duplicates_top50": 0,
+        "trivial_hits_top50": [],
+        "trivial_hits_count": 0,
+        "min_retrosynthetic_depth_top10": 2
+      },
+      {
+        "seed": 7,
+        "novel_scaffold_ratio": 1.0,
+        "rediscovery_exact_rate": 0.7059,
+        "score_gap": 36.38,
+        "n_duplicates_top50": 0,
+        "trivial_hits_top50": [],
+        "trivial_hits_count": 0,
+        "min_retrosynthetic_depth_top10": 2
+      },
+      {
+        "seed": 2024,
+        "novel_scaffold_ratio": 1.0,
+        "rediscovery_exact_rate": 0.7059,
+        "score_gap": 36.3,
+        "n_duplicates_top50": 0,
+        "trivial_hits_top50": [],
+        "trivial_hits_count": 0,
+        "min_retrosynthetic_depth_top10": 2
+      },
+      {
+        "seed": 99,
+        "novel_scaffold_ratio": 1.0,
+        "rediscovery_exact_rate": 0.7059,
+        "score_gap": 38.09,
+        "n_duplicates_top50": 0,
+        "trivial_hits_top50": [],
+        "trivial_hits_count": 0,
+        "min_retrosynthetic_depth_top10": 2
+      }
+    ],
+    "min_novel_scaffold_seed": 42,
+    "per_seed_novelty_values": [
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    "per_seed_rediscovery_values": [
+      0.7059,
+      0.7059,
+      0.7059,
+      0.7059,
+      0.7059
+    ],
+    "per_seed_score_gaps": [
+      35.51,
+      36.36,
+      36.38,
+      36.3,
+      38.09
+    ],
+    "seeds_distinct_novelty_count": 1,
+    "seeds_distinct_rediscovery_count": 1,
+    "seeds_distinct_score_gap_count": 5,
+    "oracle": {
+      "lpm_nist_rho": 0.93991951111468,
+      "lpm_nist_mae": 0.31350594119269815,
+      "lpm_unseen_dft_rho": 0.4319189473363715,
+      "lpm_unseen_dft_mae": 0.46775157619417695,
+      "tom_lumo_unseen_rho": 0.0862756362006578,
+      "tom_lumo_unseen_mae": 0.8640853985564576,
+      "dielectric_verified_rho": 0.9339634554812198,
+      "dielectric_verified_mae": 3.2583742807884852,
+      "dielectric_commercial_mae": 1.8016356925763126,
+      "dielectric_verified_max_err": 43.0976,
+      "dielectric_verified_p95_err": 12.4903,
+      "viscosity_rho": 0.5624029609947085,
+      "donor_rho": 0.1885404131090909,
+      "ml_baseline": {
+        "HOMO": {
+          "oracle_rho": 0.568,
+          "oracle_wins": true
+        },
+        "LUMO": {
+          "oracle_rho": 0.2744,
+          "oracle_wins": true
+        },
+        "Dielectric": {
+          "oracle_rho": 0.6417,
+          "oracle_wins": true
+        },
+        "Viscosity": {
+          "oracle_rho": 0.6359,
+          "oracle_wins": true
+        },
+        "Donor Number": {
+          "oracle_rho": 0.2993,
+          "oracle_wins": false
+        }
+      }
+    },
+    "lean_theorem_count": 14,
+    "lean_theorems": [
+      "born_mono_eps",
+      "born_solvation_pos",
+      "conformal_coverage",
+      "delta_damp_factor_bounds",
+      "eaCal_mono",
+      "ea_bounds",
+      "ea_calibration_affine",
+      "gc_xterm_bounds",
+      "novelty_gate_sound",
+      "reduction_stability_mono",
+      "scoring_mono",
+      "synergy_bounds",
+      "tier1_sound",
+      "weightvec_mono"
+    ],
+    "closed_loop_permutation_p": 0.000260658297933338,
+    "closed_loop_mean_gap": 0.01585467976142601,
+    "solution_ea_status": "gated_out_with_pin",
+    "solution_ea_calibration": [
+      1.0,
+      0.0
+    ],
+    "solution_ea_n_onsets": 10,
+    "donor_handling": "removed_from_scoring_transparency_only",
+    "tom_lumo_status": "gated_out_of_ranking",
+    "ea_gate_verdict": "EA GATE: PASS",
+    "ea_gate_pass": true,
+    "ea_budget_table": {
+      "20": {
+        "ea_vs_random_p": 6.103515625e-05,
+        "ea_vs_random_top_k_p": 6.103515625e-05
+      },
+      "40": {
+        "ea_vs_random_p": 6.103515625e-05,
+        "ea_vs_random_top_k_p": 6.103515625e-05
+      },
+      "60": {
+        "ea_vs_random_p": 6.103515625e-05,
+        "ea_vs_random_top_k_p": 6.103515625e-05
+      }
+    },
+    "ea_budgets": [
+      20,
+      40,
+      60
+    ]
+  },
   "failures": []
 }

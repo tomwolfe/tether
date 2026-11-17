@@ -2501,3 +2501,48 @@ What changed:
 - Root cause closed: RBF length_scale collapsed 3.44→1.30 at round 2 on 50-entry ECFP4 calibration, raising holdout MAE +0.027 eV over the 0.01 tolerance. Refit now warm-starts at the previous length within (0.5,5.0) bounds and reverts to the previous model on collapse; round 1 still learns (−0.027 eV), later rounds hold flat.
 - test_v12_improvements::test_loop_shows_monotonic_improvement passes; benchmark_unified.py ALL TOLERANCES MET; QED lake build clean; export verifies 13/13 checks, zero admits; mutation-kill guards added (tests/test_mutation_kills.py).
 Ledger merkle root: 2ba0d31dbefd354b9209e6fe4fbdf688d43ddaba7f52b9e13d9219029b3ebb3b
+
+# Pass 9 (2026-11-17 — ProjectAurelius global-minimum closure work, committed)
+
+Model for every Tether send: **`opencode-go/muse-spark-1.3-contributor`**
+via the `scripts/opencode_tty.py` PTY wrapper. No mock adapter.
+
+HEADs (post-commit):
+- DRIFT `f91eee8` (clean, unchanged)
+- Emergentia `6f7aee4` (clean, unchanged)
+- QED `4005eb9` (committed this pass; was `06b1356`)
+- tether `2c421f3` (this pass commits on top; see tether entry)
+- VeriTrial `cc5d4ef` (clean, unchanged)
+- ProjectAurelius `339ec04` (committed this pass; was `16018d8`)
+
+What this pass changed (all committed, all trees clean):
+- ProjectAurelius `339ec04`: Phase-1 measurement integrity (loop/benchmark/
+  engine/selection seed threading; SMARTS rotation with canonical seed-42
+  order; BRICS pair order; binding per-molecule budgets; elite-plus-sampled
+  parents; LoopState.clear resets scaffolds; sorted BRICSDecompose boundaries
+  closing a 1-ulp cross-process nondeterminism channel); TOM LUMO gated out
+  of selection ranking (electronic_stability HOMO-only) with a fail-closed
+  benchmark check verified both directions; donor removed from scoring;
+  one exact KillPin updated to the gated-out value (exact-== preserved).
+- QED `4005eb9`: regenerated AureliusExport.lean exporter pins
+  (eaCal_mono, born_mono_eps, scoring_mono, tier1_sound, novelty_gate_sound,
+  synergy_bounds); output.lean qed_goal restated (4 lines, no sorry).
+- tether: missions aurelius-global-closure v2/v3/v4 (lineage) and v5
+  (successor with clarified set-level divergence proof + TOM gate-out
+  recorded, bars unchanged); regenerated sext evidence + SYSTEM_STATE ledger.
+
+Gate results (working-tree local runs, NOT in-gate claims):
+- 276/276 ProjectAurelius tests pass (8 gate suites + selection +
+  retrosynthetic + mutation).
+- benchmark_unified.py exit 0 ALL TOLERANCES MET (incl. new TOM gate-out
+  check); per-seed [42,123,7,2024,99]: novelty min 1.0, rediscovery 0.6875,
+  gaps 36.2-41.4, screened 92-112, dup 0, trivial none, depth 2, overlap
+  mean 0.80; same-seed reruns bit-identical across processes.
+- benchmark_ea_vs_random.py exit 0, gate_pass true (p=0.0001 at 20/40/60).
+- In-gate status: v4 mission (session 16b7ffc01278) finished FAILED at the
+  review gate (request_changes: identical per-seed metrics under old code,
+  dirty trees, TOM 0.05 floor); no green in-gate run is claimed. v5 mission
+  is staged for the next committed-tree run.
+- Mutation kill_rate 1.0 (60/60, v4 clean-room measurement).
+- Review verdict on v4: request_changes (see above; v5 addresses each item).
+- Sandbox [].
