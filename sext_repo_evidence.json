@@ -1,8 +1,5 @@
 {
   "changed": [
-    " M sext_repo_evidence.json",
-    "?? sext_closeout_evidence.md",
-    "?? sext_system_state.json",
     "ProjectAurelius:C:benchmarks/benchmark_unified.py",
     "ProjectAurelius:C:benchmarks/results/speed_baseline.json",
     "ProjectAurelius:C:benchmarks/results/speed_baseline.md",
@@ -20,7 +17,7 @@
   "sorry_free": true,
   "axioms_pinned": true,
   "heads": {
-    "tether": "140e0a5371cd34194179f6831d47780b9d8ad84d",
+    "tether": "c5a0a9a5b11b45f341ad93e4e3fa6e47586ba4af",
     "QED": "4005eb90c4417b6dbca438ce245054b156e03eeb",
     "ProjectAurelius": "35418a49f7135acb163d02fb45f19cac1d3fb838",
     "DRIFT": "f91eee80930cfe7314f4244ce95dc8386f6fdeb3",
@@ -34,7 +31,7 @@
       "VeriTrial": "clean",
       "QED": "clean",
       "ProjectAurelius": "clean",
-      "tether": "dirty"
+      "tether": "clean"
     },
     "novelty_min_5seeds": 1.0,
     "novelty_seeds": [
