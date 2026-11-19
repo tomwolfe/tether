@@ -82,7 +82,7 @@ Starting dirty files adopted: benchmarks/results/speed_baseline.json, speed_base
 
 ## Heads and paths
 
-- tether: 140e0a5 (this commit moves it forward; see commit message for new short SHA)
+- tether: a9e18d5 (this commit; sext_repo_evidence.json inside was generated pre-commit at 140e0a5, so its heads.tether lags by one - expected self-reference off-by-one; PA/QED/DRIFT/Emergentia/VeriTrial heads unchanged and verified above)
 - QED: 4005eb9 (clean, Fin 6 preserved)
 - ProjectAurelius: 35418a4 (clean, 8 commits above origin/main)
 - DRIFT: f91eee8 (untouched, clean)
