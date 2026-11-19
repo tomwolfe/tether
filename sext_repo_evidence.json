@@ -2,17 +2,28 @@
   "changed": [
     " M sext_repo_evidence.json",
     " M tools/collect_sext_repo_evidence.py",
-    "ProjectAurelius: M benchmarks/results/unified_benchmark.json",
-    "ProjectAurelius: M benchmarks/results/unified_benchmark.md"
+    "tether:C:sext_repo_evidence.json",
+    "tether:C:tools/collect_sext_repo_evidence.py",
+    "ProjectAurelius:C:benchmarks/benchmark_unified.py",
+    "ProjectAurelius:C:benchmarks/results/speed_baseline.json",
+    "ProjectAurelius:C:benchmarks/results/speed_baseline.md",
+    "ProjectAurelius:C:benchmarks/results/unified_benchmark.json",
+    "ProjectAurelius:C:benchmarks/results/unified_benchmark.md",
+    "ProjectAurelius:C:src/aurelius/agent/experiment_suggester.py",
+    "ProjectAurelius:C:src/aurelius/agent/loop.py",
+    "ProjectAurelius:C:src/aurelius/agent/mutation/brics.py",
+    "ProjectAurelius:C:src/aurelius/agent/mutation/retrosynthetic.py",
+    "ProjectAurelius:C:src/aurelius/scoring/oracle/delta_correction.py",
+    "ProjectAurelius:C:src/aurelius/utils/chem_utils.py"
   ],
   "qed_build_ok": true,
   "tolerances_met": true,
   "sorry_free": true,
   "axioms_pinned": true,
   "heads": {
-    "tether": "d24a4cf9efd61168ab465ef7bc472a5403b16df3",
+    "tether": "11b1cf85b3105c475824e0264f38e4e45b3d6b14",
     "QED": "4005eb90c4417b6dbca438ce245054b156e03eeb",
-    "ProjectAurelius": "7773c76c7ac85b8ab92959bb34c1262ede20ca8e",
+    "ProjectAurelius": "35418a49f7135acb163d02fb45f19cac1d3fb838",
     "DRIFT": "f91eee80930cfe7314f4244ce95dc8386f6fdeb3",
     "Emergentia": "6f7aee45e72a452c049a37c885539e74d8c32fbb",
     "VeriTrial": "cc5d4efe91fbc84894d19e9498775438637525d8"
@@ -23,7 +34,7 @@
       "Emergentia": "clean",
       "VeriTrial": "clean",
       "QED": "clean",
-      "ProjectAurelius": "dirty",
+      "ProjectAurelius": "clean",
       "tether": "dirty"
     },
     "novelty_min_5seeds": 1.0,
