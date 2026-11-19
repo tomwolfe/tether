@@ -9,7 +9,7 @@ mission:
     3. Commit per repo changed, one repo per commit, leave trees clean. Then obtain review APPROVE: the review request MUST include the exact gate strings above plus the in-gate command exit codes, so the reviewer cannot claim tails show only warnings.
     4. Leave every repo tree clean. Do not touch VeriTrial, DRIFT, Emergentia. Preserve QED Fin6, no sorry, pinned axioms. ASCII hyphens only. Never use mock adapter. Every send including review uses opencode with model opencode-go/muse-spark-1.3-contributor via /Users/tom/Documents/apps/tether/scripts/opencode_tty.py PTY wrapper.
 constraints:
-  - SCIENCE FREEZE: no edits to ProjectAurelius src, benchmarks logic, scripts logic, tests, or any Lean file. Evidence/regenerated artifacts only.
+  - SCIENCE FREEZE - no edits to ProjectAurelius src, benchmarks logic, scripts logic, tests, or any Lean file. Evidence/regenerated artifacts only.
   - Commit in the repo you changed only, one repo per commit, leave trees clean. Never leave uncommitted changes.
   - Do not weaken verification commands, loosen asserts, or delete tests to go green.
   - Minimal evidence-only changes. ASCII hyphens only in prompts.
