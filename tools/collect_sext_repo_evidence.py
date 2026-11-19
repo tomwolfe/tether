@@ -261,6 +261,13 @@ def main() -> int:
             science["seeds_distinct_novelty_count"] = len(set(map(str, _novs)))
             science["seeds_distinct_rediscovery_count"] = len(set(map(str, _reds)))
             science["seeds_distinct_score_gap_count"] = len(set(map(str, _gaps)))
+            science["candidate_overlap_mean"] = _disc.get("candidate_overlap_mean")
+            science["screened_overlap_mean"] = _disc.get("screened_overlap_mean")
+            science["novel_overlap_mean"] = _disc.get("novel_overlap_mean")
+            science["jaccard_table"] = _disc.get("jaccard_table")
+            science["recovered_sets_identical"] = _disc.get("recovered_sets_identical")
+            science["screened_sets_differ"] = _disc.get("screened_sets_differ")
+            science["seeds_diverge"] = _disc.get("seeds_diverge")
             for _t in _table:
                 if _t["n_duplicates_top50"] != 0:
                     failures.append(f"seed {_t['seed']} duplicates {_t['n_duplicates_top50']} != 0")
