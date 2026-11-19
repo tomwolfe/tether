@@ -22,9 +22,32 @@ def main() -> int:
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             encoding="utf-8", cwd=str(repo))
         changed += [f"{repo.name}:{l}" for l in rr.stdout.splitlines() if l.strip()]
-    # Fail closed on empty change set (no clean-room bypass: an empty
-    # `changed` list always fails, in the worktree and in clean-room runs
-    # alike; the remaining gates still decide independently). Separately,
+    # Committed session changes also count: clean-room staging commits the
+    # session HEAD, so status dirt is empty by design there. Diff HEAD
+    # against the NEWEST tether checkpoint ref (created at session start;
+    # the current session's checkpoint is always the latest). A no-op
+    # session still fails: its checkpoint equals HEAD and status is clean.
+    for repo in (root, qed, aur):
+        try:
+            lr = subprocess.run(["git", "for-each-ref",
+                "--sort=-committerdate", "--format=%(refname)",
+                "refs/tether/checkpoint/"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                encoding="utf-8", cwd=str(repo), timeout=60)
+            refs = [l.strip() for l in lr.stdout.splitlines() if l.strip()]
+            if lr.returncode == 0 and refs:
+                dr = subprocess.run(["git", "diff", "--name-only",
+                    f"{refs[0]}..HEAD"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    encoding="utf-8", cwd=str(repo), timeout=60)
+                if dr.returncode == 0:
+                    changed += [f"{repo.name}:C:{l}"
+                        for l in dr.stdout.splitlines() if l.strip()]
+        except Exception:
+            pass
+    # Fail closed on empty change set: status dirt plus committed diff
+    # against the newest session checkpoint must both be empty. The
+    # remaining gates still decide independently. Separately,
     # fail closed if git status itself failed on a real checkout: without
     # this explicit append, a mutant flipping the `!=` below to `==` would
     # be silent on the green path; with it, the flip appends a failure on
