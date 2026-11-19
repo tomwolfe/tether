@@ -9,60 +9,60 @@ mission:
     TASK 5 SPEED CONSTRAINED, only after 2-4 correct: singleton pipeline/oracle reuse (no new AureliusPipeline per escalated molecule in _evaluate_with_xtb), single batched GPR predict over sparse fingerprints, geometry cache keyed by canonical SMILES, batched metadata computation, no per-generation Tier0 re-init. Target 3-5x throughput on same seed with scores identical within tolerance. Speed that changes scores is a different oracle, reject it.
     TASK 6 RE-VERIFY: full pytest, benchmark_unified ALL TOLERANCES MET, QED export, verify script, leakage scan, mutation gates. Update GLOBAL_MINIMUM_REPORT style evidence + SYSTEM_STATE equivalents with session IDs, kill rates, benchmark JSON paths, commit hashes. Leave every repo tree clean.
     BARS (never weaken; fix code not gate; report open gaps with evidence, do not lower to pass): pytest green; benchmark_unified ALL TOLERANCES MET; QED lake build clean, export verifies, no sorry/admit, axioms exactly [propext, Classical.choice, Quot.sound]; verify_aurelius_qed green; NETWORK_LEAKAGE_SCAN clean; mutation kill_rate 1.0 on reduction.py + delta_correction.py + export_aurelius_to_qed.py, survivors only as documented equivalent with proof; review APPROVE; sandbox []; clean trees. Reconcile novel_scaffold bar: benchmark_unified.py says 0.8, prior evidence describes 76.2% as passing. Find the real bar, meet it, do not lower it.
-  workspace_repos:
-    - ../QED
-    - ../VeriTrial
-    - ../DRIFT
-    - ../Emergentia
-    - ../ProjectAurelius
-  constraints:
-    - Commit in the repo you changed only, one repo per commit, leave trees clean. Never commit across repos. Never leave uncommitted changes.
-    - Do not weaken verification commands, loosen asserts, or delete tests to go green.
-    - Do not introduce sorry, sorryAx, or admits in any Lean file.
-    - Do not add network, socket, requests, urllib, ZAI, or GLM code.
-    - Do not change QED core to add domain vocabulary.
-    - Keep existing tests green. Keep cross-repo gates green.
-    - Minimal root-cause fixes only.
-    - Budget max_wall_seconds 36000, max_sends 30. Recovery max_attempts 2.
-    - ASCII hyphens only in prompts.
-    - Never use mock adapter. Adapter for every send including review must be opencode with model opencode-go/muse-spark-1.3-contributor.
-  git_state_guard: true
-  verification:
-    clean_room: true
-    clean_room_copy: [../QED, ../VeriTrial, ../DRIFT, ../Emergentia, ../ProjectAurelius]
-    commands:
-      - python3 tools/run_in_repo.py ../ProjectAurelius python3 -m pytest -q
-      - python3 tools/run_in_repo.py ../ProjectAurelius python3 benchmarks/benchmark_unified.py
-      - python3 tools/run_in_repo.py ../QED lake build
-      - python3 ../ProjectAurelius/scripts/export_aurelius_to_qed.py --out /tmp/aurelius_lemmas.txt --lean-out ../QED/AureliusExport.lean
-      - python3 tools/run_in_repo.py ../ProjectAurelius python3 scripts/verify_aurelius_qed.py
-      - python3 -c "import re,pathlib; src=''.join(p.read_text() for p in list(pathlib.Path('../ProjectAurelius/src').rglob('*.py'))+list(pathlib.Path('../ProjectAurelius/scripts').rglob('*.py'))+list(pathlib.Path('../ProjectAurelius/benchmarks').rglob('*.py'))); bad=[m for m in re.findall(r'zai|glm-4|ZAI_API|socket|requests|urllib',src,re.I)]; assert not bad, bad; print('NETWORK_LEAKAGE_SCAN CLEAN')"
-      - python3 tools/collect_sext_repo_evidence.py
-    probes:
-      - command: python3 tools/collect_sext_repo_evidence.py
-        contains: SEXT EVIDENCE OK
-    timeout_seconds: 3600
-    mutation:
-      enabled: true
-      fail_below: 1.0
-      max_mutants: 6
-      baseline_targets:
-        - ../ProjectAurelius/src/aurelius/scoring/oracle/reduction.py
-        - ../ProjectAurelius/src/aurelius/scoring/oracle/delta_correction.py
-        - ../ProjectAurelius/scripts/export_aurelius_to_qed.py
-    auto_probes: {enabled: false}
-  review:
+workspace_repos:
+  - ../QED
+  - ../VeriTrial
+  - ../DRIFT
+  - ../Emergentia
+  - ../ProjectAurelius
+constraints:
+  - Commit in the repo you changed only, one repo per commit, leave trees clean. Never commit across repos. Never leave uncommitted changes.
+  - Do not weaken verification commands, loosen asserts, or delete tests to go green.
+  - Do not introduce sorry, sorryAx, or admits in any Lean file.
+  - Do not add network, socket, requests, urllib, ZAI, or GLM code.
+  - Do not change QED core to add domain vocabulary.
+  - Keep existing tests green. Keep cross-repo gates green.
+  - Minimal root-cause fixes only.
+  - Budget max_wall_seconds 36000, max_sends 30. Recovery max_attempts 2.
+  - ASCII hyphens only in prompts.
+  - Never use mock adapter. Adapter for every send including review must be opencode with model opencode-go/muse-spark-1.3-contributor.
+git_state_guard: true
+verification:
+  clean_room: true
+  clean_room_copy: [../QED, ../VeriTrial, ../DRIFT, ../Emergentia, ../ProjectAurelius]
+  commands:
+    - python3 tools/run_in_repo.py ../ProjectAurelius python3 -m pytest -q
+    - python3 tools/run_in_repo.py ../ProjectAurelius python3 benchmarks/benchmark_unified.py
+    - python3 tools/run_in_repo.py ../QED lake build
+    - python3 ../ProjectAurelius/scripts/export_aurelius_to_qed.py --out /tmp/aurelius_lemmas.txt --lean-out ../QED/AureliusExport.lean
+    - python3 tools/run_in_repo.py ../ProjectAurelius python3 scripts/verify_aurelius_qed.py
+    - python3 -c "import re,pathlib; src=''.join(p.read_text() for p in list(pathlib.Path('../ProjectAurelius/src').rglob('*.py'))+list(pathlib.Path('../ProjectAurelius/scripts').rglob('*.py'))+list(pathlib.Path('../ProjectAurelius/benchmarks').rglob('*.py'))); bad=[m for m in re.findall(r'zai|glm-4|ZAI_API|socket|requests|urllib',src,re.I)]; assert not bad, bad; print('NETWORK_LEAKAGE_SCAN CLEAN')"
+    - python3 tools/collect_sext_repo_evidence.py
+  probes:
+    - command: python3 tools/collect_sext_repo_evidence.py
+      contains: SEXT EVIDENCE OK
+  timeout_seconds: 3600
+  mutation:
     enabled: true
-    required: true
-    adapter: opencode
-    retry_on_rejection: true
-  recovery: {max_attempts: 2}
-  budget: {max_wall_seconds: 36000, max_sends: 30}
+    fail_below: 1.0
+    max_mutants: 6
+    baseline_targets:
+      - ../ProjectAurelius/src/aurelius/scoring/oracle/reduction.py
+      - ../ProjectAurelius/src/aurelius/scoring/oracle/delta_correction.py
+      - ../ProjectAurelius/scripts/export_aurelius_to_qed.py
+  auto_probes: {enabled: false}
+review:
+  enabled: true
+  required: true
   adapter: opencode
-  adapters:
-    opencode:
-      command: [python3, scripts/opencode_tty.py, opencode-go/muse-spark-1.3-contributor, '{prompt}']
-      timeout_seconds: 5400
-  allowed_paths: ['**']
-  forbidden_paths: [.git/**, .tether/**]
-  sandbox: []
+  retry_on_rejection: true
+recovery: {max_attempts: 2}
+budget: {max_wall_seconds: 36000, max_sends: 30}
+adapter: opencode
+adapters:
+  opencode:
+    command: [python3, scripts/opencode_tty.py, opencode-go/muse-spark-1.3-contributor, '{prompt}']
+    timeout_seconds: 5400
+allowed_paths: ['**']
+forbidden_paths: [.git/**, .tether/**]
+sandbox: []
