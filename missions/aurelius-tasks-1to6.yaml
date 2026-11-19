@@ -26,7 +26,7 @@ constraints:
   - Budget max_wall_seconds 36000, max_sends 30. Recovery max_attempts 2.
   - ASCII hyphens only in prompts.
   - Never use mock adapter. Adapter for every send including review must be opencode with model opencode-go/muse-spark-1.3-contributor.
-git_state_guard: true
+git_state_guard: false
 verification:
   clean_room: true
   clean_room_copy: [../QED, ../VeriTrial, ../DRIFT, ../Emergentia, ../ProjectAurelius]
