@@ -61,7 +61,7 @@ budget: {max_wall_seconds: 36000, max_sends: 30}
 adapter: opencode
 adapters:
   opencode:
-    command: [python3, scripts/opencode_tty.py, opencode-go/muse-spark-1.3-contributor, '{prompt}']
+    command: [python3, /Users/tom/Documents/apps/tether/scripts/opencode_tty.py, opencode-go/muse-spark-1.3-contributor, '{prompt}']
     timeout_seconds: 5400
 allowed_paths: ['**']
 forbidden_paths: [.git/**, .tether/**]
