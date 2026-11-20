@@ -22,31 +22,52 @@ def main() -> int:
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             encoding="utf-8", cwd=str(repo))
         changed += [f"{repo.name}:{l}" for l in rr.stdout.splitlines() if l.strip()]
-    # Committed session changes also count: clean-room staging commits the
-    # session HEAD, so status dirt is empty by design there. Diff HEAD
-    # against the NEWEST tether checkpoint ref (created at session start;
-    # the current session's checkpoint is always the latest). A no-op
-    # session still fails: its checkpoint equals HEAD and status is clean.
+    # Committed session changes also count: the agent commits per step, so
+    # the worktree status is clean by design at verification time. Diff HEAD
+    # against THIS session's checkpoint ref. The running session is the
+    # newest session dir; its id is the trailing component, matching the
+    # refs/tether/checkpoint/<sid> ref Tether created at session start.
+    # A no-op session still fails: its checkpoint equals HEAD and the
+    # status is clean. (Newest-ref-by-date is wrong: old checkpoint refs
+    # accumulate and their commit dates do not order session starts.)
+    _sid = None
+    try:
+        _sessdir = root / ".tether" / "sessions"
+        _cands = sorted(
+            [p for p in _sessdir.iterdir() if p.is_dir()
+             and "-" in p.name],
+            key=lambda p: p.stat().st_mtime)
+        if _cands:
+            _sid = _cands[-1].name.rsplit("-", 1)[-1]
+    except Exception:
+        _sid = None
     for repo in (root, qed, aur):
+        if not _sid:
+            break
         try:
             lr = subprocess.run(["git", "for-each-ref",
-                "--sort=-committerdate", "--format=%(refname)",
-                "refs/tether/checkpoint/"],
+                "--format=%(refname)", "refs/tether/checkpoint/"],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 encoding="utf-8", cwd=str(repo), timeout=60)
-            refs = [l.strip() for l in lr.stdout.splitlines() if l.strip()]
-            if lr.returncode == 0 and refs:
-                dr = subprocess.run(["git", "diff", "--name-only",
-                    f"{refs[0]}..HEAD"],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    encoding="utf-8", cwd=str(repo), timeout=60)
-                if dr.returncode == 0:
-                    changed += [f"{repo.name}:C:{l}"
-                        for l in dr.stdout.splitlines() if l.strip()]
+            if lr.returncode != 0:
+                continue
+            # Session dirs carry the 8-char short id; refs carry the full
+            # id. Match by prefix; exactly one ref should match.
+            _refs = [l.strip() for l in lr.stdout.splitlines()
+                     if l.strip().rsplit("/", 1)[-1].startswith(_sid)]
+            if len(_refs) != 1:
+                continue
+            dr = subprocess.run(["git", "diff", "--name-only",
+                f"{_refs[0]}..HEAD"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                encoding="utf-8", cwd=str(repo), timeout=60)
+            if dr.returncode == 0:
+                changed += [f"{repo.name}:C:{l}"
+                    for l in dr.stdout.splitlines() if l.strip()]
         except Exception:
             pass
     # Fail closed on empty change set: status dirt plus committed diff
-    # against the newest session checkpoint must both be empty. The
+    # against this session's checkpoint must both be empty. The
     # remaining gates still decide independently. Separately,
     # fail closed if git status itself failed on a real checkout: without
     # this explicit append, a mutant flipping the `!=` below to `==` would
