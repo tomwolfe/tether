@@ -1,14 +1,15 @@
 {
   "changed": [
     " M tools/collect_sext_repo_evidence.py",
-    "tether:C:sext_repo_evidence.json"
+    "tether:C:sext_closeout_evidence.md",
+    "tether:C:sext_system_state.json"
   ],
   "qed_build_ok": true,
   "tolerances_met": true,
   "sorry_free": true,
   "axioms_pinned": true,
   "heads": {
-    "tether": "64dc24e8ccd99369e7bf5140fe79223110acc60f",
+    "tether": "fd267cac98f3421cfb7b51ac5e655eee3aa25274",
     "QED": "4005eb90c4417b6dbca438ce245054b156e03eeb",
     "ProjectAurelius": "b3a81595020f14c0d56151ffcac6eb489ddb6e9d",
     "DRIFT": "f91eee80930cfe7314f4244ce95dc8386f6fdeb3",

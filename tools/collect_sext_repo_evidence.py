@@ -24,25 +24,34 @@ def main() -> int:
         changed += [f"{repo.name}:{l}" for l in rr.stdout.splitlines() if l.strip()]
     # Committed session changes also count: the agent commits per step, so
     # the worktree status is clean by design at verification time. Diff HEAD
-    # against THIS session's checkpoint ref. The running session is the
-    # newest session dir; its id is the trailing component, matching the
-    # refs/tether/checkpoint/<sid> ref Tether created at session start.
-    # A no-op session still fails: its checkpoint equals HEAD and the
-    # status is clean. (Newest-ref-by-date is wrong: old checkpoint refs
-    # accumulate and their commit dates do not order session starts.)
-    _sid = None
+    # against THIS session's checkpoint ref. The holder is authoritative:
+    # .tether/tether.lock names the running session during verification.
+    # Fall back to the newest session dir that actually has a checkpoint
+    # ref (a newer dir may belong to a session that died on lock contention
+    # and never created one). A no-op session still fails: its checkpoint
+    # equals HEAD and the status is clean. (Newest-ref-by-date is wrong:
+    # old checkpoint refs accumulate and their commit dates do not order
+    # session starts.)
+    _sids: list[str] = []
+    try:
+        _lock = json.loads((root / ".tether" / "tether.lock").read_text())
+        if _lock.get("session_id"):
+            _sids.append(str(_lock["session_id"])[:8])
+    except Exception:
+        pass
     try:
         _sessdir = root / ".tether" / "sessions"
-        _cands = sorted(
-            [p for p in _sessdir.iterdir() if p.is_dir()
-             and "-" in p.name],
-            key=lambda p: p.stat().st_mtime)
-        if _cands:
-            _sid = _cands[-1].name.rsplit("-", 1)[-1]
+        for _p in sorted(
+                [p for p in _sessdir.iterdir() if p.is_dir()
+                 and "-" in p.name],
+                key=lambda p: p.stat().st_mtime, reverse=True):
+            _s = _p.name.rsplit("-", 1)[-1]
+            if _s not in _sids:
+                _sids.append(_s)
     except Exception:
-        _sid = None
+        pass
     for repo in (root, qed, aur):
-        if not _sid:
+        if not _sids:
             break
         try:
             lr = subprocess.run(["git", "for-each-ref",
@@ -51,14 +60,21 @@ def main() -> int:
                 encoding="utf-8", cwd=str(repo), timeout=60)
             if lr.returncode != 0:
                 continue
-            # Session dirs carry the 8-char short id; refs carry the full
-            # id. Match by prefix; exactly one ref should match.
-            _refs = [l.strip() for l in lr.stdout.splitlines()
-                     if l.strip().rsplit("/", 1)[-1].startswith(_sid)]
-            if len(_refs) != 1:
+            _allrefs = [l.strip() for l in lr.stdout.splitlines()
+                        if l.strip()]
+            _ref = None
+            for _s in _sids:
+                # Session dirs carry the 8-char short id; refs carry the
+                # full id. Match by prefix; exactly one ref must match.
+                _m = [x for x in _allrefs
+                      if x.rsplit("/", 1)[-1].startswith(_s)]
+                if len(_m) == 1:
+                    _ref = _m[0]
+                    break
+            if _ref is None:
                 continue
             dr = subprocess.run(["git", "diff", "--name-only",
-                f"{_refs[0]}..HEAD"],
+                f"{_ref}..HEAD"],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 encoding="utf-8", cwd=str(repo), timeout=60)
             if dr.returncode == 0:
