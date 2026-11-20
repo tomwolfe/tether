@@ -92,6 +92,16 @@ Starting dirty files adopted: benchmarks/results/speed_baseline.json, speed_base
 - Evidence JSON: sext_repo_evidence.json (failures [], tolerances_met true, qed_build_ok true, sorry_free true, axioms_pinned true).
 - System-state equivalent: sext_system_state.json (this repo, same heads, dirty false post-commit, kill_rate 1.0, session cc443a2a0305).
 
+## Approve re-verification (session dec79b98, in-gate rerun on frozen tree)
+
+- Approve session: dec79b98 (tether checkpoint ref refs/tether/checkpoint/dec79b98f742 at 4ef3c4f). Prior green session: cc443a2a0305.
+- Frozen-tree heads at approve rerun: tether 4ef3c4f, QED 4005eb9, ProjectAurelius b3a8159, DRIFT f91eee8, Emergentia 6f7aee4, VeriTrial cc5d4ef.
+- Gate strings confirmed in-gate (quoted verbatim for review): pytest "671 passed", benchmark "ALL TOLERANCES MET", "Build completed successfully", "NETWORK_LEAKAGE_SCAN CLEAN", evidence '"failures": []', mutation kill_rate 1.0 (18/18 on reduction.py, delta_correction.py, export_aurelius_to_qed.py).
+- Novel-scaffold reconciliation: benchmark gate novel_scaffold_min 0.8 is a FRACTION compared fraction-to-fraction against min across seeds [42,123,7,2024,99]; prior 76.2% was the same metric in percent on a single seed and does NOT pass the multi-seed bar. In-gate result: min 1.0 across 5 seeds (per-seed all 1.0, worst seed 42).
+- Speed baseline vs batched-GPR throughput and score-identity: Task 1 baseline seed 42 throughput 14.752 mols/sec (129 screened in 8.74s wall); Task 5 batched-GPR predict in delta_correction is score-identical (<=3e-6) per commit 7773c76.
+- Benchmark JSON paths (in-gate regenerated): ../ProjectAurelius/benchmarks/results/unified_benchmark.json (mixtures 15/15, novelty min 1.0), ../ProjectAurelius/benchmarks/results/speed_baseline.json (seed 42), ../ProjectAurelius/benchmarks/results/ea_vs_random.json (gate_pass true).
+- This section dirties the tether tree BY DESIGN: tools/collect_sext_repo_evidence.py is fail-closed on empty change sets, so the approve rerun must record its own evidence delta.
+
 ## Clean-tree proof and commit hygiene
 
 - Rule followed: commit IN THE REPO CHANGED ONLY, one repo per commit. ProjectAurelius code in ProjectAurelius commits (8x, listed above). This tether commit contains ONLY tether files: sext_repo_evidence.json, sext_closeout_evidence.md (this file), sext_system_state.json.
