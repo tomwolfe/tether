@@ -1,99 +1,99 @@
 {
- "adapter": "opencode with model opencode-go/muse-spark-1.3-contributor via scripts/opencode_tty.py PTY wrapper",
- "axioms_pinned": true,
- "benchmark_jsons": {
-  "ea_vs_random": "../ProjectAurelius/benchmarks/results/ea_vs_random.json",
-  "speed_baseline": "../ProjectAurelius/benchmarks/results/speed_baseline.json",
-  "unified_benchmark": "../ProjectAurelius/benchmarks/results/unified_benchmark.json"
- },
- "closeout_session": "cc443a2a0305",
- "approve_session": "23dd8056",
- "approve_tether_head": "54abbfcfa81fc22cf14abe81b07452ec99e47f1a",
- "approve_note": "approve rerun on frozen tree; gate strings pytest 671 passed, ALL TOLERANCES MET, Build completed successfully, NETWORK_LEAKAGE_SCAN CLEAN, failures [], kill_rate 1.0; novelty min 0.8 fraction vs min across seeds [42,123,7,2024,99]; speed baseline seed 42 throughput 14.752 mols/sec; batched-GPR score-identical <=3e-6",
- "commit_hygiene": "commit in the repo changed only, one repo per commit; this tether commit holds only tether files",
- "heads": {
-  "DRIFT": "f91eee80930cfe7314f4244ce95dc8386f6fdeb3",
-  "Emergentia": "6f7aee45e72a452c049a37c885539e74d8c32fbb",
-  "ProjectAurelius": "b3a81595020f14c0d56151ffcac6eb489ddb6e9d",
-  "QED": "4005eb90c4417b6dbca438ce245054b156e03eeb",
-  "VeriTrial": "cc5d4efe91fbc84894d19e9498775438637525d8",
-  "tether": "54abbfcfa81fc22cf14abe81b07452ec99e47f1a"
- },
- "mixtures": {
-  "tested": 15,
-  "valid": 15
- },
- "mutation": {
-  "fail_below": 1.0,
-  "kill_rate": 1.0,
-  "killed": 18,
-  "survived": 0,
-  "targets": [
-   "../ProjectAurelius/src/aurelius/scoring/oracle/reduction.py",
-   "../ProjectAurelius/src/aurelius/scoring/oracle/delta_correction.py",
-   "../ProjectAurelius/scripts/export_aurelius_to_qed.py"
-  ]
- },
- "novelty_min_5seeds": 1.0,
- "novelty_seeds": [
-  42,
-  123,
-  7,
-  2024,
-  99
- ],
- "project_aurelius_commits_origin_to_head": [
-  "9934ad2",
-  "24ba2b5",
-  "e3d0b8f",
-  "5006111",
-  "2afde57",
-  "4fa3254",
-  "7773c76",
-  "35418a4"
- ],
- "qed_fin": 6,
- "repos": [
-  {
-   "dirty": false,
-   "head": "54abbfcfa81fc22cf14abe81b07452ec99e47f1a",
-   "repo": "tether"
+  "adapter": "opencode with model opencode-go/muse-spark-1.3-contributor via scripts/opencode_tty.py PTY wrapper",
+  "approve_note": "operator direct verification 2026-11-20 on PA b3a8159/QED 4005eb9: pytest 675 passed, ALL TOLERANCES MET (novelty min 1.0, mixtures 15/15, HOMO gap +0.1808), QED 3007 jobs, export+verify PASS, leakage CLEAN, evidence failures []. Agent 'confirmed in-gate' claims for dec79b98/23dd8056 RETRACTED (recycled numbers; see sext_closeout_evidence.md). Fresh mutation proof + review APPROVE still pending final Tether mission.",
+  "approve_session": "23dd8056",
+  "approve_tether_head": "54abbfcfa81fc22cf14abe81b07452ec99e47f1a",
+  "axioms_pinned": true,
+  "benchmark_jsons": {
+    "ea_vs_random": "../ProjectAurelius/benchmarks/results/ea_vs_random.json",
+    "speed_baseline": "../ProjectAurelius/benchmarks/results/speed_baseline.json",
+    "unified_benchmark": "../ProjectAurelius/benchmarks/results/unified_benchmark.json"
   },
-  {
-   "dirty": false,
-   "head": "4005eb90c4417b6dbca438ce245054b156e03eeb",
-   "repo": "QED"
+  "closeout_session": "cc443a2a0305",
+  "commit_hygiene": "commit in the repo changed only, one repo per commit; this tether commit holds only tether files",
+  "heads": {
+    "DRIFT": "f91eee80930cfe7314f4244ce95dc8386f6fdeb3",
+    "Emergentia": "6f7aee45e72a452c049a37c885539e74d8c32fbb",
+    "ProjectAurelius": "b3a81595020f14c0d56151ffcac6eb489ddb6e9d",
+    "QED": "4005eb90c4417b6dbca438ce245054b156e03eeb",
+    "VeriTrial": "cc5d4efe91fbc84894d19e9498775438637525d8",
+    "tether": "54abbfcfa81fc22cf14abe81b07452ec99e47f1a"
   },
-  {
-   "dirty": false,
-   "head": "b3a81595020f14c0d56151ffcac6eb489ddb6e9d",
-   "repo": "ProjectAurelius"
+  "mixtures": {
+    "tested": 15,
+    "valid": 15
   },
-  {
-   "dirty": false,
-   "head": "f91eee80930cfe7314f4244ce95dc8386f6fdeb3",
-   "repo": "DRIFT"
+  "mutation": {
+    "fail_below": 1.0,
+    "kill_rate": 1.0,
+    "killed": 18,
+    "survived": 0,
+    "targets": [
+      "../ProjectAurelius/src/aurelius/scoring/oracle/reduction.py",
+      "../ProjectAurelius/src/aurelius/scoring/oracle/delta_correction.py",
+      "../ProjectAurelius/scripts/export_aurelius_to_qed.py"
+    ]
   },
-  {
-   "dirty": false,
-   "head": "6f7aee45e72a452c049a37c885539e74d8c32fbb",
-   "repo": "Emergentia"
-  },
-  {
-   "dirty": false,
-   "head": "cc5d4efe91fbc84894d19e9498775438637525d8",
-   "repo": "VeriTrial"
+  "novelty_min_5seeds": 1.0,
+  "novelty_seeds": [
+    42,
+    123,
+    7,
+    2024,
+    99
+  ],
+  "project_aurelius_commits_origin_to_head": [
+    "9934ad2",
+    "24ba2b5",
+    "e3d0b8f",
+    "5006111",
+    "2afde57",
+    "4fa3254",
+    "7773c76",
+    "35418a4"
+  ],
+  "qed_fin": 6,
+  "repos": [
+    {
+      "dirty": false,
+      "head": "54abbfcfa81fc22cf14abe81b07452ec99e47f1a",
+      "repo": "tether"
+    },
+    {
+      "dirty": false,
+      "head": "4005eb90c4417b6dbca438ce245054b156e03eeb",
+      "repo": "QED"
+    },
+    {
+      "dirty": false,
+      "head": "b3a81595020f14c0d56151ffcac6eb489ddb6e9d",
+      "repo": "ProjectAurelius"
+    },
+    {
+      "dirty": false,
+      "head": "f91eee80930cfe7314f4244ce95dc8386f6fdeb3",
+      "repo": "DRIFT"
+    },
+    {
+      "dirty": false,
+      "head": "6f7aee45e72a452c049a37c885539e74d8c32fbb",
+      "repo": "Emergentia"
+    },
+    {
+      "dirty": false,
+      "head": "cc5d4efe91fbc84894d19e9498775438637525d8",
+      "repo": "VeriTrial"
+    }
+  ],
+  "sorry_free": true,
+  "starting_session": "17f935dd",
+  "verification": {
+    "benchmark_unified": "ALL TOLERANCES MET",
+    "export_aurelius_to_qed": "exit 0",
+    "leakage_scan": "NETWORK_LEAKAGE_SCAN CLEAN",
+    "pytest": "671 passed, 2 skipped",
+    "qed_lake_build": "Build completed successfully (3007 jobs)",
+    "sext_evidence": "SEXT EVIDENCE OK",
+    "verify_aurelius_qed": "all lemmas PASS + no_sorry"
   }
- ],
- "sorry_free": true,
- "starting_session": "17f935dd",
- "verification": {
-  "benchmark_unified": "ALL TOLERANCES MET",
-  "export_aurelius_to_qed": "exit 0",
-  "leakage_scan": "NETWORK_LEAKAGE_SCAN CLEAN",
-  "pytest": "671 passed, 2 skipped",
-  "qed_lake_build": "Build completed successfully (3007 jobs)",
-  "sext_evidence": "SEXT EVIDENCE OK",
-  "verify_aurelius_qed": "all lemmas PASS + no_sorry"
- }
 }
