@@ -1,15 +1,14 @@
 {
   "changed": [
-    " M missions/aurelius-tasks-final-proof.yaml",
-    " M tools/collect_sext_repo_evidence.py",
-    "?? missions/aurelius-phase0-remeasure.yaml"
+    "?? missions/aurelius-phase1-measurement-v2.yaml",
+    "?? missions/aurelius-phase1-measurement-v3.yaml"
   ],
   "qed_build_ok": true,
   "tolerances_met": true,
   "sorry_free": true,
   "axioms_pinned": true,
   "heads": {
-    "tether": "52e34b1b81a63ffab128ae11a81fb84ca57eb360",
+    "tether": "4e364a5828437dc598920ec7a9395979b3c4c9c0",
     "QED": "4005eb90c4417b6dbca438ce245054b156e03eeb",
     "ProjectAurelius": "b3a81595020f14c0d56151ffcac6eb489ddb6e9d",
     "DRIFT": "f91eee80930cfe7314f4244ce95dc8386f6fdeb3",
