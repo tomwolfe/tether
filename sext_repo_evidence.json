@@ -1,25 +1,15 @@
 {
   "changed": [
-    "ProjectAurelius:C:benchmarks/benchmark_unified.py",
-    "ProjectAurelius:C:benchmarks/results/speed_baseline.json",
-    "ProjectAurelius:C:benchmarks/results/speed_baseline.md",
-    "ProjectAurelius:C:benchmarks/results/unified_benchmark.json",
-    "ProjectAurelius:C:benchmarks/results/unified_benchmark.md",
-    "ProjectAurelius:C:src/aurelius/agent/experiment_suggester.py",
-    "ProjectAurelius:C:src/aurelius/agent/loop.py",
-    "ProjectAurelius:C:src/aurelius/agent/mutation/brics.py",
-    "ProjectAurelius:C:src/aurelius/agent/mutation/retrosynthetic.py",
-    "ProjectAurelius:C:src/aurelius/scoring/oracle/delta_correction.py",
-    "ProjectAurelius:C:src/aurelius/utils/chem_utils.py"
+    " M sext_repo_evidence.json"
   ],
   "qed_build_ok": true,
   "tolerances_met": true,
   "sorry_free": true,
   "axioms_pinned": true,
   "heads": {
-    "tether": "c5a0a9a5b11b45f341ad93e4e3fa6e47586ba4af",
+    "tether": "3391ca40dc62f537fbec38e1552b02a7fbf270e8",
     "QED": "4005eb90c4417b6dbca438ce245054b156e03eeb",
-    "ProjectAurelius": "35418a49f7135acb163d02fb45f19cac1d3fb838",
+    "ProjectAurelius": "b3a81595020f14c0d56151ffcac6eb489ddb6e9d",
     "DRIFT": "f91eee80930cfe7314f4244ce95dc8386f6fdeb3",
     "Emergentia": "6f7aee45e72a452c049a37c885539e74d8c32fbb",
     "VeriTrial": "cc5d4efe91fbc84894d19e9498775438637525d8"
@@ -31,7 +21,7 @@
       "VeriTrial": "clean",
       "QED": "clean",
       "ProjectAurelius": "clean",
-      "tether": "clean"
+      "tether": "dirty"
     },
     "novelty_min_5seeds": 1.0,
     "novelty_seeds": [
