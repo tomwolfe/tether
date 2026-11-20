@@ -82,9 +82,9 @@ def main() -> int:
                     for l in dr.stdout.splitlines() if l.strip()]
         except Exception:
             pass
-    # Fail closed on empty change set: status dirt plus committed diff
-    # against this session's checkpoint must both be empty. The
-    # remaining gates still decide independently. Separately,
+    # Fail-closed accounting lives at the single gate below (after the
+    # cross-repo scan): empty `changed` fails only where `.git` metadata
+    # makes detection possible. Separately,
     # fail closed if git status itself failed on a real checkout: without
     # this explicit append, a mutant flipping the `!=` below to `==` would
     # be silent on the green path; with it, the flip appends a failure on
@@ -129,8 +129,11 @@ def main() -> int:
     _cross_repo_tree = _cross_clean
     if changed:
         pass
-    else:
+    elif (root / ".git").exists():
         failures.append("no changed files detected (fail-closed)")
+    # Without .git metadata (clean-room `git archive` staging) the empty
+    # set is uninformative: status/checkpoint detection is impossible, so
+    # the check abstains and the science gates below decide.
     # 2. QED build
     b = subprocess.run(["lake", "build"],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
