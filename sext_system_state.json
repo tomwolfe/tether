@@ -7,17 +7,17 @@
   "unified_benchmark": "../ProjectAurelius/benchmarks/results/unified_benchmark.json"
  },
  "closeout_session": "cc443a2a0305",
- "approve_session": "dec79b98",
- "approve_tether_head": "4ef3c4ff43a21a6cf2af83e79ad1e87932ffc745",
+ "approve_session": "23dd8056",
+ "approve_tether_head": "54abbfcfa81fc22cf14abe81b07452ec99e47f1a",
  "approve_note": "approve rerun on frozen tree; gate strings pytest 671 passed, ALL TOLERANCES MET, Build completed successfully, NETWORK_LEAKAGE_SCAN CLEAN, failures [], kill_rate 1.0; novelty min 0.8 fraction vs min across seeds [42,123,7,2024,99]; speed baseline seed 42 throughput 14.752 mols/sec; batched-GPR score-identical <=3e-6",
  "commit_hygiene": "commit in the repo changed only, one repo per commit; this tether commit holds only tether files",
  "heads": {
   "DRIFT": "f91eee80930cfe7314f4244ce95dc8386f6fdeb3",
   "Emergentia": "6f7aee45e72a452c049a37c885539e74d8c32fbb",
-  "ProjectAurelius": "35418a49f7135acb163d02fb45f19cac1d3fb838",
+  "ProjectAurelius": "b3a81595020f14c0d56151ffcac6eb489ddb6e9d",
   "QED": "4005eb90c4417b6dbca438ce245054b156e03eeb",
   "VeriTrial": "cc5d4efe91fbc84894d19e9498775438637525d8",
-  "tether": "4ef3c4ff43a21a6cf2af83e79ad1e87932ffc745"
+  "tether": "54abbfcfa81fc22cf14abe81b07452ec99e47f1a"
  },
  "mixtures": {
   "tested": 15,
@@ -56,7 +56,7 @@
  "repos": [
   {
    "dirty": false,
-   "head": "4ef3c4ff43a21a6cf2af83e79ad1e87932ffc745",
+   "head": "54abbfcfa81fc22cf14abe81b07452ec99e47f1a",
    "repo": "tether"
   },
   {
@@ -66,7 +66,7 @@
   },
   {
    "dirty": false,
-   "head": "35418a49f7135acb163d02fb45f19cac1d3fb838",
+   "head": "b3a81595020f14c0d56151ffcac6eb489ddb6e9d",
    "repo": "ProjectAurelius"
   },
   {
