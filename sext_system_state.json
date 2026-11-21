@@ -10,6 +10,7 @@
     "unified_benchmark": "../ProjectAurelius/benchmarks/results/unified_benchmark.json"
   },
   "closeout_session": "cc443a2a0305",
+  "final_proof_session": "28f4774eb372",
   "commit_hygiene": "commit in the repo changed only, one repo per commit; this tether commit holds only tether files",
   "heads": {
     "DRIFT": "f91eee80930cfe7314f4244ce95dc8386f6fdeb3",
@@ -17,7 +18,7 @@
     "ProjectAurelius": "b3a81595020f14c0d56151ffcac6eb489ddb6e9d",
     "QED": "4005eb90c4417b6dbca438ce245054b156e03eeb",
     "VeriTrial": "cc5d4efe91fbc84894d19e9498775438637525d8",
-    "tether": "54abbfcfa81fc22cf14abe81b07452ec99e47f1a"
+    "tether": "a80e6f1397180d263ef827e571f7baa6df80d43e"
   },
   "mixtures": {
     "tested": 15,
@@ -91,7 +92,7 @@
     "benchmark_unified": "ALL TOLERANCES MET",
     "export_aurelius_to_qed": "exit 0",
     "leakage_scan": "NETWORK_LEAKAGE_SCAN CLEAN",
-    "pytest": "671 passed, 2 skipped",
+    "pytest": "675 passed, 2 skipped",
     "qed_lake_build": "Build completed successfully (3007 jobs)",
     "sext_evidence": "SEXT EVIDENCE OK",
     "verify_aurelius_qed": "all lemmas PASS + no_sorry"

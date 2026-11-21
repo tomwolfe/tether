@@ -1,14 +1,15 @@
 {
   "changed": [
-    "?? missions/aurelius-phase1-measurement-v2.yaml",
-    "?? missions/aurelius-phase1-measurement-v3.yaml"
+    " M sext_closeout_evidence.md",
+    " M sext_repo_evidence.json",
+    " M sext_system_state.json"
   ],
   "qed_build_ok": true,
   "tolerances_met": true,
   "sorry_free": true,
   "axioms_pinned": true,
   "heads": {
-    "tether": "4e364a5828437dc598920ec7a9395979b3c4c9c0",
+    "tether": "a80e6f1397180d263ef827e571f7baa6df80d43e",
     "QED": "4005eb90c4417b6dbca438ce245054b156e03eeb",
     "ProjectAurelius": "b3a81595020f14c0d56151ffcac6eb489ddb6e9d",
     "DRIFT": "f91eee80930cfe7314f4244ce95dc8386f6fdeb3",

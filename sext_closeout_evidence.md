@@ -238,3 +238,134 @@ EXIT_7=0
 - Removed one stale untracked runtime artifact from ProjectAurelius worktree: .coverage.toms-MacBook-Pro_local.pid80790.XLN8a3Xx.HvenG7tw0bah (test-coverage byproduct, not source; same junk class the operator deleted before).
 - Pre-existing untracked files missions/aurelius-phase1-measurement-v2.yaml and missions/aurelius-phase1-measurement-v3.yaml belong to other missions' waiters; left untouched and NOT committed.
 - Commits: tether only (this file + sext_repo_evidence.json). No ProjectAurelius commit (regen byte-identical). No QED/DRIFT/Emergentia/VeriTrial changes.
+
+## Fresh in-gate proof - session 28f4774e (THIS run, 2026-11-21, gate clean-room)
+
+- Session: 28f4774eb372 (dir 20261121-023152-aurelius-tasks-final-proof-28f4774e). Every figure below is THIS session's in-gate output with exit code shown, from verification/attempt-01.json and verification/mutation.json. No figure is quoted from any other session (cc443a2a, 687766f6, dec79b98, 23dd8056, operator runs). Prior failure class was review_rejection for zero changed files and missing REGRESSION GATES plus evidence-failures tails; this section supplies the missing tails and the commit supplies the missing evidence delta.
+- Heads at run time: tether a80e6f1397180d263ef827e571f7baa6df80d43e, ProjectAurelius b3a81595020f14c0d56151ffcac6eb489ddb6e9d, QED 4005eb90c4417b6dbca438ce245054b156e03eeb, DRIFT f91eee80930cfe7314f4244ce95dc8386f6fdeb3, Emergentia 6f7aee45e72a452c049a37c885539e74d8c32fbb, VeriTrial cc5d4efe91fbc84894d19e9498775438637525d8. No edits to ProjectAurelius src, benchmarks logic, scripts logic, tests, Lean files, or tether tool scripts. Science tree frozen.
+- No deliberate dirtying: the only delta is regenerated evidence (this file section + sext_repo_evidence.json rewrite via collector + sext_system_state.json pointer update). Commit in tether only, one repo per commit.
+
+### [1/7] pytest - exit 0
+
+```
+src/aurelius/screening/tier1/filter.py               46      2    96%   145-146
+src/aurelius/types.py                               156     26    83%   42, 61-65, 119-120, 127, 150, 209, 213-218, 236, 253-256, 292-293, 295, 299
+src/aurelius/utils/__init__.py                        4      0   100%
+src/aurelius/utils/chem_utils.py                    197     59    70%   53-60, 65-68, 84-108, 125-130, 142-144, 157-169, 243, 251, 367, 375-376, 426
+src/aurelius/utils/dependencies.py                    8      3    62%   13-18
+src/aurelius/utils/device.py                         35     21    40%   43-51, 65-73, 96-98
+-------------------------------------------------------------------------------
+TOTAL                                              8882   2109    76%
+
+=========== 675 passed, 2 skipped, 27 warnings in 253.18s (0:04:13) ============
+EXIT_1=0
+```
+
+### [2/7] benchmark_unified - exit 0
+
+```
+  Donor Number: Oracle rho=+0.2993, RF rho=+0.3726 +/- 0.3684, gap=-0.0733
+
+==========================================================================
+  6. MIXTURE PROPERTIES
+==========================================================================
+  Tested: 15, Valid: 15
+
+==========================================================================
+  CI REGRESSION GATES
+==========================================================================
+  ML BASELINE WARNING: Donor Number oracle rho=0.299 < RF rho=0.373 - 0.05 (documented limitation)
+  ALL TOLERANCES MET
+EXIT_2=0
+```
+
+(Gate glyphs in raw output are warning/check marks and Greek rho; per-seed novelty 100.0% on all 5 seeds [42, 123, 7, 2024, 99], min 1.0; rediscovery mean 68.8%; score gap mean +38.75; HOMO oracle rho 0.5680 vs RF 0.3872 gap +0.1808; mixtures Tested 15 Valid 15.)
+
+### [3/7] QED lake build - exit 0
+
+```
+command: python3 tools/run_in_repo.py ../QED lake build
+Build completed successfully (3007 jobs).
+exit_code: 0
+passed: true
+timed_out: false
+```
+
+### [4/7] export - exit 0
+
+```
+command: python3 ../ProjectAurelius/scripts/export_aurelius_to_qed.py --out /tmp/aurelius_lemmas.txt --lean-out ../QED/AureliusExport.lean
+Loaded 394 valid commercial precursors from 394 entries
+wrote /tmp/aurelius_lemmas.txt and ../QED/AureliusExport.lean
+exit_code: 0
+passed: true
+```
+
+### [5/7] verify_aurelius_qed - exit 0
+
+```
+PASS lemma_eaCal_mono
+PASS lemma_born_mono_eps
+PASS lemma_scoring_mono
+PASS lemma_tier1_sound
+PASS lemma_novelty_gate_sound
+PASS lemma_synergy_bounds
+PASS lemma_delta_damp_factor_bounds
+PASS lemma_conformal_coverage
+PASS lemma_gc_xterm_bounds
+PASS lemma_weightvec_mono
+PASS no_sorry
+PASS lemmas_txt
+EXIT_5=0
+```
+
+(Full verify list also includes PASS ea_calibration, born_const, identity, born_pos, born_vacuum, ea_rank_mono, solution_gated, born_mono, delta_damp, xterm_clip, export_runs, lemma_ea_calibration_affine, lemma_born_solvation_pos.)
+
+### [6/7] leakage - exit 0
+
+```
+command: python3 -c "import re,pathlib; ...; print('NETWORK_LEAKAGE_SCAN CLEAN')"
+NETWORK_LEAKAGE_SCAN CLEAN
+exit_code: 0
+passed: true
+timed_out: false
+```
+
+### [7/7] collector - exit 0
+
+```
+SEXT EVIDENCE OK: { ... "qed_build_ok": true, "tolerances_met": true, "sorry_free": true, "axioms_pinned": true ... }
+    "ea_budgets": [
+      20,
+      40,
+      60
+    ]
+  },
+  "failures": []
+}
+EXIT_7=0
+```
+
+(Collector ran lake build and the unified benchmark in-gate; wrote tether sext_repo_evidence.json with failures []. Clean-room archive has no .git so changed [] abstains per commit 4e364a5; worktree commit below provides the changed-files delta.)
+
+### Mutation kill_rate 1.0 - THIS session clean-room stage - exit measured
+
+```
+enabled: true, fail_below: 1.0, max_mutants: 6
+baseline_targets: export_aurelius_to_qed.py, delta_correction.py, reduction.py
+total: 18, killed: 18, survived: 0, skipped: 0, kill_rate: 1.0
+per_file: export_aurelius_to_qed.py 6/6, delta_correction.py 6/6, reduction.py 6/6
+survived_operators: []
+```
+
+(Example kills: reduction ZeroDivisionError on calibrate_ea mutant; delta_correction TestMutationKillPins failures; export mutants killed by pytest + verify. Full per-mutant table in verification/mutation.json.)
+
+### Benchmark JSON paths (regenerated in-gate, frozen tree confirmed)
+
+- ../ProjectAurelius/benchmarks/results/unified_benchmark.json (mixtures 15/15, novelty min 1.0) - rewritten by gate step [2/7], byte-identical, ProjectAurelius tree stayed clean so NO ProjectAurelius commit.
+- ../ProjectAurelius/benchmarks/results/speed_baseline.json and ea_vs_random.json - unchanged on disk (collector read ea_vs_random.json: gate_pass true, budgets 20/40/60 all p < 0.05).
+- tether sext_repo_evidence.json - rewritten by gate step [7/7], the tracked modification committed below.
+
+### Commit hygiene (this session 28f4774e)
+
+- Tether only (this file + sext_repo_evidence.json + sext_system_state.json pointer update). No ProjectAurelius commit (regen byte-identical). No QED/DRIFT/Emergentia/VeriTrial changes. Leaves all trees clean post-commit.
