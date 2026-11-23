@@ -1602,6 +1602,39 @@ class Orchestrator:
                     used += len(chunk)
                 if extra:
                     excerpt = (excerpt + "\n" + "\n".join(extra)).strip()
+        # Workspace missions: the real change usually lives in a sibling
+        # repo (patch_<Repo>.diff), while the primary patch.diff is empty.
+        # Embed bounded sibling-patch excerpts so the reviewer judges the
+        # actual change instead of "(no change captured)".
+        try:
+            _ws_repos = [str(s) for s in (getattr(mission, "workspace_repos", None) or [])]
+        except Exception:
+            _ws_repos = []
+        if checkpoint.is_git_repo and _ws_repos:
+            try:
+                from pathlib import Path as _P
+                _sib_budget = (REVIEW_FULL_CONTEXT_BUDGET if full_context
+                               else REVIEW_EXCERPT_BUDGET) // 2
+                _sib_used = 0
+                for _s in _ws_repos:
+                    _lbl = _P(_s).name
+                    _pf = audit.dir / f"patch_{_lbl}.diff"
+                    try:
+                        _pt = _pf.read_text(encoding="utf-8",
+                                            errors="replace").strip()
+                    except OSError:
+                        continue
+                    if not _pt:
+                        continue
+                    _chunk = f"\n--- sibling patch: {_lbl} ---\n{_pt}"
+                    if _sib_used + len(_chunk) > _sib_budget:
+                        _chunk = _chunk[: max(0, _sib_budget - _sib_used)]
+                        excerpt = (excerpt + "\n" + _chunk).strip()
+                        break
+                    excerpt = (excerpt + "\n" + _chunk).strip()
+                    _sib_used += len(_chunk)
+            except OSError:
+                pass
         verdict_instruction = (
             "Review the change above as an adversarial reviewer and answer "
             "with exactly one verdict line — 'REVIEW: APPROVE' or "
@@ -2858,6 +2891,32 @@ class Orchestrator:
         if checkpoint.is_git_repo:
             changed_files = changed_files_since(self.project_dir,
                                                 checkpoint.original_head)
+            # Workspace missions: the agent's change usually lives in a
+            # sibling repo (e.g. ProjectAurelius), while the primary
+            # project_dir stays clean. Union the sibling diffs so the
+            # final report and downstream gates see the real change set
+            # instead of []. Mirrors _gate_and_capture's union.
+            try:
+                from tether.git_safety import resolve_workspace_repos as _rws
+                _ws = list(getattr(mission, "workspace_repos", None) or [])
+                _paths = _rws(self.project_dir, _ws)
+            except Exception:
+                _paths = []
+            try:
+                _cmap = dict(getattr(checkpoint, "workspace_heads", None) or {})
+            except Exception:
+                _cmap = {}
+            for _rp in _paths:
+                try:
+                    _b = _cmap.get(str(_rp))
+                    _cf = changed_files_since(_rp, _b) if _b else []
+                except Exception:
+                    _cf = []
+                for _f in _cf:
+                    _pref = f"{_rp.name}/{_f}"
+                    if _pref not in changed_files:
+                        changed_files.append(_pref)
+            changed_files = sorted(changed_files)
         elif manifest_before is not None:
             try:
                 diff = diff_manifests(manifest_before,
