@@ -262,6 +262,19 @@ def main() -> int:
     # (science dict already initialised above with cross_repo_tree)
     if not _bench_json.is_file():
         failures.append(f"benchmark results JSON missing: {_bench_json}")
+    else:
+        # Fail closed on stale JSON: the results file must not predate the
+        # benchmark code that produced it, or Phase-1 divergence numbers are
+        # recycled from an older metric resolution.
+        try:
+            _bench_mtime = _bench_json.stat().st_mtime
+            _code_mtime = (aur / "benchmarks" / "benchmark_unified.py").stat().st_mtime
+            science["benchmark_json_mtime"] = _bench_mtime
+            science["benchmark_code_mtime"] = _code_mtime
+            if _bench_mtime < _code_mtime:
+                failures.append("unified_benchmark.json predates benchmark_unified.py (stale, regenerate in-gate)")
+        except Exception as _e:
+            failures.append(f"benchmark staleness check failed: {_e}")
     try:
         _bdata = json.loads(_bench_json.read_text(encoding="utf-8"))
         _disc = _bdata.get("discovery", {})
@@ -290,6 +303,29 @@ def main() -> int:
         science["mixtures_valid"] = _mix.get("valid", None)
         if not isinstance(science["mixtures_valid"], int) or science["mixtures_valid"] <= 7:
             failures.append(f"mixtures valid {science['mixtures_valid']} not >7")
+        # Timing report (Phase 0/2 3x bar transparency): surface the fixed-seed
+        # DiscoveryLoop wall clock and per-stage profile. Fail closed if the
+        # baseline file is missing; the speedup ratio itself is judged in-gate
+        # from committed trees, not tuned here.
+        try:
+            _speed_json = aur / "benchmarks" / "results" / "speed_baseline.json"
+            if not _speed_json.is_file():
+                failures.append(f"speed baseline JSON missing: {_speed_json}")
+                science["timing"] = None
+            else:
+                _sdata = json.loads(_speed_json.read_text(encoding="utf-8"))
+                science["timing"] = {
+                    "seed": _sdata.get("seed"),
+                    "wall_seconds": _sdata.get("wall_seconds"),
+                    "throughput_mols_per_sec": _sdata.get("throughput_mols_per_sec"),
+                    "n_screened": _sdata.get("n_screened"),
+                    "stage_profile": _sdata.get("stage_profile"),
+                }
+                if not isinstance(science["timing"]["wall_seconds"], (int, float)):
+                    failures.append("speed baseline wall_seconds not numeric")
+        except Exception as exc:
+            failures.append(f"timing report build failed: {exc}")
+            science["timing"] = None
         # Per-seed MIN table: the frozen discovery bar gates on MIN across
         # seeds [42, 123, 7, 2024, 99]. Surface every seed's row so the
         # reviewer sees the same-run MIN, divergence, dup/trivial/depth/gap.
