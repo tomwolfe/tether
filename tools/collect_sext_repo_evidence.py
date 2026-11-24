@@ -4,6 +4,16 @@ from __future__ import annotations
 import json, re, subprocess, sys
 from pathlib import Path
 
+def _permutation_gap(shuffled_mae: float, real_mae: float) -> float:
+    """Held-out degradation under label permutation: shuffled minus real.
+
+    Positive means the suggester beats the permuted control. Sign matters:
+    negating (real minus shuffled) would credit a sabotaged model, so the
+    direction is pinned by unit test.
+    """
+    return shuffled_mae - real_mae
+
+
 def main() -> int:
     root = Path.cwd()
     qed = root.parent / "QED"
@@ -362,6 +372,7 @@ def main() -> int:
             science["seeds_distinct_score_gap_count"] = len(set(map(str, _gaps)))
             science["candidate_overlap_mean"] = _disc.get("candidate_overlap_mean")
             science["screened_overlap_mean"] = _disc.get("screened_overlap_mean")
+            science["fringe_overlap_mean"] = _disc.get("fringe_overlap_mean")
             science["novel_overlap_mean"] = _disc.get("novel_overlap_mean")
             science["jaccard_table"] = _disc.get("jaccard_table")
             science["recovered_sets_identical"] = _disc.get("recovered_sets_identical")
@@ -467,7 +478,7 @@ def main() -> int:
             _perm = [{**e, "homo_eV": lab[0], "lumo_eV": lab[1]}
                 for e, lab in zip(_ing, _labs, strict=True)]
             _, _mae_sh = _cle._holdout_metrics(_cle._fit(_sc + _perm), _ho)
-            _gaps.append(_mae_sh - _mae_real)
+            _gaps.append(_permutation_gap(_mae_sh, _mae_real))
         _pval = float(_tt(_gaps, 0.0, alternative="greater").pvalue)
         science["closed_loop_permutation_p"] = _pval
         science["closed_loop_mean_gap"] = float(_np.mean(_gaps))
