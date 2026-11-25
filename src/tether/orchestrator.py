@@ -1483,14 +1483,52 @@ class Orchestrator:
 
         Lists each verification command with its exit code and pass/fail,
         the mutation kill rate (or that no mutants ran), and the changed
-        files. Pure formatting; never raises on odd inputs.
+        files. Verdict-marker lines (frozen-bar wording the mission gates
+        on) are extracted verbatim FIRST: reviewers repeatedly rejected
+        green runs claiming "no ALL TOLERANCES MET ..." because tail-only
+        evidence plus block-level clipping dropped the verdict lines.
+        Pure formatting; never raises on odd inputs.
         """
+        # Lines the mission's frozen bars gate on. Matched case-insensitively
+        # against every command's stdout; first-seen order, capped below so
+        # the section stays bounded and the per-command tails still fit.
+        _MARKERS = (
+            "ALL TOLERANCES", "gate_pass", "EA GATE", "SEXT EVIDENCE",
+            "rediscovery_exact_rate", "novel_scaffold_ratio", "score_gap",
+            "MIN gating", "MIN across seeds", "worst seed",
+            "axiom", "sorry", "Build completed", "verified by QED",
+            "permutation p=", "TIMING", "wall_seconds",
+            "HEAD", "FROZEN", "frozen-bar", "EA STYLE",
+        )
+        _MARKER_LINE_CAP = 120
+        _MARKER_LINES_CAP = 20
         try:
             lines = []
             cmds = list(verification_results or [])
             passed = sum(1 for r in cmds
                          if getattr(r, "passed", False) is True)
             lines.append(f"- commands: {passed}/{len(cmds)} passed")
+            marker_lines: list[str] = []
+            for r in cmds:
+                out = (str(getattr(r, "stdout", "") or "")
+                       + "\n" + str(getattr(r, "stderr", "") or ""))
+                if not out.strip():
+                    continue
+                for raw in out.splitlines():
+                    low = raw.lower()
+                    if any(m.lower() in low for m in _MARKERS):
+                        s = " ".join(raw.split())
+                        if s and all(s != m for m in marker_lines):
+                            marker_lines.append(s[:_MARKER_LINE_CAP])
+                        if len(marker_lines) >= _MARKER_LINES_CAP:
+                            break
+                if len(marker_lines) >= _MARKER_LINES_CAP:
+                    break
+            if marker_lines:
+                lines.append("- frozen-bar verdict lines (verbatim from runs):")
+                lines.extend(f"  ! {m}" for m in marker_lines)
+            else:
+                lines.append("- frozen-bar verdict lines: (none matched)")
             for r in cmds:
                 cmd = str(getattr(r, "command", "?"))[:160]
                 code = getattr(r, "exit_code", None)
