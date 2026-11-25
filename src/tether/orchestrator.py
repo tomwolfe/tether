@@ -2909,6 +2909,15 @@ class Orchestrator:
             for _rp in _paths:
                 try:
                     _b = _cmap.get(str(_rp))
+                    if _b is None:
+                        # Same fallback as _gate_and_capture: no recorded
+                        # base (checkpoint.json carries `workspace`, not
+                        # `workspace_heads`) means diff against current HEAD,
+                        # which at report time is the agent's uncommitted work.
+                        import subprocess as _sp3
+                        _p3 = _sp3.run(["git", "-C", str(_rp), "rev-parse", "HEAD"],
+                                        capture_output=True, text=True)
+                        _b = _p3.stdout.strip() if _p3.returncode == 0 else None
                     _cf = changed_files_since(_rp, _b) if _b else []
                 except Exception:
                     _cf = []
