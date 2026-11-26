@@ -73,7 +73,7 @@ verification:
     enabled: true
     fail_below: 1.0
     max_mutants: 6
-    equivalent: [../ProjectAurelius/src/aurelius/agent/mutation/engine.py:350:12, ../ProjectAurelius/src/aurelius/agent/loop.py:1409:12, ../ProjectAurelius/benchmarks/benchmark_ea_vs_random.py:126:12, tools/collect_sext_repo_evidence.py:225:10]
+    equivalent: [../ProjectAurelius/src/aurelius/agent/mutation/engine.py:350:12, ../ProjectAurelius/src/aurelius/agent/loop.py:1409:12, ../ProjectAurelius/benchmarks/benchmark_ea_vs_random.py:126:12]
     baseline_targets:
       - ../ProjectAurelius/src/aurelius/scoring/oracle/reduction.py
       - ../ProjectAurelius/src/aurelius/scoring/oracle/delta_correction.py

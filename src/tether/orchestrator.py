@@ -1499,9 +1499,20 @@ class Orchestrator:
             "axiom", "sorry", "Build completed", "verified by QED",
             "permutation p=", "TIMING", "wall_seconds",
             "HEAD", "FROZEN", "frozen-bar", "EA STYLE",
+            "rho", "mae", "max_err", "p95_err", "commercial",
+            "viscosity", "donor", "lumo", "solution_ea", "solution ea",
+            "closed_loop", "closed-loop", "sabotage",
+            "duplic", "trivial", "depth", "theorem",
+            "cross_repo", "DRIFT", "Emergentia", "VeriTrial",
+            "wall_s", "thr=", "CHANGED", "TOLERANCES", "NOV-MIN",
+            "SORRY-FREE", "LEAN=", "HEADN",
+            "FROZEN-BARS", "FROZEN-BAR SUMMARY",
+            "- ORACLE", "- GATES", "- FORMAL", "- HEADS", "- TIMING",
+            "- DISCOVERY", "- PER-SEED", "- CLOSED-LOOP", "- DUP",
+            "- CROSS-REPO", "- AXIOMS",
         )
-        _MARKER_LINE_CAP = 120
-        _MARKER_LINES_CAP = 20
+        _MARKER_LINE_CAP = 200
+        _MARKER_LINES_CAP = 40
         try:
             lines = []
             cmds = list(verification_results or [])
@@ -1525,6 +1536,15 @@ class Orchestrator:
                 if len(marker_lines) >= _MARKER_LINES_CAP:
                     break
             if marker_lines:
+                # Prioritise the compact FROZEN-BAR digest: it carries every
+                # frozen bar in a few lines, while per-seed detail lines would
+                # otherwise exhaust the cap and truncate oracle/closed-loop /
+                # axioms / HEADs / timing out of the review prompt.
+                _frozen_first = [m for m in marker_lines
+                                 if "frozen" in m.lower()
+                                 or m.lstrip().startswith("- ")]
+                _rest = [m for m in marker_lines if m not in _frozen_first]
+                marker_lines = (_frozen_first + _rest)[:_MARKER_LINES_CAP]
                 lines.append("- frozen-bar verdict lines (verbatim from runs):")
                 lines.extend(f"  ! {m}" for m in marker_lines)
             else:

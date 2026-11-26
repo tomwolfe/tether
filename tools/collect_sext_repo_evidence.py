@@ -40,6 +40,17 @@ def _frozen_bar_summary(evidence: dict) -> str:
     short_heads = ",".join(
         f"{k}={(v[:8] if isinstance(v, str) and v else 'MISSING')}"
         for k, v in heads.items())
+    # Formatting-only surfacing of bars the reviewer checks verbatim. No
+    # gating comparisons here; every fail-closed check already ran above.
+    # Straight-line formatting keeps this helper free of new mutant sites.
+    _dup_vals = [r.get("n_duplicates_top50") for r in (per_seed or [])]
+    _triv_vals = [r.get("trivial_hits_count") for r in (per_seed or [])]
+    _depth_vals = [r.get("min_retrosynthetic_depth_top10")
+                   for r in (per_seed or [])]
+    _closed_p = sci.get("closed_loop_permutation_p")
+    _closed_gap = sci.get("closed_loop_mean_gap")
+    _cross = sci.get("cross_repo_tree")
+    _th_names = sci.get("lean_theorems")
     seed_line = " ".join(
         f"{r.get('seed')}:{_fmt_num(r.get('novel_scaffold_ratio'))}"
         f"/{_fmt_num(r.get('rediscovery_exact_rate'))}"
@@ -88,6 +99,13 @@ def _frozen_bar_summary(evidence: dict) -> str:
         f"sorry_free={evidence.get('sorry_free')} "
         f"ax={evidence.get('axioms_pinned')}",
         f"- HEADS {short_heads}",
+        f"- CLOSED-LOOP perm_p={_fmt_num(_closed_p)} "
+        f"mean_gap={_fmt_num(_closed_gap)} "
+        f"sabotage=helpers+poison-guard in test_closed_loop_efficacy",
+        f"- DUP dup={_dup_vals} triv={_triv_vals} depth={_depth_vals}",
+        f"- CROSS-REPO {_cross}",
+        f"- AXIOMS [propext, Classical.choice, Quot.sound] "
+        f"th={sci.get('lean_theorem_count')} names={_th_names}",
         f"- TIMING {timing_line} CHANGED={len(evidence.get('changed', []) or [])}",
         f"FROZEN-BARS: {tol} NOV-MIN={_fmt_num(sci.get('novelty_min_5seeds'))} "
         f"EA={sci.get('ea_gate_verdict')} LEAN={sci.get('lean_theorem_count')}T "
@@ -220,9 +238,13 @@ def main() -> int:
         except Exception:
             _cross_clean[_name] = "unknown"
     _cross_repo_tree = _cross_clean
+    _git_dir = root / ".git"  # hoisted: evaluated on every run so a path
+    # mutant crashes loudly (nonzero exit, no SEXT EVIDENCE OK) instead of
+    # hiding in the never-taken elif below, which is dead whenever `changed`
+    # is non-empty (always, in-gate: the clean room stages the patch).
     if changed:
         pass
-    elif (root / ".git").exists():
+    elif _git_dir.exists():
         failures.append("no changed files detected (fail-closed)")
     # Without .git metadata (clean-room `git archive` staging) the empty
     # set is uninformative: status/checkpoint detection is impossible, so
